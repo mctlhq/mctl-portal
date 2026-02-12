@@ -7,7 +7,9 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     apt-get install -y --no-install-recommends python3 g++ build-essential && \
     rm -rf /var/lib/apt/lists/*
 
-RUN corepack enable
+RUN corepack enable && \
+    mkdir -p /home/node/.cache/node/corepack && \
+    chown -R node:node /home/node/.cache
 
 USER node
 WORKDIR /app
@@ -34,7 +36,9 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     apt-get install -y --no-install-recommends python3 g++ build-essential && \
     rm -rf /var/lib/apt/lists/*
 
-RUN corepack enable
+RUN corepack enable && \
+    mkdir -p /home/node/.cache/node/corepack && \
+    chown -R node:node /home/node/.cache
 
 USER node
 WORKDIR /app
