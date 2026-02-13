@@ -13,8 +13,9 @@ const backend = createBackend();
 backend.add(import('@backstage/plugin-app-backend'));
 backend.add(import('@backstage/plugin-proxy-backend'));
 
-// scaffolder plugin — removed to fix isolated-vm build failure
-// Can be re-added later when isolated-vm issue is resolved
+// scaffolder plugin
+backend.add(import('@backstage/plugin-scaffolder-backend'));
+backend.add(import('@backstage/plugin-scaffolder-backend-module-github'));
 
 // techdocs plugin
 backend.add(import('@backstage/plugin-techdocs-backend'));
@@ -38,9 +39,9 @@ backend.add(import('@backstage/plugin-catalog-backend-module-logs'));
 
 // permission plugin
 backend.add(import('@backstage/plugin-permission-backend'));
-// See https://backstage.io/docs/permissions/getting-started for how to create your own permission policy
+// Team-based permission policy — filters catalog entities by team ownership
 backend.add(
-  import('@backstage/plugin-permission-backend-module-allow-all-policy'),
+  import('@internal/plugin-permission-backend-module-team-policy'),
 );
 
 // search plugin
