@@ -5690,13 +5690,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@internal/plugin-permission-backend-module-team-policy@link:../../plugins/permission-backend-module-team-policy::locator=backend%40workspace%3Apackages%2Fbackend":
-  version: 0.0.0-use.local
-  resolution: "@internal/plugin-permission-backend-module-team-policy@link:../../plugins/permission-backend-module-team-policy::locator=backend%40workspace%3Apackages%2Fbackend"
-  languageName: node
-  linkType: soft
-
-"@internal/plugin-permission-backend-module-team-policy@workspace:plugins/permission-backend-module-team-policy":
+"@internal/plugin-permission-backend-module-team-policy@workspace:*, @internal/plugin-permission-backend-module-team-policy@workspace:plugins/permission-backend-module-team-policy":
   version: 0.0.0-use.local
   resolution: "@internal/plugin-permission-backend-module-team-policy@workspace:plugins/permission-backend-module-team-policy"
   dependencies:
@@ -15345,7 +15339,7 @@ __metadata:
     "@backstage/plugin-search-backend-node": "npm:^1.4.0"
     "@backstage/plugin-signals-backend": "npm:^0.3.11"
     "@backstage/plugin-techdocs-backend": "npm:^2.1.4"
-    "@internal/plugin-permission-backend-module-team-policy": "link:../../plugins/permission-backend-module-team-policy"
+    "@internal/plugin-permission-backend-module-team-policy": "workspace:*"
     app: "link:../app"
     better-sqlite3: "npm:^12.0.0"
     node-gyp: "npm:^10.0.0"

@@ -19,6 +19,7 @@ COPY --chown=node:node .yarnrc.yml package.json yarn.lock backstage.json ./
 
 COPY --chown=node:node packages/backend/package.json packages/backend/
 COPY --chown=node:node packages/app/package.json packages/app/
+COPY --chown=node:node plugins/permission-backend-module-team-policy/package.json plugins/permission-backend-module-team-policy/
 
 RUN --mount=type=cache,target=/home/node/.cache/yarn,sharing=locked,uid=1000,gid=1000 \
     yarn install --immutable
