@@ -2708,6 +2708,42 @@ __metadata:
   languageName: node
   linkType: hard
 
+"@backstage/plugin-catalog-backend-module-github-org@npm:^0.3.18":
+  version: 0.3.18
+  resolution: "@backstage/plugin-catalog-backend-module-github-org@npm:0.3.18"
+  dependencies:
+    "@backstage/backend-plugin-api": "npm:^1.6.1"
+    "@backstage/config": "npm:^1.3.6"
+    "@backstage/plugin-catalog-backend-module-github": "npm:^0.12.1"
+    "@backstage/plugin-catalog-node": "npm:^1.20.1"
+    "@backstage/plugin-events-node": "npm:^0.4.18"
+  checksum: 10c0/3158ce5575f17cdeb1023d2c38a67028e5ef278d8b3e8b9662090ba7969846981c26444fcf00abd9a8f726a9e7dcabe78099d57cae20c0bcde00a356543ef272
+  languageName: node
+  linkType: hard
+
+"@backstage/plugin-catalog-backend-module-github@npm:^0.12.1":
+  version: 0.12.1
+  resolution: "@backstage/plugin-catalog-backend-module-github@npm:0.12.1"
+  dependencies:
+    "@backstage/backend-plugin-api": "npm:^1.6.1"
+    "@backstage/catalog-model": "npm:^1.7.6"
+    "@backstage/config": "npm:^1.3.6"
+    "@backstage/integration": "npm:^1.19.2"
+    "@backstage/plugin-catalog-common": "npm:^1.1.7"
+    "@backstage/plugin-catalog-node": "npm:^1.20.1"
+    "@backstage/plugin-events-node": "npm:^0.4.18"
+    "@octokit/core": "npm:^5.2.0"
+    "@octokit/graphql": "npm:^7.0.2"
+    "@octokit/plugin-throttling": "npm:^8.1.3"
+    "@octokit/rest": "npm:^19.0.3"
+    git-url-parse: "npm:^15.0.0"
+    lodash: "npm:^4.17.21"
+    minimatch: "npm:^9.0.0"
+    uuid: "npm:^11.0.0"
+  checksum: 10c0/d226973f11b051628f4bbc32307055fb6f10a37cdf298588a6dc66eb9b1547e4140e8bfa2644b7763dc42f10a0882cdec2558c0cd198a93fe5b6df3e19707f70
+  languageName: node
+  linkType: hard
+
 "@backstage/plugin-catalog-backend-module-logs@npm:^0.1.18":
   version: 0.1.18
   resolution: "@backstage/plugin-catalog-backend-module-logs@npm:0.1.18"
@@ -7174,6 +7210,13 @@ __metadata:
   languageName: node
   linkType: hard
 
+"@octokit/auth-token@npm:^4.0.0":
+  version: 4.0.0
+  resolution: "@octokit/auth-token@npm:4.0.0"
+  checksum: 10c0/57acaa6c394c5abab2f74e8e1dcf4e7a16b236f713c77a54b8f08e2d14114de94b37946259e33ec2aab0566b26f724c2b71d2602352b59e541a9854897618f3c
+  languageName: node
+  linkType: hard
+
 "@octokit/core@npm:^4.2.1":
   version: 4.2.4
   resolution: "@octokit/core@npm:4.2.4"
@@ -7186,6 +7229,21 @@ __metadata:
     before-after-hook: "npm:^2.2.0"
     universal-user-agent: "npm:^6.0.0"
   checksum: 10c0/e54081a56884e628d1804837fddcd48c10d516117bb891551c8dc9d8e3dad449aeb9b4677ca71e8f0e76268c2b7656c953099506679aaa4666765228474a3ce6
+  languageName: node
+  linkType: hard
+
+"@octokit/core@npm:^5.2.0":
+  version: 5.2.2
+  resolution: "@octokit/core@npm:5.2.2"
+  dependencies:
+    "@octokit/auth-token": "npm:^4.0.0"
+    "@octokit/graphql": "npm:^7.1.0"
+    "@octokit/request": "npm:^8.4.1"
+    "@octokit/request-error": "npm:^5.1.1"
+    "@octokit/types": "npm:^13.0.0"
+    before-after-hook: "npm:^2.2.0"
+    universal-user-agent: "npm:^6.0.0"
+  checksum: 10c0/b4484d85552303b839613e2133dcd064fa06a7c10fe0ebd11ba8f67cb8e3384e48983c589f4d1dc0fa3754857784e3d90ff4eab9782e118baf13ddd1b834957c
   languageName: node
   linkType: hard
 
@@ -7221,6 +7279,17 @@ __metadata:
   languageName: node
   linkType: hard
 
+"@octokit/graphql@npm:^7.0.2, @octokit/graphql@npm:^7.1.0":
+  version: 7.1.1
+  resolution: "@octokit/graphql@npm:7.1.1"
+  dependencies:
+    "@octokit/request": "npm:^8.4.1"
+    "@octokit/types": "npm:^13.0.0"
+    universal-user-agent: "npm:^6.0.0"
+  checksum: 10c0/c27216200f3f4ce7ce2a694fb7ea43f8ea4a807fbee3a423c41ed137dd7948dfc0bbf6ea1656f029a7625c84b583acdef740a7032266d0eff55305c91c3a1ed6
+  languageName: node
+  linkType: hard
+
 "@octokit/oauth-authorization-url@npm:^5.0.0":
   version: 5.0.0
   resolution: "@octokit/oauth-authorization-url@npm:5.0.0"
@@ -7245,6 +7314,13 @@ __metadata:
   version: 18.1.1
   resolution: "@octokit/openapi-types@npm:18.1.1"
   checksum: 10c0/856d3bb9f8c666e837dd5e8b8c216ee4342b9ed63ff8da922ca4ce5883ed1dfbec73390eb13d69fbcb4703a4c8b8b6a586df3b0e675ff93bf3d46b5b4fe0968e
+  languageName: node
+  linkType: hard
+
+"@octokit/openapi-types@npm:^20.0.0":
+  version: 20.0.0
+  resolution: "@octokit/openapi-types@npm:20.0.0"
+  checksum: 10c0/5176dcc3b9d182ede3d446750cfa5cf31139624785a73fcf3511e3102a802b4d7cc45e999c27ed91d73fe8b7d718c8c406facb48688926921a71fe603b7db95d
   languageName: node
   linkType: hard
 
@@ -7287,6 +7363,18 @@ __metadata:
   languageName: node
   linkType: hard
 
+"@octokit/plugin-throttling@npm:^8.1.3":
+  version: 8.2.0
+  resolution: "@octokit/plugin-throttling@npm:8.2.0"
+  dependencies:
+    "@octokit/types": "npm:^12.2.0"
+    bottleneck: "npm:^2.15.3"
+  peerDependencies:
+    "@octokit/core": ^5.0.0
+  checksum: 10c0/e65de9958ac5f29ba473bb969d25738f7466dad1b64e8181199c71438c06a6333ba655bd5194581a24199ca06fc9a6e752d0a4782b554ef603b0acffe9f8bfbd
+  languageName: node
+  linkType: hard
+
 "@octokit/request-error@npm:^3.0.0, @octokit/request-error@npm:^3.0.3":
   version: 3.0.3
   resolution: "@octokit/request-error@npm:3.0.3"
@@ -7323,7 +7411,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@octokit/request@npm:^8.0.0":
+"@octokit/request@npm:^8.0.0, @octokit/request@npm:^8.4.1":
   version: 8.4.1
   resolution: "@octokit/request@npm:8.4.1"
   dependencies:
@@ -7363,7 +7451,16 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@octokit/types@npm:^13.1.0":
+"@octokit/types@npm:^12.2.0":
+  version: 12.6.0
+  resolution: "@octokit/types@npm:12.6.0"
+  dependencies:
+    "@octokit/openapi-types": "npm:^20.0.0"
+  checksum: 10c0/0bea58bda46c93287f5a80a0e52bc60e7dc7136b8a38c3569d63d073fb9df4a56acdb9d9bdba9978f37c374a4a6e3e52886ef5b08cace048adb0012cacef942c
+  languageName: node
+  linkType: hard
+
+"@octokit/types@npm:^13.0.0, @octokit/types@npm:^13.1.0":
   version: 13.10.0
   resolution: "@octokit/types@npm:13.10.0"
   dependencies:
@@ -14613,6 +14710,7 @@ __metadata:
     "@backstage/plugin-auth-backend-module-guest-provider": "npm:^0.2.15"
     "@backstage/plugin-auth-node": "npm:^0.6.11"
     "@backstage/plugin-catalog-backend": "npm:^3.3.1"
+    "@backstage/plugin-catalog-backend-module-github-org": "npm:^0.3.18"
     "@backstage/plugin-catalog-backend-module-logs": "npm:^0.1.18"
     "@backstage/plugin-catalog-backend-module-scaffolder-entity-model": "npm:^0.2.16"
     "@backstage/plugin-kubernetes-backend": "npm:^0.21.0"
@@ -14948,6 +15046,13 @@ __metadata:
   version: 3.2.0
   resolution: "boolean@npm:3.2.0"
   checksum: 10c0/6a0dc9668f6f3dda42a53c181fcbdad223169c8d87b6c4011b87a8b14a21770efb2934a778f063d7ece17280f8c06d313c87f7b834bb1dd526a867ffcd00febf
+  languageName: node
+  linkType: hard
+
+"bottleneck@npm:^2.15.3":
+  version: 2.19.5
+  resolution: "bottleneck@npm:2.19.5"
+  checksum: 10c0/b0f72e45b2e0f56a21ba720183f16bef8e693452fb0495d997fa354e42904353a94bd8fd429868e6751bc85e54b6755190519eed5a0ae0a94a5185209ae7c6d0
   languageName: node
   linkType: hard
 

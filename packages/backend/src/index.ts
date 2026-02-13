@@ -30,6 +30,9 @@ backend.add(
   import('@backstage/plugin-catalog-backend-module-scaffolder-entity-model'),
 );
 
+// github org provider — syncs users and teams from GitHub org into catalog
+backend.add(import('@backstage/plugin-catalog-backend-module-github-org'));
+
 // See https://backstage.io/docs/features/software-catalog/configuration#subscribing-to-catalog-errors
 backend.add(import('@backstage/plugin-catalog-backend-module-logs'));
 
