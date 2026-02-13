@@ -1,5 +1,5 @@
 # Stage 1: Build
-FROM node:20-bookworm-slim AS build
+FROM node:22-bookworm-slim AS build
 
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
@@ -28,7 +28,7 @@ COPY --chown=node:node . .
 RUN yarn tsc && yarn build:backend --config ../../app-config.yaml --config ../../app-config.production.yaml
 
 # Stage 2: Production
-FROM node:20-bookworm-slim
+FROM node:22-bookworm-slim
 
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \

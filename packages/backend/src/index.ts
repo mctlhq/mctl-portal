@@ -13,12 +13,8 @@ const backend = createBackend();
 backend.add(import('@backstage/plugin-app-backend'));
 backend.add(import('@backstage/plugin-proxy-backend'));
 
-// scaffolder plugin
-backend.add(import('@backstage/plugin-scaffolder-backend'));
-backend.add(import('@backstage/plugin-scaffolder-backend-module-github'));
-backend.add(
-  import('@backstage/plugin-scaffolder-backend-module-notifications'),
-);
+// scaffolder plugin — removed to fix isolated-vm build failure
+// Can be re-added later when isolated-vm issue is resolved
 
 // techdocs plugin
 backend.add(import('@backstage/plugin-techdocs-backend'));
