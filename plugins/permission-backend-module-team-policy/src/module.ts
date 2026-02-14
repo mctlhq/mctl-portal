@@ -37,11 +37,25 @@ class TeamBasedPermissionPolicy implements PermissionPolicy {
       return { result: AuthorizeResult.ALLOW };
     }
 
-    // For catalog entity permissions, apply conditional filter by ownership
+    // For catalog entity permissions, filter by kind + ownership
     if (isResourcePermission(request.permission, 'catalog-entity')) {
       return createCatalogConditionalDecision(
         request.permission,
-        catalogConditions.isEntityOwner({ claims: ownership }),
+        {
+          anyOf: [
+            // Templates visible to everyone (needed for scaffolder)
+            catalogConditions.isEntityKind({ kinds: ['template'] }),
+            // Owned entities of workload kinds only
+            {
+              allOf: [
+                catalogConditions.isEntityKind({
+                  kinds: ['component', 'api', 'resource', 'system'],
+                }),
+                catalogConditions.isEntityOwner({ claims: ownership }),
+              ],
+            },
+          ],
+        },
       );
     }
 
