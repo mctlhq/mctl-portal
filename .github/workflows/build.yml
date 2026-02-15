@@ -12,12 +12,64 @@ jobs:
   build-and-push:
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write
       packages: write
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Fetch all history for semver calculation
+
+      - name: Determine version bump
+        id: version
+        run: |
+          # Get latest tag (or default to v0.0.0 if none exists)
+          LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
+          echo "Latest tag: $LATEST_TAG"
+          
+          # Parse version
+          VERSION=${LATEST_TAG#v}
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$VERSION"
+          
+          # Determine bump type from commit message
+          COMMIT_MSG=$(git log -1 --pretty=%B)
+          echo "Commit message: $COMMIT_MSG"
+          
+          if echo "$COMMIT_MSG" | grep -qE '^[a-z]+!:|BREAKING CHANGE:'; then
+            # Major bump for breaking changes
+            MAJOR=$((MAJOR + 1))
+            MINOR=0
+            PATCH=0
+            BUMP_TYPE="major"
+          elif echo "$COMMIT_MSG" | grep -qE '^feat(\(.*\))?:'; then
+            # Minor bump for features
+            MINOR=$((MINOR + 1))
+            PATCH=0
+            BUMP_TYPE="minor"
+          elif echo "$COMMIT_MSG" | grep -qE '^fix(\(.*\))?:'; then
+            # Patch bump for fixes
+            PATCH=$((PATCH + 1))
+            BUMP_TYPE="patch"
+          else
+            # Default to patch for other commits
+            PATCH=$((PATCH + 1))
+            BUMP_TYPE="patch"
+          fi
+          
+          NEW_VERSION="v${MAJOR}.${MINOR}.${PATCH}"
+          echo "New version: $NEW_VERSION (${BUMP_TYPE} bump)"
+          
+          echo "version=$NEW_VERSION" >> $GITHUB_OUTPUT
+          echo "version_number=${MAJOR}.${MINOR}.${PATCH}" >> $GITHUB_OUTPUT
+          echo "bump_type=$BUMP_TYPE" >> $GITHUB_OUTPUT
+
+      - name: Create and push git tag
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag ${{ steps.version.outputs.version }}
+          git push origin ${{ steps.version.outputs.version }}
 
       - name: Log in to GHCR
         uses: docker/login-action@v3
@@ -32,7 +84,7 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
-            type=sha
+            type=semver,pattern={{version}},value=${{ steps.version.outputs.version_number }}
             type=raw,value=latest
 
       - name: Build and push
@@ -44,3 +96,25 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Update ArgoCD manifest
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+        run: |
+          # Clone mctl.me repo
+          git clone https://x-access-token:${GH_PAT}@github.com/dmitriimashkov/mctl.me.git /tmp/mctl.me
+          cd /tmp/mctl.me
+          
+          # Update image tag in backstage.yaml
+          sed -i "s/tag: .*/tag: ${{ steps.version.outputs.version }}/" platform-gitops/apps/templates/backstage.yaml
+          
+          # Commit and push
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add platform-gitops/apps/templates/backstage.yaml
+          git commit -m "chore: update Backstage image to ${{ steps.version.outputs.version }}
+
+Automated update from backstage repo build workflow.
+
+Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>" || true
+          git push || true
