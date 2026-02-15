@@ -9,7 +9,17 @@ import {
   CatalogImportPage,
   catalogImportPlugin,
 } from '@backstage/plugin-catalog-import';
-import { ScaffolderPage, scaffolderPlugin } from '@backstage/plugin-scaffolder';
+import {
+  ScaffolderPage,
+  scaffolderPlugin,
+  ScaffolderFieldExtensions,
+  EntityPickerFieldExtension,
+  EntityNamePickerFieldExtension,
+  EntityTagsPickerFieldExtension,
+  OwnedEntityPickerFieldExtension,
+  OwnerPickerFieldExtension,
+  RepoUrlPickerFieldExtension,
+} from '@backstage/plugin-scaffolder';
 import { orgPlugin } from '@backstage/plugin-org';
 import { SearchPage } from '@backstage/plugin-search';
 import {
@@ -93,7 +103,16 @@ const routes = (
         <ReportIssue />
       </TechDocsAddons>
     </Route>
-    <Route path="/create" element={<ScaffolderPage />} />
+    <Route path="/create" element={<ScaffolderPage />}>
+      <ScaffolderFieldExtensions>
+        <EntityPickerFieldExtension />
+        <EntityNamePickerFieldExtension />
+        <EntityTagsPickerFieldExtension />
+        <OwnedEntityPickerFieldExtension />
+        <OwnerPickerFieldExtension />
+        <RepoUrlPickerFieldExtension />
+      </ScaffolderFieldExtensions>
+    </Route>
     <Route path="/api-docs" element={<ApiExplorerPage />} />
     <Route
       path="/catalog-import"
