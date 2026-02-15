@@ -105,8 +105,8 @@ jobs:
           git clone https://x-access-token:${GH_PAT}@github.com/dmitriimashkov/mctl.me.git /tmp/mctl.me
           cd /tmp/mctl.me
           
-          # Update image tag in backstage.yaml
-          sed -i "s/tag: .*/tag: ${{ steps.version.outputs.version }}/" platform-gitops/apps/templates/backstage.yaml
+          # Update image tag in backstage.yaml (remove 'v' prefix for Docker)
+          sed -i "s/tag: .*/tag: ${{ steps.version.outputs.version_number }}/" platform-gitops/apps/templates/backstage.yaml
           
           # Commit and push
           git config user.name "github-actions[bot]"
