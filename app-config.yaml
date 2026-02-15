@@ -94,6 +94,16 @@ catalog:
       rules:
         - allow: [User, Group]
 
+    # Auto-discover all services in platform-gitops (mctl.me)
+    - type: url
+      target: https://github.com/dmitriimashkov/mctl.me/blob/main/platform-gitops/services/preview/*/*/catalog-info.yaml
+      rules:
+        - allow: [Component]
+    - type: url
+      target: https://github.com/dmitriimashkov/mctl.me/blob/main/platform-gitops/workers/preview/*/*/catalog-info.yaml
+      rules:
+        - allow: [Component]
+
     ## Uncomment these lines to add more example data
     # - type: url
     #   target: https://github.com/backstage/backstage/blob/master/packages/catalog-model/examples/all.yaml

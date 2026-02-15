@@ -30,4 +30,13 @@ auth:
 catalog:
   rules:
     - allow: [Component, System, API, Resource, Location, Template, Group, User]
-  locations: []
+  locations:
+    # Auto-discover all services in platform-gitops
+    - type: url
+      target: https://github.com/dmitriimashkov/mctl.me/blob/main/platform-gitops/services/preview/*/*/catalog-info.yaml
+      rules:
+        - allow: [Component]
+    - type: url
+      target: https://github.com/dmitriimashkov/mctl.me/blob/main/platform-gitops/workers/preview/*/*/catalog-info.yaml
+      rules:
+        - allow: [Component]
