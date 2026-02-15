@@ -43,8 +43,8 @@ class TeamBasedPermissionPolicy implements PermissionPolicy {
         request.permission,
         {
           anyOf: [
-            // Templates visible to everyone (needed for scaffolder)
-            catalogConditions.isEntityKind({ kinds: ['template'] }),
+            // Templates, Groups, Users visible to everyone
+            catalogConditions.isEntityKind({ kinds: ['template', 'group', 'user'] }),
             // Owned entities of workload kinds only
             {
               allOf: [
