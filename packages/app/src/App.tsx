@@ -19,6 +19,7 @@ import {
   OwnedEntityPickerFieldExtension,
   OwnerPickerFieldExtension,
   RepoUrlPickerFieldExtension,
+  MyGroupsPickerFieldExtension,
 } from '@backstage/plugin-scaffolder';
 import { orgPlugin } from '@backstage/plugin-org';
 import { SearchPage } from '@backstage/plugin-search';
@@ -111,6 +112,7 @@ const routes = (
         <OwnedEntityPickerFieldExtension />
         <OwnerPickerFieldExtension />
         <RepoUrlPickerFieldExtension />
+        <MyGroupsPickerFieldExtension />
       </ScaffolderFieldExtensions>
     </Route>
     <Route path="/api-docs" element={<ApiExplorerPage />} />
