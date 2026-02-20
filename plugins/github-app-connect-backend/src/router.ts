@@ -393,5 +393,20 @@ export function createRouter(options: RouterOptions): Router {
     }
   });
 
+  // GET /repos — list all repos accessible via installed GitHub Apps
+  router.get('/repos', async (_req: Request, res: Response) => {
+    try {
+      const installationIds = await store.findAllInstallations();
+      const repoSets = await Promise.all(
+        installationIds.map(id => getInstallationRepos(id, appId, privateKey)),
+      );
+      const allRepos = [...new Set(repoSets.flat())].sort();
+      res.json({ repos: allRepos });
+    } catch (err) {
+      logger.error(`Failed to list repos: ${err}`);
+      res.status(500).json({ repos: [] });
+    }
+  });
+
   return router;
 }

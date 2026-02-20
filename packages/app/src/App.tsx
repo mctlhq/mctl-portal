@@ -42,6 +42,13 @@ import { CatalogGraphPage } from '@backstage/plugin-catalog-graph';
 import { githubAuthApiRef } from '@backstage/core-plugin-api';
 import { NotificationsPage } from '@backstage/plugin-notifications';
 import { SignalsDisplay } from '@backstage/plugin-signals';
+import {
+  SecureVariablesInputFieldExtension,
+  NetworkPreviewFieldExtension,
+  GitHubRepoPickerFieldExtension,
+  ReleaseReviewStep,
+  ReleaseOutputs,
+} from './components/scaffolder';
 
 const app = createApp({
   apis,
@@ -93,7 +100,22 @@ const routes = (
         <ReportIssue />
       </TechDocsAddons>
     </Route>
-    <Route path="/create" element={<ScaffolderPage />}>
+    <Route
+      path="/create"
+      element={
+        <ScaffolderPage
+          headerOptions={{
+            pageTitleOverride: 'Platform',
+            title: 'Platform',
+            subtitle: 'Deploy, manage, and operate your services',
+          }}
+          components={{
+            ReviewStepComponent: ReleaseReviewStep,
+            EXPERIMENTAL_TemplateOutputsComponent: ReleaseOutputs,
+          }}
+        />
+      }
+    >
       <ScaffolderFieldExtensions>
         <EntityPickerFieldExtension />
         <EntityNamePickerFieldExtension />
@@ -102,6 +124,9 @@ const routes = (
         <OwnerPickerFieldExtension />
         <RepoUrlPickerFieldExtension />
         <MyGroupsPickerFieldExtension />
+        <SecureVariablesInputFieldExtension />
+        <NetworkPreviewFieldExtension />
+        <GitHubRepoPickerFieldExtension />
       </ScaffolderFieldExtensions>
     </Route>
     <Route path="/search" element={<SearchPage />}>

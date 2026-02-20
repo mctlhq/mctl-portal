@@ -83,6 +83,13 @@ export class RepoConnectionStore {
       .select('*');
   }
 
+  async findAllInstallations(): Promise<number[]> {
+    const rows = await this.db('repo_connections')
+      .distinct('installation_id')
+      .select('installation_id');
+    return rows.map(r => Number(r.installation_id));
+  }
+
   async delete(
     teamId: string,
     serviceId: string,
