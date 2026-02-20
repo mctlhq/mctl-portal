@@ -67,5 +67,9 @@ backend.add(import('@backstage/plugin-signals-backend'));
 
 // github app connect — self-service repo access via GitHub App installation
 backend.add(import('@internal/plugin-github-app-connect-backend'));
+// intercept GitHub App install callbacks at /api/auth/github/handler/frame
+backend.add(
+  import('@internal/plugin-github-app-connect-backend').then(m => m.authModuleGithubInstallRedirect),
+);
 
 backend.start();
