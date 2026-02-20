@@ -27,10 +27,19 @@ auth:
           resolvers:
             - resolver: usernameMatchingUserEntityName
 
-catalog:
+vaultSecrets:
+  endpoint: ${VAULT_ADDR}
+  token: ${VAULT_TOKEN}
+
   rules:
     - allow: [Component, System, API, Resource, Location, Template, Group, User]
   locations:
+    # Platform system entity
+    - type: url
+      target: https://github.com/dmitriimashkov/mctl.me/blob/main/platform-gitops/catalog-info.yaml
+      rules:
+        - allow: [System]
+
     # Auto-discover all services in platform-gitops
     - type: url
       target: https://github.com/dmitriimashkov/mctl.me/blob/main/platform-gitops/services/preview/*/*/catalog-info.yaml
@@ -40,3 +49,21 @@ catalog:
       target: https://github.com/dmitriimashkov/mctl.me/blob/main/platform-gitops/workers/preview/*/*/catalog-info.yaml
       rules:
         - allow: [Component]
+
+    # Platform self-service templates
+    - type: url
+      target: https://github.com/dmitriimashkov/mctl.me/blob/main/platform-gitops/backstage-templates/deploy-component/template.yaml
+      rules:
+        - allow: [Template]
+    - type: url
+      target: https://github.com/dmitriimashkov/mctl.me/blob/main/platform-gitops/backstage-templates/update-component-config/template.yaml
+      rules:
+        - allow: [Template]
+    - type: url
+      target: https://github.com/dmitriimashkov/mctl.me/blob/main/platform-gitops/backstage-templates/delete-component/template.yaml
+      rules:
+        - allow: [Template]
+    - type: url
+      target: https://github.com/dmitriimashkov/mctl.me/blob/main/platform-gitops/backstage-templates/provision-database/template.yaml
+      rules:
+        - allow: [Template]
