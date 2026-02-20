@@ -69,7 +69,9 @@ backend.add(import('@backstage/plugin-signals-backend'));
 backend.add(import('@internal/plugin-github-app-connect-backend'));
 // intercept GitHub App install callbacks at /api/auth/github/handler/frame
 backend.add(
-  import('@internal/plugin-github-app-connect-backend').then(m => m.authModuleGithubInstallRedirect),
+  import('@internal/plugin-github-app-connect-backend').then(m => ({
+    default: m.authModuleGithubInstallRedirect,
+  })),
 );
 
 backend.start();
