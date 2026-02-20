@@ -161,68 +161,105 @@ export function createRouter(options: RouterOptions): Router {
   });
 
   // GET /callback — GitHub redirects here after App installation
+  // Handles two flows:
+  //   1. With state param (from install-url) — binds to specific team/service/repo
+  //   2. Without state (direct install from GitHub) — auto-discovers repos
   router.get('/callback', async (req: Request, res: Response) => {
-    const { installation_id, state: stateParam } = req.query;
-    if (!stateParam || !installation_id) {
-      res.status(400).json({ error: 'Missing installation_id or state' });
+    const { installation_id, state: stateParam, setup_action } = req.query;
+    if (!installation_id) {
+      res.status(400).json({ error: 'Missing installation_id' });
       return;
     }
 
-    const stateData = decryptState(stateParam as string, stateSecret);
-    if (!stateData) {
-      res.status(400).json({ error: 'Invalid or expired state parameter' });
-      return;
-    }
-
-    const { team, service, repo } = stateData as {
-      team: string;
-      service: string;
-      repo: string;
-    };
     const installId = Number(installation_id);
 
-    // Verify the installation has access to the requested repo
-    try {
-      const repos = await getInstallationRepos(installId, appId, privateKey);
-      const hasAccess = repos.some(
-        r => r.toLowerCase() === (repo as string).toLowerCase(),
-      );
-
-      if (!hasAccess) {
-        logger.warn(
-          `Installation ${installId} does not have access to ${repo}`,
-        );
-        res.status(403).json({
-          error: `Installation does not have access to ${repo}. Please add the repository in GitHub App settings.`,
-        });
+    // Flow 1: With state param (from install-url)
+    if (stateParam) {
+      const stateData = decryptState(stateParam as string, stateSecret);
+      if (!stateData) {
+        res.status(400).json({ error: 'Invalid or expired state parameter' });
         return;
       }
-    } catch (err) {
-      logger.error(`Failed to verify installation repos: ${err}`);
+
+      const { team, service, repo } = stateData as {
+        team: string;
+        service: string;
+        repo: string;
+      };
+
+      // Verify the installation has access to the requested repo
+      try {
+        const repos = await getInstallationRepos(installId, appId, privateKey);
+        const hasAccess = repos.some(
+          r => r.toLowerCase() === (repo as string).toLowerCase(),
+        );
+
+        if (!hasAccess) {
+          logger.warn(
+            `Installation ${installId} does not have access to ${repo}`,
+          );
+          res.redirect(
+            `${baseUrl}/create?status=error&message=${encodeURIComponent(`Installation does not have access to ${repo}. Please add the repository in GitHub App settings.`)}`,
+          );
+          return;
+        }
+      } catch (err) {
+        logger.error(`Failed to verify installation repos: ${err}`);
+      }
+
+      const owner = (repo as string).split('/')[0];
+      const installation = await findInstallation(owner, appId, privateKey);
+      const accountType = installation?.account_type || 'unknown';
+
+      await store.upsert({
+        team_id: team as string,
+        service_id: service as string,
+        repo_full_name: repo as string,
+        installation_id: installId,
+        account_type: accountType,
+        created_by: 'github-callback',
+      });
+
+      logger.info(
+        `Repo connection saved: ${team}/${service} → ${repo} (installation ${installId})`,
+      );
+
+      res.redirect(
+        `${baseUrl}/create?status=connected&repo=${encodeURIComponent(repo as string)}`,
+      );
+      return;
     }
 
-    // Determine account type
-    const owner = (repo as string).split('/')[0];
-    const installation = await findInstallation(owner, appId, privateKey);
-    const accountType = installation?.account_type || 'unknown';
+    // Flow 2: Direct install from GitHub (no state) — auto-discover repos
+    try {
+      const repos = await getInstallationRepos(installId, appId, privateKey);
+      logger.info(
+        `Direct App installation ${installId} (action: ${setup_action}) — accessible repos: ${repos.join(', ') || 'none'}`,
+      );
 
-    await store.upsert({
-      team_id: team as string,
-      service_id: service as string,
-      repo_full_name: repo as string,
-      installation_id: installId,
-      account_type: accountType,
-      created_by: 'github-callback',
-    });
+      // Store connections for all accessible repos (generic team/service)
+      for (const repoFullName of repos) {
+        const owner = repoFullName.split('/')[0];
+        const installation = await findInstallation(owner, appId, privateKey);
+        await store.upsert({
+          team_id: '_auto',
+          service_id: '_auto',
+          repo_full_name: repoFullName,
+          installation_id: installId,
+          account_type: installation?.account_type || 'unknown',
+          created_by: 'direct-install',
+        });
+      }
 
-    logger.info(
-      `Repo connection saved: ${team}/${service} → ${repo} (installation ${installId})`,
-    );
-
-    // Redirect back to Backstage
-    res.redirect(
-      `${baseUrl}/create?status=connected&repo=${encodeURIComponent(repo as string)}`,
-    );
+      res.redirect(
+        `${baseUrl}/create?status=connected&message=${encodeURIComponent(`GitHub App installed successfully. ${repos.length} repo(s) connected.`)}`,
+      );
+    } catch (err) {
+      logger.error(`Failed to process direct installation: ${err}`);
+      res.redirect(
+        `${baseUrl}/create?status=error&message=${encodeURIComponent('Failed to process installation. Please try again.')}`,
+      );
+    }
   });
 
   // GET /repo-access — check if a repo is accessible via App or PAT
@@ -233,12 +270,18 @@ export function createRouter(options: RouterOptions): Router {
       return;
     }
 
-    // Check if we have a stored connection
-    const connection = await store.find(
+    // Check if we have a stored connection (exact match or any match by repo)
+    let connection = await store.find(
       team as string,
       service as string,
       repo as string,
     );
+    if (!connection) {
+      const allConns = await store.findByRepo(repo as string);
+      if (allConns.length > 0) {
+        connection = allConns[0];
+      }
+    }
 
     if (connection) {
       // Verify the installation still has access
