@@ -1,11 +1,9 @@
-import React from 'react';
 import Typography from '@material-ui/core/Typography';
 import Card from '@material-ui/core/Card';
 import CardContent from '@material-ui/core/CardContent';
 import CardActionArea from '@material-ui/core/CardActionArea';
 import Grid from '@material-ui/core/Grid';
 import Box from '@material-ui/core/Box';
-import Divider from '@material-ui/core/Divider';
 import Table from '@material-ui/core/Table';
 import TableBody from '@material-ui/core/TableBody';
 import TableCell from '@material-ui/core/TableCell';
@@ -174,7 +172,8 @@ export function ReleaseOutputs({ output }: TemplateOutputProps) {
             <Grid item xs={12} sm={6} md={4} key={i}>
               <Card variant="outlined" className={classes.linkCard}>
                 <CardActionArea
-                  href={link.url}
+                  component="a"
+                  href={link.url || '#'}
                   target="_blank"
                   rel="noopener noreferrer"
                   style={{ height: '100%', padding: 16 }}

@@ -5,7 +5,7 @@ import { createBackendModule } from '@backstage/backend-plugin-api';
  * Backend module that registers custom Nunjucks template filters
  * for use in Backstage scaffolder templates.
  */
-export const scaffolderCustomFiltersModule = createBackendModule({
+export default createBackendModule({
   pluginId: 'scaffolder',
   moduleId: 'custom-filters',
   register(env) {
@@ -18,8 +18,8 @@ export const scaffolderCustomFiltersModule = createBackendModule({
            * Usage in template: ${{ parameters.dockerfileRepo | repoName }}
            * Example: "dmitriimashkov/my-app" → "my-app"
            */
-          repoName: (value: string) => {
-            if (typeof value !== 'string') return value;
+          repoName: (value: unknown): string | undefined => {
+            if (typeof value !== 'string') return undefined;
             return value.split('/').pop() || value;
           },
         });

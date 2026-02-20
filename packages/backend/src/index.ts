@@ -18,9 +18,7 @@ backend.add(import('@backstage/plugin-scaffolder-backend'));
 backend.add(import('@backstage/plugin-scaffolder-backend-module-github'));
 backend.add(import('@roadiehq/scaffolder-backend-module-http-request'));
 // custom scaffolder template filters (repoName, etc.)
-backend.add(
-  import('./scaffolder-filters').then(m => m.scaffolderCustomFiltersModule),
-);
+backend.add(import('./scaffolder-filters'));
 
 // techdocs plugin
 backend.add(import('@backstage/plugin-techdocs-backend'));
