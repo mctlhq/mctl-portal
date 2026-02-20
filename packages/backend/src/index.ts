@@ -65,4 +65,7 @@ backend.add(import('@backstage/plugin-kubernetes-backend'));
 backend.add(import('@backstage/plugin-notifications-backend'));
 backend.add(import('@backstage/plugin-signals-backend'));
 
+// github app connect — self-service repo access via GitHub App installation
+backend.add(import('@internal/plugin-github-app-connect-backend'));
+
 backend.start();
