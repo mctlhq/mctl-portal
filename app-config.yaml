@@ -95,14 +95,12 @@ catalog:
         - allow: [User, Group]
 
     # Auto-discover all services in platform-gitops (mctl.me)
-    - type: url
-      target: https://github.com/dmitriimashkov/mctl.me/blob/main/platform-gitops/services/preview/*/*/catalog-info.yaml
-      rules:
-        - allow: [Component]
-    - type: url
-      target: https://github.com/dmitriimashkov/mctl.me/blob/main/platform-gitops/workers/preview/*/*/catalog-info.yaml
-      rules:
-        - allow: [Component]
+    # NOTE: Discovery is handled by GithubEntityProvider (catalog.providers.github)
+    # in production config. These URL locations are for local dev only.
+    # - type: url
+    #   target: https://github.com/dmitriimashkov/mctl.me/blob/main/platform-gitops/services/preview/*/*/catalog-info.yaml
+    # - type: url
+    #   target: https://github.com/dmitriimashkov/mctl.me/blob/main/platform-gitops/workers/preview/*/*/catalog-info.yaml
 
     ## Uncomment these lines to add more example data
     # - type: url
@@ -126,3 +124,7 @@ githubAppConnect:
   appSlug: mctl-me
   appId: ${GITHUB_APP_ID}
   privateKey: ${GITHUB_APP_PRIVATE_KEY}
+
+vaultSecrets:
+  endpoint: ${VAULT_ADDR}
+  token: ${VAULT_TOKEN}
