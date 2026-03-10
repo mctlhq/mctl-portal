@@ -1,0 +1,10 @@
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: backstage
+  description: mctl.me user portal — Backstage application for service catalog and scaffolder
+spec:
+  type: website
+  owner: group:admin
+  lifecycle: production
+  system: team-admins

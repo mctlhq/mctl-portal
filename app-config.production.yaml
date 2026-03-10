@@ -1,0 +1,156 @@
+app:
+  title: MCTL Portal
+  baseUrl: https://app.mctl.me
+
+enableExperimentalRedirectFlow: true
+
+organization:
+  name: mctlhq
+
+backend:
+  baseUrl: https://app.mctl.me
+  listen: ':7007'
+  database:
+    client: pg
+    connection:
+      host: ${POSTGRES_HOST}
+      port: ${POSTGRES_PORT}
+      user: ${POSTGRES_USER}
+      password: ${POSTGRES_PASSWORD}
+
+auth:
+  environment: production
+  providers:
+    github:
+      production:
+        clientId: ${AUTH_GITHUB_CLIENT_ID}
+        clientSecret: ${AUTH_GITHUB_CLIENT_SECRET}
+
+integrations:
+  github:
+    - host: github.com
+      apps:
+        - appId: ${GITHUB_APP_ID}
+          privateKey: ${GITHUB_APP_PRIVATE_KEY}
+          clientId: ${GITHUB_APP_CLIENT_ID}
+          clientSecret: ${GITHUB_APP_CLIENT_SECRET}
+
+vaultSecrets:
+  endpoint: ${VAULT_ADDR}
+  token: ${VAULT_TOKEN}
+
+argoWorkflows:
+  # Argo Workflows server URL (in-cluster: https://argo-workflows-server.argo-workflows:2746)
+  baseUrl: https://workflows.mctl.me
+  namespace: argo-workflows
+  # token: ${ARGO_WORKFLOWS_TOKEN}  # optional, only if auth-mode=client
+
+catalog:
+  rules:
+    - allow: [Component, System, API, Resource, Location, Template, Group, User]
+  locations:
+    # Platform system entity
+    - type: url
+      target: https://github.com/mctlhq/mctl-gitops/blob/main/platform-gitops/catalog-info.yaml
+      rules:
+        - allow: [System]
+
+    # Auto-discover all services in platform-gitops
+    - type: url
+      target: https://github.com/mctlhq/mctl-gitops/blob/main/platform-gitops/services/*/*/catalog-info.yaml
+      rules:
+        - allow: [Component]
+
+    # Platform self-service templates (v1 — GitHub Actions, deprecated)
+    - type: url
+      target: https://github.com/mctlhq/mctl-gitops/blob/main/platform-gitops/backstage-templates/deploy-component/template.yaml
+      rules:
+        - allow: [Template]
+    - type: url
+      target: https://github.com/mctlhq/mctl-gitops/blob/main/platform-gitops/backstage-templates/deploy-version/template.yaml
+      rules:
+        - allow: [Template]
+    - type: url
+      target: https://github.com/mctlhq/mctl-gitops/blob/main/platform-gitops/backstage-templates/update-component-config/template.yaml
+      rules:
+        - allow: [Template]
+    - type: url
+      target: https://github.com/mctlhq/mctl-gitops/blob/main/platform-gitops/backstage-templates/delete-component/template.yaml
+      rules:
+        - allow: [Template]
+    - type: url
+      target: https://github.com/mctlhq/mctl-gitops/blob/main/platform-gitops/backstage-templates/provision-database/template.yaml
+      rules:
+        - allow: [Template]
+
+    # Platform self-service templates (v2 — Argo Workflows)
+    - type: url
+      target: https://github.com/mctlhq/mctl-gitops/blob/main/platform-gitops/backstage-templates/deploy-component-v2/template.yaml
+      rules:
+        - allow: [Template]
+    - type: url
+      target: https://github.com/mctlhq/mctl-gitops/blob/main/platform-gitops/backstage-templates/deploy-version-v2/template.yaml
+      rules:
+        - allow: [Template]
+    - type: url
+      target: https://github.com/mctlhq/mctl-gitops/blob/main/platform-gitops/backstage-templates/update-component-config-v2/template.yaml
+      rules:
+        - allow: [Template]
+    - type: url
+      target: https://github.com/mctlhq/mctl-gitops/blob/main/platform-gitops/backstage-templates/delete-component-v2/template.yaml
+      rules:
+        - allow: [Template]
+    - type: url
+      target: https://github.com/mctlhq/mctl-gitops/blob/main/platform-gitops/backstage-templates/provision-database-v2/template.yaml
+      rules:
+        - allow: [Template]
+
+    # Tenant management template (v2 — Argo Workflows)
+    - type: url
+      target: https://github.com/mctlhq/mctl-gitops/blob/main/platform-gitops/backstage-templates/create-tenant-v2/template.yaml
+      rules:
+        - allow: [Template]
+
+    # Tenant Resource entities (auto-discovered per-tenant catalog-info.yaml)
+    - type: url
+      target: https://github.com/mctlhq/mctl-gitops/blob/main/platform-gitops/tenants/*/catalog-info.yaml
+      rules:
+        - allow: [Resource]
+
+    # Tenant-managed User and Group entities (generated from tenant_members DB)
+    # The catalog reads this URL periodically; entities appear ~60s after invite
+    - type: url
+      target: https://app.mctl.me/api/tenant-management/backstage/catalog.yaml
+      rules:
+        - allow: [User, Group, System]
+
+tenantManagement:
+  githubOrg: mctlhq
+  repoName: mctl-gitops
+  tenantsPath: platform-gitops/tenants
+  syncIntervalMinutes: 5
+  # githubToken falls back to integrations.github[0].token
+  landingPageToken: ${BACKSTAGE_LANDING_TOKEN}
+  defaultQuotas:
+    cpuReq: '1'
+    cpuLim: '2'
+    memReq: '2Gi'
+    memLim: '3Gi'
+    pods: '10'
+    pvcs: '2'
+    services: '5'
+
+resourceUsage:
+  # Uses explicit token from backstage-k8s-reader SA (reuses K8S_SERVICE_ACCOUNT_TOKEN)
+  kubeConfigType: token
+  kubeApiUrl: https://kubernetes.default.svc
+  kubeToken: ${K8S_SERVICE_ACCOUNT_TOKEN}
+  skipTLSVerify: true
+
+oidcProvider:
+  issuer: https://app.mctl.me/api/oidc-provider
+  clients:
+    - clientId: ${OIDC_CLIENT_ID}
+      clientSecret: ${OIDC_CLIENT_SECRET}
+      redirectUris:
+        - https://ops.mctl.me/api/dex/callback

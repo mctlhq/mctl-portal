@@ -1,0 +1,27 @@
+name: Auto Review (claude/ branches)
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+permissions:
+  pull-requests: write
+
+jobs:
+  request-review:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request' && startsWith(github.head_ref, 'claude/')
+    steps:
+      - name: Request Copilot review
+        run: |
+          gh pr edit ${{ github.event.pull_request.number }} \
+            --add-reviewer copilot \
+            --repo ${{ github.repository }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # NOTE: auto-merge job removed for security.
+  # PRs from claude/* branches now require human approval
+  # before merging, even after Copilot review.
+  # Use GitHub "auto-merge" feature with branch protection
+  # rules (require 1 human review) instead.

@@ -1,0 +1,1 @@
+export { oidcProviderPlugin } from './plugin';
