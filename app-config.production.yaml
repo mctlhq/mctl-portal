@@ -1,14 +1,14 @@
 app:
   title: MCTL Portal
-  baseUrl: https://app.mctl.me
+  baseUrl: ${APP_BASE_URL}
 
 enableExperimentalRedirectFlow: true
 
 organization:
-  name: mctlhq
+  name: ${ORG_NAME}
 
 backend:
-  baseUrl: https://app.mctl.me
+  baseUrl: ${BACKEND_BASE_URL}
   listen: ':7007'
   database:
     client: pg
@@ -41,7 +41,7 @@ vaultSecrets:
 
 argoWorkflows:
   # Argo Workflows server URL (in-cluster: https://argo-workflows-server.argo-workflows:2746)
-  baseUrl: https://workflows.mctl.me
+  baseUrl: ${ARGO_WORKFLOWS_URL}
   namespace: argo-workflows
   # token: ${ARGO_WORKFLOWS_TOKEN}  # optional, only if auth-mode=client
 
@@ -51,82 +51,91 @@ catalog:
   locations:
     # Platform system entity
     - type: url
-      target: https://github.com/mctlhq/mctl-gitops/blob/main/platform-gitops/catalog-info.yaml
+      target: https://github.com/${GITOPS_REPO_ORG}/${GITOPS_REPO_NAME}/blob/main/platform-gitops/catalog-info.yaml
       rules:
         - allow: [System]
 
     # Auto-discover all services in platform-gitops
     - type: url
-      target: https://github.com/mctlhq/mctl-gitops/blob/main/platform-gitops/services/*/*/catalog-info.yaml
+      target: https://github.com/${GITOPS_REPO_ORG}/${GITOPS_REPO_NAME}/blob/main/platform-gitops/services/*/*/catalog-info.yaml
       rules:
         - allow: [Component]
 
     # Platform self-service templates (v1 — GitHub Actions, deprecated)
     - type: url
-      target: https://github.com/mctlhq/mctl-gitops/blob/main/platform-gitops/backstage-templates/deploy-component/template.yaml
+      target: https://github.com/${GITOPS_REPO_ORG}/${GITOPS_REPO_NAME}/blob/main/platform-gitops/backstage-templates/deploy-component/template.yaml
       rules:
         - allow: [Template]
     - type: url
-      target: https://github.com/mctlhq/mctl-gitops/blob/main/platform-gitops/backstage-templates/deploy-version/template.yaml
+      target: https://github.com/${GITOPS_REPO_ORG}/${GITOPS_REPO_NAME}/blob/main/platform-gitops/backstage-templates/deploy-version/template.yaml
       rules:
         - allow: [Template]
     - type: url
-      target: https://github.com/mctlhq/mctl-gitops/blob/main/platform-gitops/backstage-templates/update-component-config/template.yaml
+      target: https://github.com/${GITOPS_REPO_ORG}/${GITOPS_REPO_NAME}/blob/main/platform-gitops/backstage-templates/update-component-config/template.yaml
       rules:
         - allow: [Template]
     - type: url
-      target: https://github.com/mctlhq/mctl-gitops/blob/main/platform-gitops/backstage-templates/delete-component/template.yaml
+      target: https://github.com/${GITOPS_REPO_ORG}/${GITOPS_REPO_NAME}/blob/main/platform-gitops/backstage-templates/delete-component/template.yaml
       rules:
         - allow: [Template]
     - type: url
-      target: https://github.com/mctlhq/mctl-gitops/blob/main/platform-gitops/backstage-templates/provision-database/template.yaml
+      target: https://github.com/${GITOPS_REPO_ORG}/${GITOPS_REPO_NAME}/blob/main/platform-gitops/backstage-templates/provision-database/template.yaml
       rules:
         - allow: [Template]
 
     # Platform self-service templates (v2 — Argo Workflows)
     - type: url
-      target: https://github.com/mctlhq/mctl-gitops/blob/main/platform-gitops/backstage-templates/deploy-component-v2/template.yaml
+      target: https://github.com/${GITOPS_REPO_ORG}/${GITOPS_REPO_NAME}/blob/main/platform-gitops/backstage-templates/deploy-component-v2/template.yaml
       rules:
         - allow: [Template]
     - type: url
-      target: https://github.com/mctlhq/mctl-gitops/blob/main/platform-gitops/backstage-templates/deploy-version-v2/template.yaml
+      target: https://github.com/${GITOPS_REPO_ORG}/${GITOPS_REPO_NAME}/blob/main/platform-gitops/backstage-templates/deploy-version-v2/template.yaml
       rules:
         - allow: [Template]
     - type: url
-      target: https://github.com/mctlhq/mctl-gitops/blob/main/platform-gitops/backstage-templates/update-component-config-v2/template.yaml
+      target: https://github.com/${GITOPS_REPO_ORG}/${GITOPS_REPO_NAME}/blob/main/platform-gitops/backstage-templates/update-component-config-v2/template.yaml
       rules:
         - allow: [Template]
     - type: url
-      target: https://github.com/mctlhq/mctl-gitops/blob/main/platform-gitops/backstage-templates/delete-component-v2/template.yaml
+      target: https://github.com/${GITOPS_REPO_ORG}/${GITOPS_REPO_NAME}/blob/main/platform-gitops/backstage-templates/delete-component-v2/template.yaml
       rules:
         - allow: [Template]
     - type: url
-      target: https://github.com/mctlhq/mctl-gitops/blob/main/platform-gitops/backstage-templates/provision-database-v2/template.yaml
+      target: https://github.com/${GITOPS_REPO_ORG}/${GITOPS_REPO_NAME}/blob/main/platform-gitops/backstage-templates/provision-database-v2/template.yaml
       rules:
         - allow: [Template]
 
     # Tenant management template (v2 — Argo Workflows)
     - type: url
-      target: https://github.com/mctlhq/mctl-gitops/blob/main/platform-gitops/backstage-templates/create-tenant-v2/template.yaml
+      target: https://github.com/${GITOPS_REPO_ORG}/${GITOPS_REPO_NAME}/blob/main/platform-gitops/backstage-templates/create-tenant-v2/template.yaml
       rules:
         - allow: [Template]
 
     # Tenant Resource entities (auto-discovered per-tenant catalog-info.yaml)
     - type: url
-      target: https://github.com/mctlhq/mctl-gitops/blob/main/platform-gitops/tenants/*/catalog-info.yaml
+      target: https://github.com/${GITOPS_REPO_ORG}/${GITOPS_REPO_NAME}/blob/main/platform-gitops/tenants/*/catalog-info.yaml
       rules:
         - allow: [Resource]
 
     # Tenant-managed User and Group entities (generated from tenant_members DB)
     # The catalog reads this URL periodically; entities appear ~60s after invite
     - type: url
-      target: https://app.mctl.me/api/tenant-management/backstage/catalog.yaml
+      target: ${BACKEND_BASE_URL}/api/tenant-management/backstage/catalog.yaml
       rules:
         - allow: [User, Group, System]
 
+platform:
+  domain: ${PLATFORM_DOMAIN}
+  domainAlt: ${PLATFORM_DOMAIN_ALT}
+  githubOrg: ${ORG_NAME}
+  argocdBaseUrl: ${ARGOCD_BASE_URL}
+  argoWorkflowsBaseUrl: ${ARGO_WORKFLOWS_BASE_URL}
+  gitopsRepo: ${GITOPS_REPO_NAME}
+  containerRegistry: ${CONTAINER_REGISTRY}
+
 tenantManagement:
-  githubOrg: mctlhq
-  repoName: mctl-gitops
+  githubOrg: ${GITOPS_REPO_ORG}
+  repoName: ${GITOPS_REPO_NAME}
   tenantsPath: platform-gitops/tenants
   syncIntervalMinutes: 5
   # githubToken falls back to integrations.github[0].token
@@ -148,9 +157,9 @@ resourceUsage:
   skipTLSVerify: true
 
 oidcProvider:
-  issuer: https://app.mctl.me/api/oidc-provider
+  issuer: ${BACKEND_BASE_URL}/api/oidc-provider
   clients:
     - clientId: ${OIDC_CLIENT_ID}
       clientSecret: ${OIDC_CLIENT_SECRET}
       redirectUris:
-        - https://ops.mctl.me/api/dex/callback
+        - ${OPS_DEX_CALLBACK_URL}

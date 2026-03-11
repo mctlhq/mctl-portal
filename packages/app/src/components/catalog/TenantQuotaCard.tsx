@@ -25,9 +25,9 @@ import {
   fetchApiRef,
   useApi,
 } from '@backstage/core-plugin-api';
+import { usePlatformConfig } from '../../platformConfig';
 
 const TENANT_NAME_ANNOTATION = 'mctl.me/tenant-name';
-const ARGOCD_BASE = 'https://argocd.mctl.me';
 
 export const isTenantResource = (entity: Entity): boolean =>
   entity?.kind === 'Resource' &&
@@ -128,6 +128,7 @@ export function TenantQuotaCard() {
   const { entity } = useEntity();
   const discoveryApi = useApi(discoveryApiRef);
   const fetchApi = useApi(fetchApiRef);
+  const { argocdBaseUrl } = usePlatformConfig();
 
   const [loading, setLoading] = useState(false);
   const [usage, setUsage] = useState<NamespaceUsage | null>(null);
@@ -179,7 +180,7 @@ export function TenantQuotaCard() {
         action={
           <Box className={classes.headerAction}>
             <Link
-              href={`${ARGOCD_BASE}/applications/argocd/${namespace}`}
+              href={`${argocdBaseUrl}/${namespace}`}
               target="_blank"
               rel="noopener noreferrer"
               variant="body2"

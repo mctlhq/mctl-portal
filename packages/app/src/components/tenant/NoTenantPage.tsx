@@ -10,6 +10,7 @@ import {
 } from '@material-ui/core';
 import { makeStyles } from '@material-ui/core/styles';
 import { useApi, identityApiRef, discoveryApiRef, fetchApiRef } from '@backstage/core-plugin-api';
+import { usePlatformConfig } from '../../platformConfig';
 import { Page, Header, Content } from '@backstage/core-components';
 
 // ─── Styles ───────────────────────────────────────────────────────────────────
@@ -58,6 +59,7 @@ export const NoTenantPage = () => {
   const identityApi = useApi(identityApiRef);
   const discoveryApi = useApi(discoveryApiRef);
   const { fetch } = useApi(fetchApiRef);
+  const { githubOrg } = usePlatformConfig();
 
   const [tenantName, setTenantName] = useState('');
   const [submitting, setSubmitting] = useState(false);
@@ -84,7 +86,7 @@ export const NoTenantPage = () => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           name,
-          githubOrg: 'mctlhq',  // default org; can be configurable later
+          githubOrg,
           creatorUserId: currentUserId,
         }),
       });

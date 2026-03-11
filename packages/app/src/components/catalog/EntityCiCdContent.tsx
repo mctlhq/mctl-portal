@@ -15,6 +15,7 @@ import GitHubIcon from '@material-ui/icons/GitHub';
 import CodeIcon from '@material-ui/icons/Code';
 import OpenInNewIcon from '@material-ui/icons/OpenInNew';
 import { useEntity } from '@backstage/plugin-catalog-react';
+import { usePlatformConfig } from '../../platformConfig';
 
 const useStyles = makeStyles(theme => ({
   linkCard: {
@@ -71,15 +72,16 @@ function CiCdLinkCard({
 
 export function EntityCiCdContent() {
   const { entity } = useEntity();
+  const { argocdBaseUrl, githubOrg, gitopsRepo } = usePlatformConfig();
   const argoApp = entity.metadata.annotations?.['argocd/app-name'] || '';
   const sourceRepo = entity.metadata.annotations?.['github.com/source-repo'] || '';
   const team = (entity.metadata.labels as Record<string, string>)?.team || '';
   const name = entity.metadata.name;
 
   const argoUrl = argoApp
-    ? `https://ops.mctl.me/applications/argocd/${argoApp}`
+    ? `${argocdBaseUrl}/${argoApp}`
     : '';
-  const actionsUrl = `https://github.com/mctlhq/mctl-gitops/actions/workflows/release-service.yml`;
+  const actionsUrl = `https://github.com/${githubOrg}/${gitopsRepo}/actions/workflows/release-service.yml`;
   const sourceUrl = sourceRepo ? `https://github.com/${sourceRepo}` : '';
 
   return (

@@ -8,6 +8,7 @@ import LanguageIcon from '@material-ui/icons/Language';
 import CloudOffIcon from '@material-ui/icons/CloudOff';
 import { makeStyles } from '@material-ui/core/styles';
 import type { FieldExtensionComponentProps } from '@backstage/plugin-scaffolder-react';
+import { usePlatformConfig } from '../../platformConfig';
 
 const useStyles = makeStyles(theme => ({
   preview: {
@@ -35,6 +36,7 @@ const NetworkPreviewFieldComponent = (
 ) => {
   const { onChange, rawErrors, required, formData, schema } = props;
   const classes = useStyles();
+  const { domainAlt } = usePlatformConfig();
 
   const handleChange = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -57,9 +59,9 @@ const NetworkPreviewFieldComponent = (
         error={rawErrors && rawErrors.length > 0}
         helperText={
           schema.description ||
-          'Public hostname (e.g. myteam-myapp.mctl.me). Leave empty for a background worker.'
+          `Public hostname (e.g. myteam-myapp.${domainAlt}). Leave empty for a background worker.`
         }
-        placeholder="myteam-myapp.mctl.me"
+        placeholder={`myteam-myapp.${domainAlt}`}
       />
       <div className={classes.preview}>
         {hasHost ? (

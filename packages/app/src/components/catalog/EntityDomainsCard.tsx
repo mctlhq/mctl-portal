@@ -39,6 +39,7 @@ import {
   fetchApiRef,
   useApi,
 } from '@backstage/core-plugin-api';
+import { usePlatformConfig } from '../../platformConfig';
 
 const TEAM_ANNOTATION = 'platform.mctl.me/team';
 
@@ -127,6 +128,7 @@ export function EntityDomainsCard() {
   const { entity } = useEntity();
   const discoveryApi = useApi(discoveryApiRef);
   const fetchApi = useApi(fetchApiRef);
+  const { domain } = usePlatformConfig();
 
   const [domains, setDomains] = useState<CustomDomain[]>([]);
   const [loading, setLoading] = useState(true);
@@ -140,7 +142,7 @@ export function EntityDomainsCard() {
 
   const team = entity.metadata.annotations?.[TEAM_ANNOTATION] ?? '';
   const service = entity.metadata.name;
-  const autoDomain = team && service ? `${team}-${service}.mctl.ai` : '';
+  const autoDomain = team && service ? `${team}-${service}.${domain}` : '';
 
   const fetchDomains = useCallback(async () => {
     if (!team) return;

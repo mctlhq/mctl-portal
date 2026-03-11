@@ -146,7 +146,7 @@ jobs:
           GH_PAT: ${{ secrets.GH_PAT }}
         run: |
           # Clone mctl-gitops repo
-          git clone https://x-access-token:${GH_PAT}@github.com/mctlhq/mctl-gitops.git /tmp/mctl-gitops
+          git clone https://x-access-token:${GH_PAT}@github.com/${{ vars.GITOPS_REPO || 'mctlhq/mctl-gitops' }}.git /tmp/mctl-gitops
           cd /tmp/mctl-gitops
 
           # Update image tag in backstage.yaml (remove 'v' prefix for Docker)

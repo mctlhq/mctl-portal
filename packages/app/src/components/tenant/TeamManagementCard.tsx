@@ -36,6 +36,7 @@ import {
   identityApiRef,
 } from '@backstage/core-plugin-api';
 import { useIsAdmin } from '../../hooks/useIsAdmin';
+import { usePlatformConfig } from '../../platformConfig';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -156,6 +157,7 @@ export const TeamManagementCard = () => {
   const discoveryApi = useApi(discoveryApiRef);
   const { fetch } = useApi(fetchApiRef);
   const identityApi = useApi(identityApiRef);
+  const { argocdBaseUrl } = usePlatformConfig();
 
   const isAdmin = useIsAdmin();
 
@@ -348,7 +350,7 @@ export const TeamManagementCard = () => {
             </Typography>
             <Box display="flex" alignItems="center" style={{ gap: '8px' }}>
               <a
-                href={`https://argocd.mctl.me/applications/argocd/${tenantName}`}
+                href={`${argocdBaseUrl}/${tenantName}`}
                 target="_blank"
                 rel="noopener noreferrer"
                 className={classes.argoLink}
