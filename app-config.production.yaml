@@ -158,6 +158,9 @@ resourceUsage:
 
 oidcProvider:
   issuer: ${BACKEND_BASE_URL}/api/oidc-provider
+  github:
+    clientId: ${AUTH_GITHUB_CLIENT_ID}
+    clientSecret: ${AUTH_GITHUB_CLIENT_SECRET}
   clients:
     - clientId: ${OIDC_CLIENT_ID}
       clientSecret: ${OIDC_CLIENT_SECRET}
