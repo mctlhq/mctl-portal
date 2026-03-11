@@ -1,4 +1,4 @@
-# mctl-app
+# mctl-portal
 
 Backstage service catalog for the mctl.ai platform. Available at `app.mctl.me`.
 
