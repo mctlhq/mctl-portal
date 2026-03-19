@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import { scaffolderPlugin } from '@backstage/plugin-scaffolder';
 import { createScaffolderFieldExtension } from '@backstage/plugin-scaffolder-react';
 import Typography from '@material-ui/core/Typography';
@@ -11,6 +11,7 @@ import type { FieldExtensionComponentProps } from '@backstage/plugin-scaffolder-
 
 // Module-level cache: avoids re-fetching every time the form mounts or steps change
 const configCache = new Map<string, { data: ServiceConfig; fetchedAt: number }>();
+const entityCache = new Map<string, { team: string; fetchedAt: number }>();
 const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
 
 const useStyles = makeStyles(theme => ({
@@ -62,7 +63,7 @@ interface ServiceConfig {
 function CurrentConfigFieldComponent(
   props: FieldExtensionComponentProps<string>,
 ) {
-  const { formContext, onChange } = props;
+  const { formContext, onChange, formData: value } = props;
   const classes = useStyles();
   const discoveryApi = useApi(discoveryApiRef);
   const fetchApi = useApi(fetchApiRef);
@@ -74,6 +75,10 @@ function CurrentConfigFieldComponent(
   const formData = (formContext as any)?.formData ?? {};
   const serviceName = formData.serviceName as string | undefined;
 
+  // Use a ref for onChange to avoid re-triggering effect if parent provides a new function
+  const onChangeRef = useRef(onChange);
+  onChangeRef.current = onChange;
+
   useEffect(() => {
     if (!serviceName) {
       setConfig(null);
@@ -82,55 +87,66 @@ function CurrentConfigFieldComponent(
 
     // Parse entity ref: component:default/kuptsi → kuptsi
     const name = serviceName.replace(/^component:default\//, '').replace(/^[^/]+\//, '');
+    const entityRef = serviceName.includes(':') ? serviceName : `component:default/${serviceName}`;
 
     let cancelled = false;
-    setLoading(true);
-    setError(null);
 
     (async () => {
       try {
-        const baseUrl = await discoveryApi.getBaseUrl('github-app-connect');
-
-        // First fetch the entity to get the team label
-        const catalogBase = await discoveryApi.getBaseUrl('catalog');
-        const entityRef = serviceName.startsWith('component:')
-          ? serviceName
-          : `component:default/${serviceName}`;
-        const entityResp = await fetchApi.fetch(
-          `${catalogBase}/entities/by-name/${entityRef.replace(':', '/')}`,
-        );
-
+        // 1. Get Team (with caching)
         let team = '';
-        if (entityResp.ok) {
-          const entity = await entityResp.json();
-          team = entity?.metadata?.labels?.team
-            || (entity?.spec?.owner || '').replace('group:', '');
+        const cachedEntity = entityCache.get(entityRef);
+        if (cachedEntity && Date.now() - cachedEntity.fetchedAt < CACHE_TTL_MS) {
+          team = cachedEntity.team;
+        } else {
+          setLoading(true);
+          const catalogBase = await discoveryApi.getBaseUrl('catalog');
+          const entityResp = await fetchApi.fetch(
+            `${catalogBase}/entities/by-name/${entityRef.replace(':', '/')}`,
+          );
+          if (entityResp.ok) {
+            const entity = await entityResp.json();
+            team = entity?.metadata?.labels?.team || (entity?.spec?.owner || '').replace('group:', '');
+            if (team) {
+              entityCache.set(entityRef, { team, fetchedAt: Date.now() });
+            }
+          }
         }
 
         if (!team) {
-          setError('Could not determine team from entity');
-          setLoading(false);
-          return;
-        }
-
-        const cacheKey = `${team}/${name}`;
-        const cached = configCache.get(cacheKey);
-        if (cached && Date.now() - cached.fetchedAt < CACHE_TTL_MS) {
           if (!cancelled) {
-            setConfig(cached.data);
-            onChange(JSON.stringify(cached.data));
+            setError('Could not determine team from entity');
             setLoading(false);
           }
           return;
         }
 
+        // 2. Get Config (with caching)
+        const cacheKey = `${team}/${name}`;
+        const cachedConfig = configCache.get(cacheKey);
+        
+        if (cachedConfig && Date.now() - cachedConfig.fetchedAt < CACHE_TTL_MS) {
+          if (!cancelled) {
+            const dataStr = JSON.stringify(cachedConfig.data);
+            setConfig(cachedConfig.data);
+            if (value !== dataStr) {
+              onChangeRef.current(dataStr);
+            }
+            setLoading(false);
+          }
+          return;
+        }
+
+        setLoading(true);
+        setError(null);
+        const baseUrl = await discoveryApi.getBaseUrl('github-app-connect');
         const resp = await fetchApi.fetch(
           `${baseUrl}/service-config?team=${encodeURIComponent(team)}&service=${encodeURIComponent(name)}`,
         );
 
         let envVars = '';
         let secretKeys: string[] = [];
-        if (!cancelled && resp.ok) {
+        if (resp.ok) {
           const data = await resp.json();
           envVars = data.envVars || '';
           secretKeys = data.secretKeys || [];
@@ -153,9 +169,12 @@ function CurrentConfigFieldComponent(
 
         if (!cancelled) {
           const combined: ServiceConfig = { envVars, secretKeys, secrets };
-          configCache.set(`${team}/${name}`, { data: combined, fetchedAt: Date.now() });
+          const dataStr = JSON.stringify(combined);
+          configCache.set(cacheKey, { data: combined, fetchedAt: Date.now() });
           setConfig(combined);
-          onChange(JSON.stringify(combined));
+          if (value !== dataStr) {
+            onChangeRef.current(dataStr);
+          }
           setLoading(false);
         }
       } catch (err) {
@@ -167,7 +186,7 @@ function CurrentConfigFieldComponent(
     })();
 
     return () => { cancelled = true; };
-  }, [serviceName, discoveryApi, fetchApi, onChange]);
+  }, [serviceName, discoveryApi, fetchApi, value]);
 
   if (!serviceName) return null;
 
