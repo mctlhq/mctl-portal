@@ -126,43 +126,6 @@ export function createRouter(options: RouterOptions): Router {
     return url.toString();
   }
 
-  function buildTenantServiceUrl(req: Request, tenant: string, service: string): string | null {
-    if (!tenant || !service) {
-      return null;
-    }
-
-    const issuerHost = new URL(issuer).hostname.toLowerCase();
-    const rootDomain = issuerHost === 'app.mctl.ai'
-      ? 'mctl.ai'
-      : issuerHost === 'app.mctl.me'
-        ? 'mctl.me'
-        : issuerHost.startsWith('app.')
-          ? issuerHost.slice(4)
-          : null;
-
-    if (!rootDomain) {
-      return null;
-    }
-
-    const proto = String(req.headers['x-forwarded-proto'] ?? 'https')
-      .split(',')[0]
-      .trim() || 'https';
-
-    return `${proto}://${tenant}-${service}.${rootDomain}/`;
-  }
-
-  function isDirectBrowserForwardAuthRequest(req: Request): boolean {
-    const host = String(req.headers.host ?? '').toLowerCase();
-    const issuerHost = new URL(issuer).hostname.toLowerCase();
-    const forwardedHost = String(req.headers['x-forwarded-host'] ?? '')
-      .split(',')[0]
-      .trim()
-      .toLowerCase();
-    const forwardedUri = String(req.headers['x-forwarded-uri'] ?? '').trim();
-
-    return host === issuerHost && (!forwardedHost || forwardedHost === issuerHost) && !forwardedUri;
-  }
-
   // ── OIDC Discovery ──────────────────────────────────────────────────
   router.get('/.well-known/openid-configuration', (_req: Request, res: Response) => {
     res.json({
@@ -497,15 +460,6 @@ export function createRouter(options: RouterOptions): Router {
     res.setHeader('X-Forwarded-User', session.userId);
     res.setHeader('X-Mctl-Team-Role', role);
     res.setHeader('X-Auth-Request-User', session.userId);
-
-    if (isDirectBrowserForwardAuthRequest(req)) {
-      const tenantUrl = buildTenantServiceUrl(req, tenant, service);
-      if (tenantUrl) {
-        res.redirect(tenantUrl);
-        return;
-      }
-    }
-
     res.status(200).send('ok');
   });
 
