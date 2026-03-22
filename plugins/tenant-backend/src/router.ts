@@ -151,7 +151,17 @@ async function resolveAuth(
 }
 
 export function createRouter(opts: RouterOptions): Router {
-  const { logger, httpAuth, userInfo, store, argoClient, argoNamespace, landingPageToken, getGithubToken, defaultQuotas } = opts;
+  const {
+    logger,
+    httpAuth,
+    userInfo,
+    store,
+    argoClient,
+    argoNamespace,
+    landingPageToken,
+    getGithubToken,
+    defaultQuotas,
+  } = opts;
   const dq = defaultQuotas ?? {
     cpuReq: '1', cpuLim: '2',
     memReq: '2Gi', memLim: '3Gi',
@@ -378,7 +388,9 @@ export function createRouter(opts: RouterOptions): Router {
   });
 
   // ── DELETE /tenants/:name ──────────────────────────────────────────────────
-  // Fully delete a tenant: remove from DB + submit Argo delete-tenant workflow.
+  // Safely delete a tenant by submitting an orchestrated Argo workflow that
+  // retires services first and then removes the tenant from GitOps/K8s/Vault.
+  // DB cleanup is performed later by tenant sync once the tenant disappears from Git.
   // Admin-only.
   router.delete('/tenants/:name', async (req: Request, res: Response) => {
     try {
@@ -407,23 +419,20 @@ export function createRouter(opts: RouterOptions): Router {
         return;
       }
 
-      // Delete from DB first (members + tenant)
-      await store.delete(name);
-      logger.info(`[tenant-backend] Tenant '${name}' deleted from DB`);
-
-      // Submit Argo delete-tenant workflow
+      // Submit Argo delete-tenant workflow. The workflow retires services first,
+      // then removes the tenant from GitOps. DB cleanup happens later via tenant sync.
       const workflowName = await argoClient.submitWorkflow({
         resourceKind: 'ClusterWorkflowTemplate',
-        resourceName: 'delete-tenant',
+        resourceName: 'delete-tenant-safe',
         namespace: argoNamespace,
         parameters: [`tenant_name=${name}`],
         labels: { 'submitted-by': `backstage-${auth.callerInfo}` },
       });
 
-      logger.info(`[tenant-backend] Delete workflow '${workflowName}' submitted for tenant '${name}'`);
+      logger.info(`[tenant-backend] Safe delete workflow '${workflowName}' submitted for tenant '${name}'`);
 
       res.status(202).json({
-        message: `Tenant '${name}' deleted`,
+        message: `Tenant '${name}' deletion queued`,
         workflowName,
         workflowUrl: `https://workflows.mctl.me/workflows/${argoNamespace}/${workflowName}`,
       });
