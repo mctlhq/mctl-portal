@@ -141,6 +141,14 @@ export function createRouter(options: RouterOptions): Router {
     return url.toString();
   }
 
+  function summarizeUrlHost(urlValue: string): string {
+    try {
+      return new URL(urlValue).host;
+    } catch {
+      return 'invalid';
+    }
+  }
+
   // ── OIDC Discovery ──────────────────────────────────────────────────
   router.get('/.well-known/openid-configuration', (_req: Request, res: Response) => {
     res.json({
@@ -301,14 +309,21 @@ export function createRouter(options: RouterOptions): Router {
     const errorDescription =
       typeof req.query.error_description === 'string' ? req.query.error_description.trim() : '';
     if (!state) {
+      logger.warn('[OIDC] OpenAI Codex callback missing state');
       res.status(400).send('Missing state');
       return;
     }
     const returnTo = decodeOpenAICodexReturnTo(state);
     if (!returnTo) {
+      logger.warn('[OIDC] OpenAI Codex callback invalid state envelope');
       res.status(400).send('Invalid OpenAI Codex callback state');
       return;
     }
+    logger.info(
+      `[OIDC] OpenAI Codex callback received returnToHost=${summarizeUrlHost(returnTo)} code=${
+        code ? 'present' : 'missing'
+      } error=${error || 'none'}`,
+    );
     const url = new URL(returnTo);
     if (code) {
       url.searchParams.set('code', code);
@@ -320,6 +335,11 @@ export function createRouter(options: RouterOptions): Router {
     if (errorDescription) {
       url.searchParams.set('error_description', errorDescription);
     }
+    logger.info(
+      `[OIDC] OpenAI Codex callback redirecting to returnToHost=${url.host} code=${
+        code ? 'present' : 'missing'
+      } error=${error || 'none'}`,
+    );
     res.redirect(url.toString());
   });
 
