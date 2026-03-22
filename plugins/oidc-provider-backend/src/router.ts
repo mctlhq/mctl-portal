@@ -107,22 +107,37 @@ export function createRouter(options: RouterOptions): Router {
     return sessionId ? store.getSession(sessionId) : Promise.resolve(undefined);
   }
 
-  function buildOriginalUrl(req: Request): string {
-    const proto = String(req.headers['x-forwarded-proto'] ?? req.protocol ?? 'https')
-      .split(',')[0]
-      .trim();
-    const host = String(req.headers['x-forwarded-host'] ?? req.headers.host ?? '')
-      .split(',')[0]
-      .trim();
-    const uri = String(req.headers['x-forwarded-uri'] ?? req.originalUrl ?? '/').trim() || '/';
-    return `${proto}://${host}${uri.startsWith('/') ? uri : `/${uri}`}`;
+  function deriveTenantBaseDomain(): string | null {
+    const issuerHost = new URL(issuer).hostname.toLowerCase();
+    if (issuerHost === 'app.mctl.ai') {
+      return 'mctl.ai';
+    }
+    if (issuerHost === 'app.mctl.me') {
+      return 'mctl.me';
+    }
+    if (issuerHost.startsWith('app.')) {
+      return issuerHost.slice(4);
+    }
+    return null;
   }
 
-  function buildLoginUrl(returnTo: string): string {
+  function buildTenantServiceUrl(tenant: string, service: string): string | null {
+    if (!tenant || !service) {
+      return null;
+    }
+    const baseDomain = deriveTenantBaseDomain();
+    if (!baseDomain) {
+      return null;
+    }
+    return `https://${tenant}-${service}.${baseDomain}/`;
+  }
+
+  function buildTenantLoginUrl(tenant: string, service: string): string {
     const url = new URL(issuer);
-    url.pathname = `${url.pathname.replace(/\/$/, '')}/login`;
+    url.pathname = `${url.pathname.replace(/\/$/, '')}/tenant-login`;
     url.search = '';
-    url.searchParams.set('returnTo', returnTo);
+    url.searchParams.set('tenant', tenant);
+    url.searchParams.set('service', service);
     return url.toString();
   }
 
@@ -235,6 +250,41 @@ export function createRouter(options: RouterOptions): Router {
       return;
     }
     res.redirect(await buildGitHubAuthRedirect(returnTo));
+  });
+
+  // ── Browser Tenant Login Helper ───────────────────────────────────
+  // GET /tenant-login?tenant=<tenant>&service=<service>
+  //
+  // Browser-only convenience endpoint for tenant dashboards. It resolves
+  // the final tenant URL and only uses GitHub OAuth for the human-facing
+  // navigation flow. Traefik forward-auth should continue to use /forward-auth.
+  router.get('/tenant-login', async (req: Request, res: Response) => {
+    const tenant = typeof req.query.tenant === 'string' ? req.query.tenant.trim().toLowerCase() : '';
+    const service = typeof req.query.service === 'string' ? req.query.service.trim() : '';
+
+    if (!tenant || !service) {
+      res.status(400).send('Missing tenant or service');
+      return;
+    }
+
+    const tenantUrl = buildTenantServiceUrl(tenant, service);
+    if (!tenantUrl) {
+      res.status(400).send('Cannot determine tenant URL');
+      return;
+    }
+
+    const session = await readSessionCookie(req);
+    if (session && session.expiresAt > Date.now()) {
+      const role = await membership.getUserRole(session.userId, tenant);
+      if (!role) {
+        res.status(403).send('Access denied');
+        return;
+      }
+      res.redirect(tenantUrl);
+      return;
+    }
+
+    res.redirect(await buildGitHubAuthRedirect(tenantUrl));
   });
 
   // ── GitHub OAuth Callback ────────────────────────────────────────────
@@ -446,7 +496,7 @@ export function createRouter(options: RouterOptions): Router {
 
     const session = await readSessionCookie(req);
     if (!session || session.expiresAt <= Date.now()) {
-      res.redirect(buildLoginUrl(buildOriginalUrl(req)));
+      res.redirect(buildTenantLoginUrl(tenant, service || 'openclaw'));
       return;
     }
 
