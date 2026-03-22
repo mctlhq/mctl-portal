@@ -102,9 +102,16 @@ export function createRouter(options: RouterOptions): Router {
     return parts.join('; ');
   }
 
-  function readSessionCookie(req: Request): Promise<{ userId: string; expiresAt: number } | undefined> {
+  function readSessionCookie(
+    req: Request,
+  ): Promise<{ sessionId: string; userId: string; expiresAt: number } | undefined> {
     const sessionId = parseCookie(req.headers.cookie ?? '', 'oidc_session');
-    return sessionId ? store.getSession(sessionId) : Promise.resolve(undefined);
+    if (!sessionId) {
+      return Promise.resolve(undefined);
+    }
+    return store.getSession(sessionId).then(session =>
+      session ? { sessionId, ...session } : undefined,
+    );
   }
 
   function deriveTenantBaseDomain(): string | null {
@@ -253,6 +260,7 @@ export function createRouter(options: RouterOptions): Router {
     }
     const session = await readSessionCookie(req);
     if (session && session.expiresAt > Date.now()) {
+      res.setHeader('Set-Cookie', buildSessionCookie(session.sessionId, returnTo));
       res.redirect(returnTo);
       return;
     }
@@ -287,6 +295,7 @@ export function createRouter(options: RouterOptions): Router {
         res.status(403).send('Access denied');
         return;
       }
+      res.setHeader('Set-Cookie', buildSessionCookie(session.sessionId, tenantUrl));
       res.redirect(tenantUrl);
       return;
     }
