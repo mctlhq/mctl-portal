@@ -56,8 +56,11 @@ jobs:
       - name: Determine version bump
         id: version
         run: |
+          git fetch --tags --force
+
           # Get latest tag (or default to 0.0.0 if none exists)
-          LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "0.0.0")
+          LATEST_TAG=$(git tag -l --sort=-v:refname | head -n 1 || true)
+          LATEST_TAG=${LATEST_TAG:-0.0.0}
           echo "Latest tag: $LATEST_TAG"
 
           # Parse version (strip v prefix if present for backwards compat)
@@ -90,6 +93,10 @@ jobs:
           fi
 
           NEW_VERSION="${MAJOR}.${MINOR}.${PATCH}"
+          while git rev-parse -q --verify "refs/tags/${NEW_VERSION}" >/dev/null; do
+            PATCH=$((PATCH + 1))
+            NEW_VERSION="${MAJOR}.${MINOR}.${PATCH}"
+          done
           echo "New version: $NEW_VERSION (${BUMP_TYPE} bump)"
 
           echo "version=$NEW_VERSION" >> $GITHUB_OUTPUT
@@ -149,18 +156,18 @@ jobs:
           git clone https://x-access-token:${GH_PAT}@github.com/${{ vars.GITOPS_REPO || 'mctlhq/mctl-gitops' }}.git /tmp/mctl-gitops
           cd /tmp/mctl-gitops
 
-          # Update image tag in backstage.yaml (remove 'v' prefix for Docker)
-          sed -i "s/tag: .*/tag: ${{ steps.version.outputs.version_number }}/" platform-gitops/apps/templates/backstage.yaml
+          # Update image tag in the mctl-portal bootstrap manifest
+          sed -i "s/tag: .*/tag: ${{ steps.version.outputs.version_number }}/" platform-gitops/bootstrap/templates/mctl-platform/mctl-portal.yaml
 
           # Commit and push
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add platform-gitops/apps/templates/backstage.yaml
+          git add platform-gitops/bootstrap/templates/mctl-platform/mctl-portal.yaml
           git commit -m "chore: update Backstage image to ${{ steps.version.outputs.version }}" || true
           git push || true
 
       - name: Notify Telegram on failure
-        if: failure()
+        if: failure() && secrets.TELEGRAM_BOT_TOKEN != '' && secrets.TELEGRAM_CHAT_ID != ''
         uses: appleboy/telegram-action@master
         with:
           to: ${{ secrets.TELEGRAM_CHAT_ID }}
