@@ -106,6 +106,7 @@ export const oidcProviderPlugin = createBackendPlugin({
         // All OIDC endpoints must be publicly accessible (Dex calls them server-to-server)
         httpRouter.addAuthPolicy({ path: '/', allow: 'unauthenticated' });
         httpRouter.addAuthPolicy({ path: '/github/callback', allow: 'unauthenticated' });
+        httpRouter.addAuthPolicy({ path: '/openai-codex/callback', allow: 'unauthenticated' });
 
         logger.info(
           `[OIDC Provider] Initialized. Issuer: ${issuer}, clients: ${clients.map(c => c.clientId).join(', ')}`,

@@ -287,6 +287,42 @@ export function createRouter(options: RouterOptions): Router {
     res.redirect(await buildGitHubAuthRedirect(tenantUrl));
   });
 
+  // ── OpenAI Codex OAuth Callback ───────────────────────────────────
+  // GET /openai-codex/callback?code=<code>&state=<state>
+  //
+  // OpenAI redirects here after the tenant dashboard starts the OAuth flow.
+  // We keep this callback on the control-plane host so the OAuth client only
+  // needs one registered redirect URI, then bounce the browser back to the
+  // originating tenant dashboard with the same state/code payload.
+  router.get('/openai-codex/callback', async (req: Request, res: Response) => {
+    const state = typeof req.query.state === 'string' ? req.query.state.trim() : '';
+    const code = typeof req.query.code === 'string' ? req.query.code.trim() : '';
+    const error = typeof req.query.error === 'string' ? req.query.error.trim() : '';
+    const errorDescription =
+      typeof req.query.error_description === 'string' ? req.query.error_description.trim() : '';
+    if (!state) {
+      res.status(400).send('Missing state');
+      return;
+    }
+    const returnTo = decodeOpenAICodexReturnTo(state);
+    if (!returnTo) {
+      res.status(400).send('Invalid OpenAI Codex callback state');
+      return;
+    }
+    const url = new URL(returnTo);
+    if (code) {
+      url.searchParams.set('code', code);
+    }
+    url.searchParams.set('state', state);
+    if (error) {
+      url.searchParams.set('error', error);
+    }
+    if (errorDescription) {
+      url.searchParams.set('error_description', errorDescription);
+    }
+    res.redirect(url.toString());
+  });
+
   // ── GitHub OAuth Callback ────────────────────────────────────────────
   // GET /github/callback?code=X&state=Y
   //
@@ -530,4 +566,27 @@ function parseCookie(cookieHeader: string, name: string): string | undefined {
     .map(c => c.trim())
     .find(c => c.startsWith(`${name}=`));
   return match ? match.split('=')[1] : undefined;
+}
+
+function decodeOpenAICodexReturnTo(state: string): string | null {
+  try {
+    const json = Buffer.from(state, 'base64url').toString('utf8');
+    const parsed = JSON.parse(json) as { returnTo?: unknown };
+    const returnTo = typeof parsed.returnTo === 'string' ? parsed.returnTo.trim() : '';
+    if (!returnTo) {
+      return null;
+    }
+    const url = new URL(returnTo);
+    const host = url.hostname.toLowerCase();
+    if (
+      host === 'localhost' ||
+      host.endsWith('.mctl.ai') ||
+      host.endsWith('.mctl.me')
+    ) {
+      return url.toString();
+    }
+    return null;
+  } catch {
+    return null;
+  }
 }
