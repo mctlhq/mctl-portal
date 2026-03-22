@@ -132,12 +132,11 @@ export function createRouter(options: RouterOptions): Router {
     return `https://${tenant}-${service}.${baseDomain}/`;
   }
 
-  function buildTenantLoginUrl(tenant: string, service: string): string {
+  function buildBrowserLoginUrl(returnTo: string): string {
     const url = new URL(issuer);
-    url.pathname = `${url.pathname.replace(/\/$/, '')}/tenant-login`;
+    url.pathname = `${url.pathname.replace(/\/$/, '')}/login`;
     url.search = '';
-    url.searchParams.set('tenant', tenant);
-    url.searchParams.set('service', service);
+    url.searchParams.set('returnTo', returnTo);
     return url.toString();
   }
 
@@ -552,7 +551,12 @@ export function createRouter(options: RouterOptions): Router {
 
     const session = await readSessionCookie(req);
     if (!session || session.expiresAt <= Date.now()) {
-      res.redirect(buildTenantLoginUrl(tenant, service || 'openclaw'));
+      const tenantUrl = buildTenantServiceUrl(tenant, service || 'openclaw');
+      if (!tenantUrl) {
+        res.status(400).send('Cannot determine tenant URL');
+        return;
+      }
+      res.redirect(buildBrowserLoginUrl(tenantUrl));
       return;
     }
 
