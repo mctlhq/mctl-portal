@@ -17,6 +17,7 @@ export interface OidcClient {
 export interface MembershipLookup {
   getUserGroups(userId: string): Promise<string[]>;
   userExists(userId: string): Promise<boolean>;
+  getUserRole(userId: string, tenantName: string): Promise<string | null>;
 }
 
 export interface RouterOptions {
@@ -51,6 +52,77 @@ export function createRouter(options: RouterOptions): Router {
   // ── Helper: find registered client ──────────────────────────────────
   function findClient(clientId: string): OidcClient | undefined {
     return clients.find(c => c.clientId === clientId);
+  }
+
+  function buildGitHubAuthRedirect(returnTo: string): Promise<string> {
+    const githubState = uuid();
+    return store
+      .savePendingAuth(githubState, returnTo, Date.now() + 10 * 60 * 1000)
+      .then(() => {
+        const githubAuthUrl = new URL('https://github.com/login/oauth/authorize');
+        githubAuthUrl.searchParams.set('client_id', githubClientId);
+        githubAuthUrl.searchParams.set('redirect_uri', githubCallbackUrl);
+        githubAuthUrl.searchParams.set('scope', 'read:user');
+        githubAuthUrl.searchParams.set('state', githubState);
+        return githubAuthUrl.toString();
+      });
+  }
+
+  function deriveCookieDomain(urlValue: string): string | null {
+    try {
+      const host = new URL(urlValue).hostname.toLowerCase();
+      if (host === 'localhost' || /^\d+\.\d+\.\d+\.\d+$/.test(host)) {
+        return null;
+      }
+      if (host.endsWith('.mctl.ai')) {
+        return '.mctl.ai';
+      }
+      if (host.endsWith('.mctl.me')) {
+        return '.mctl.me';
+      }
+      return null;
+    } catch {
+      return null;
+    }
+  }
+
+  function buildSessionCookie(sessionId: string, returnTo: string): string {
+    const parts = [
+      `oidc_session=${sessionId}`,
+      'Path=/',
+      'HttpOnly',
+      'Secure',
+      'SameSite=Lax',
+      'Max-Age=28800',
+    ];
+    const domain = deriveCookieDomain(returnTo);
+    if (domain) {
+      parts.push(`Domain=${domain}`);
+    }
+    return parts.join('; ');
+  }
+
+  function readSessionCookie(req: Request): Promise<{ userId: string; expiresAt: number } | undefined> {
+    const sessionId = parseCookie(req.headers.cookie ?? '', 'oidc_session');
+    return sessionId ? store.getSession(sessionId) : Promise.resolve(undefined);
+  }
+
+  function buildOriginalUrl(req: Request): string {
+    const proto = String(req.headers['x-forwarded-proto'] ?? req.protocol ?? 'https')
+      .split(',')[0]
+      .trim();
+    const host = String(req.headers['x-forwarded-host'] ?? req.headers.host ?? '')
+      .split(',')[0]
+      .trim();
+    const uri = String(req.headers['x-forwarded-uri'] ?? req.originalUrl ?? '/').trim() || '/';
+    return `${proto}://${host}${uri.startsWith('/') ? uri : `/${uri}`}`;
+  }
+
+  function buildLoginUrl(req: Request, returnTo: string): string {
+    const base = `${req.protocol}://${req.get('host') ?? new URL(issuer).host}`;
+    const url = new URL('/api/oidc-provider/login', base);
+    url.searchParams.set('returnTo', returnTo);
+    return url.toString();
   }
 
   // ── OIDC Discovery ──────────────────────────────────────────────────
@@ -121,8 +193,7 @@ export function createRouter(options: RouterOptions): Router {
     }
 
     // Check session cookie
-    const sessionId = parseCookie(req.headers.cookie ?? '', 'oidc_session');
-    const session = sessionId ? await store.getSession(sessionId) : undefined;
+    const session = await readSessionCookie(req);
 
     if (session && session.expiresAt > Date.now()) {
       // User already authenticated — issue authorization code immediately
@@ -143,16 +214,26 @@ export function createRouter(options: RouterOptions): Router {
 
     // No session — start GitHub OAuth flow.
     // Store the original /authorize URL so we can return to it after GitHub callback.
-    const githubState = uuid();
-    await store.savePendingAuth(githubState, req.originalUrl, Date.now() + 10 * 60 * 1000);
+    res.redirect(await buildGitHubAuthRedirect(req.originalUrl));
+  });
 
-    const githubAuthUrl = new URL('https://github.com/login/oauth/authorize');
-    githubAuthUrl.searchParams.set('client_id', githubClientId);
-    githubAuthUrl.searchParams.set('redirect_uri', githubCallbackUrl);
-    githubAuthUrl.searchParams.set('scope', 'read:user');
-    githubAuthUrl.searchParams.set('state', githubState);
-
-    res.redirect(githubAuthUrl.toString());
+  // ── Browser Login Helper ───────────────────────────────────────────
+  // GET /login?returnTo=https://tenant-service.mctl.ai/
+  //
+  // Used by Traefik ForwardAuth flows where we need an interactive login
+  // redirect instead of OIDC authorization-code issuance to a registered client.
+  router.get('/login', async (req: Request, res: Response) => {
+    const returnTo = typeof req.query.returnTo === 'string' ? req.query.returnTo.trim() : '';
+    if (!returnTo) {
+      res.status(400).send('Missing returnTo');
+      return;
+    }
+    const session = await readSessionCookie(req);
+    if (session && session.expiresAt > Date.now()) {
+      res.redirect(returnTo);
+      return;
+    }
+    res.redirect(await buildGitHubAuthRedirect(returnTo));
   });
 
   // ── GitHub OAuth Callback ────────────────────────────────────────────
@@ -244,10 +325,7 @@ export function createRouter(options: RouterOptions): Router {
 
     // Set session cookie and redirect back to original /authorize URL
     // /authorize will now see the session and issue the auth code to Dex
-    res.setHeader(
-      'Set-Cookie',
-      `oidc_session=${sessionId}; Path=/api/oidc-provider; HttpOnly; Secure; SameSite=Lax; Max-Age=28800`,
-    );
+    res.setHeader('Set-Cookie', buildSessionCookie(sessionId, pending.returnTo));
     res.redirect(pending.returnTo);
   });
 
@@ -350,6 +428,38 @@ export function createRouter(options: RouterOptions): Router {
       email_verified: true,
       groups,
     });
+  });
+
+  // ── Traefik ForwardAuth ────────────────────────────────────────────
+  // GET /forward-auth?tenant=<tenant>&service=<service>
+  //
+  // Validates the shared OIDC session cookie and returns trusted identity
+  // headers that upstream services can consume in trusted-proxy mode.
+  router.get('/forward-auth', async (req: Request, res: Response) => {
+    const tenant = typeof req.query.tenant === 'string' ? req.query.tenant.trim().toLowerCase() : '';
+    const service = typeof req.query.service === 'string' ? req.query.service.trim() : '';
+    if (!tenant) {
+      res.status(400).send('Missing tenant');
+      return;
+    }
+
+    const session = await readSessionCookie(req);
+    if (!session || session.expiresAt <= Date.now()) {
+      res.redirect(buildLoginUrl(req, buildOriginalUrl(req)));
+      return;
+    }
+
+    const role = await membership.getUserRole(session.userId, tenant);
+    if (!role) {
+      logger.warn(`[OIDC] ForwardAuth denied: user=${session.userId} tenant=${tenant} service=${service || 'unknown'}`);
+      res.status(403).send('Access denied');
+      return;
+    }
+
+    res.setHeader('X-Forwarded-User', session.userId);
+    res.setHeader('X-Mctl-Team-Role', role);
+    res.setHeader('X-Auth-Request-User', session.userId);
+    res.status(200).send('ok');
   });
 
   // ── Health ──────────────────────────────────────────────────────────
