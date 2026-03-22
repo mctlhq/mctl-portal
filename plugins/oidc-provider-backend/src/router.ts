@@ -118,9 +118,10 @@ export function createRouter(options: RouterOptions): Router {
     return `${proto}://${host}${uri.startsWith('/') ? uri : `/${uri}`}`;
   }
 
-  function buildLoginUrl(req: Request, returnTo: string): string {
-    const base = `${req.protocol}://${req.get('host') ?? new URL(issuer).host}`;
-    const url = new URL('/api/oidc-provider/login', base);
+  function buildLoginUrl(returnTo: string): string {
+    const url = new URL(issuer);
+    url.pathname = `${url.pathname.replace(/\/$/, '')}/login`;
+    url.search = '';
     url.searchParams.set('returnTo', returnTo);
     return url.toString();
   }
@@ -445,7 +446,7 @@ export function createRouter(options: RouterOptions): Router {
 
     const session = await readSessionCookie(req);
     if (!session || session.expiresAt <= Date.now()) {
-      res.redirect(buildLoginUrl(req, buildOriginalUrl(req)));
+      res.redirect(buildLoginUrl(buildOriginalUrl(req)));
       return;
     }
 
