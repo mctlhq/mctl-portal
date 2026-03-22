@@ -87,15 +87,15 @@ export function createRouter(options: RouterOptions): Router {
   }
 
   function buildSessionCookie(sessionId: string, returnTo: string): string {
+    const domain = deriveCookieDomain(returnTo);
     const parts = [
       `oidc_session=${sessionId}`,
       'Path=/',
       'HttpOnly',
       'Secure',
-      'SameSite=Lax',
+      domain ? 'SameSite=None' : 'SameSite=Lax',
       'Max-Age=28800',
     ];
-    const domain = deriveCookieDomain(returnTo);
     if (domain) {
       parts.push(`Domain=${domain}`);
     }
