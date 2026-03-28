@@ -54,6 +54,16 @@ import { ThemeProvider } from '@material-ui/core/styles';
 import { CssBaseline } from '@material-ui/core';
 import { mctlTheme } from './theme/mctlTheme';
 
+const THEME_STORAGE_KEY = 'theme';
+const DEFAULT_THEME_ID = 'mctl-theme';
+
+if (typeof window !== 'undefined' && window.localStorage) {
+  const savedTheme = window.localStorage.getItem(THEME_STORAGE_KEY);
+  if (!savedTheme) {
+    window.localStorage.setItem(THEME_STORAGE_KEY, DEFAULT_THEME_ID);
+  }
+}
+
 const catalogMessages = createTranslationMessages({
   ref: catalogTranslationRef,
   full: false,
