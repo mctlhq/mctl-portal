@@ -1,5 +1,6 @@
 import { Router, Request, Response, urlencoded } from 'express';
 import fetch from 'node-fetch';
+import type { Knex } from 'knex';
 import {
   HttpAuthService,
   LoggerService,
@@ -12,8 +13,11 @@ export interface RouterOptions {
   httpAuth: HttpAuthService;
   userInfo: UserInfoService;
   store: TenantStore;
+  db: Knex;
+  isPostgres: boolean;
   vaultAddr: string;
   vaultToken: string;
+  oidcLoginUrl: string;
 }
 
 type TenantAuthResult =
@@ -21,7 +25,7 @@ type TenantAuthResult =
   | { ok: false; status: number; error: string };
 
 export function createRouter(options: RouterOptions): Router {
-  const { logger, httpAuth, userInfo, store, vaultAddr, vaultToken } = options;
+  const { logger, httpAuth, userInfo, store, db, isPostgres, vaultAddr, vaultToken, oidcLoginUrl } = options;
   const router = Router();
   router.use(urlencoded({ extended: false }));
 
@@ -78,7 +82,14 @@ export function createRouter(options: RouterOptions): Router {
       return;
     }
 
-    const auth = await requireTenantRole(req, httpAuth, userInfo, store, team, 'owner');
+    const userId = await readOidcSessionUserId(req, db, isPostgres);
+    if (!userId) {
+      const selfUrl = buildSelfUrl(req);
+      res.redirect(`${oidcLoginUrl}?returnTo=${encodeURIComponent(selfUrl)}`);
+      return;
+    }
+
+    const auth = await checkTenantRole(store, team, userId, 'owner');
     if (!auth.ok) {
       res.status(auth.status).send(auth.error);
       return;
@@ -101,7 +112,13 @@ export function createRouter(options: RouterOptions): Router {
       return;
     }
 
-    const auth = await requireTenantRole(req, httpAuth, userInfo, store, team, 'owner');
+    const userId = await readOidcSessionUserId(req, db, isPostgres);
+    if (!userId) {
+      res.status(401).send('Authentication required');
+      return;
+    }
+
+    const auth = await checkTenantRole(store, team, userId, 'owner');
     if (!auth.ok) {
       res.status(auth.status).send(auth.error);
       return;
@@ -141,20 +158,66 @@ async function requireTenantRole(
     if (!userId) {
       return { ok: false, status: 401, error: 'Authentication required' };
     }
-    const member = await store.getMemberByTenant(team, userId.toLowerCase());
-    if (!member) {
-      return { ok: false, status: 403, error: `Access denied: not a member of team '${team}'` };
-    }
-    if (minimumRole === 'owner' && member.role !== 'owner') {
-      return { ok: false, status: 403, error: `Access denied: owner role required for team '${team}'` };
-    }
-    return { ok: true, userId, role: member.role };
+    return checkTenantRole(store, team, userId, minimumRole);
   } catch (err: any) {
     if (err?.name === 'AuthenticationError' || err?.message?.includes('auth')) {
       return { ok: false, status: 401, error: 'Authentication required' };
     }
     return { ok: false, status: 500, error: 'Internal authentication error' };
   }
+}
+
+async function checkTenantRole(
+  store: TenantStore,
+  team: string,
+  userId: string,
+  minimumRole: 'viewer' | 'owner',
+): Promise<TenantAuthResult> {
+  const member = await store.getMemberByTenant(team, userId.toLowerCase());
+  if (!member) {
+    return { ok: false, status: 403, error: `Access denied: not a member of team '${team}'` };
+  }
+  if (minimumRole === 'owner' && member.role !== 'owner') {
+    return { ok: false, status: 403, error: `Access denied: owner role required for team '${team}'` };
+  }
+  return { ok: true, userId, role: member.role };
+}
+
+async function readOidcSessionUserId(
+  req: Request,
+  db: Knex,
+  isPostgres: boolean,
+): Promise<string | undefined> {
+  const sessionId = parseCookie(req.headers.cookie ?? '', 'oidc_session');
+  if (!sessionId) {
+    return undefined;
+  }
+  const query = isPostgres
+    ? db('oidc_sessions').withSchema('oidc-provider').where({ session_id: sessionId }).first()
+    : db('oidc_sessions').where({ session_id: sessionId }).first();
+  const row = await query;
+  if (!row) {
+    return undefined;
+  }
+  const expiresAt = Number(row.expires_at);
+  if (!Number.isFinite(expiresAt) || expiresAt <= Date.now()) {
+    return undefined;
+  }
+  return String(row.user_id);
+}
+
+function parseCookie(cookieHeader: string, name: string): string | undefined {
+  const match = cookieHeader
+    .split(';')
+    .map(c => c.trim())
+    .find(c => c.startsWith(`${name}=`));
+  return match?.slice(name.length + 1);
+}
+
+function buildSelfUrl(req: Request): string {
+  const proto = (req.headers['x-forwarded-proto'] as string)?.split(',')[0]?.trim() || req.protocol || 'https';
+  const host = (req.headers['x-forwarded-host'] as string) || req.headers.host || '';
+  return `${proto}://${host}${req.originalUrl}`;
 }
 
 function extractUserId(ownershipEntityRefs: string[]): string | undefined {

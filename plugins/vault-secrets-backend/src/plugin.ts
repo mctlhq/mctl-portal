@@ -20,11 +20,32 @@ export const vaultSecretsPlugin = createBackendPlugin({
       async init({ config, logger, database, httpRouter, httpAuth, userInfo }) {
         const vaultAddr = config.getString('vaultSecrets.endpoint');
         const vaultToken = config.getString('vaultSecrets.token');
+        const oidcLoginUrl =
+          config.getOptionalString('vaultSecrets.oidcLoginUrl') ??
+          '/api/oidc-provider/login';
         const store = new TenantStore(database, logger);
         await store.init();
 
-        const router = createRouter({ logger, httpAuth, userInfo, store, vaultAddr, vaultToken });
+        const db = await database.getClient();
+        const isPostgres = db.client.config.client === 'pg';
+
+        const router = createRouter({
+          logger,
+          httpAuth,
+          userInfo,
+          store,
+          db,
+          isPostgres,
+          vaultAddr,
+          vaultToken,
+          oidcLoginUrl,
+        });
         httpRouter.use(router);
+
+        httpRouter.addAuthPolicy({
+          path: '/openclaw/intake',
+          allow: 'unauthenticated',
+        });
 
         logger.info('Vault Secrets plugin initialized');
       },
