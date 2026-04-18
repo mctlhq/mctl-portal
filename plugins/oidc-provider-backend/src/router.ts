@@ -5,6 +5,7 @@ import { v4 as uuid } from 'uuid';
 import { LoggerService } from '@backstage/backend-plugin-api';
 import { KeyStore } from './keyStore';
 import { OidcStore } from './oidcStore';
+import { parseCookie } from './sessionAuth';
 
 /** Registered OIDC client (ArgoCD Dex, Argo Workflows, etc.) */
 export interface OidcClient {
@@ -591,15 +592,6 @@ export function createRouter(options: RouterOptions): Router {
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────
-
-/** Parse a specific cookie value from a cookie header string */
-function parseCookie(cookieHeader: string, name: string): string | undefined {
-  const match = cookieHeader
-    .split(';')
-    .map(c => c.trim())
-    .find(c => c.startsWith(`${name}=`));
-  return match ? match.split('=')[1] : undefined;
-}
 
 function decodeOpenAICodexReturnTo(state: string): string | null {
   try {

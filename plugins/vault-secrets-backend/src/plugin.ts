@@ -20,11 +20,41 @@ export const vaultSecretsPlugin = createBackendPlugin({
       async init({ config, logger, database, httpRouter, httpAuth, userInfo }) {
         const vaultAddr = config.getString('vaultSecrets.endpoint');
         const vaultToken = config.getString('vaultSecrets.token');
+        const oidcLoginUrl =
+          config.getOptionalString('vaultSecrets.oidcLoginUrl') ??
+          '/api/oidc-provider/login';
+        const backendBaseUrl = config.getString('backend.baseUrl');
         const store = new TenantStore(database, logger);
         await store.init();
 
-        const router = createRouter({ logger, httpAuth, userInfo, store, vaultAddr, vaultToken });
+        const db = await database.getClient();
+        const isPostgres = db.client.config.client === 'pg';
+
+        const router = createRouter({
+          logger,
+          httpAuth,
+          userInfo,
+          store,
+          db,
+          isPostgres,
+          vaultAddr,
+          vaultToken,
+          oidcLoginUrl,
+          backendBaseUrl,
+        });
         httpRouter.use(router);
+
+        // Browser-facing endpoint — bypass Backstage's default Bearer-auth
+        // middleware; auth is enforced via oidc_session cookie in the handler.
+        // Register both paths since httpRouter auth policy matching is exact.
+        httpRouter.addAuthPolicy({
+          path: '/openclaw/intake',
+          allow: 'unauthenticated',
+        });
+        httpRouter.addAuthPolicy({
+          path: '/openclaw/intake/',
+          allow: 'unauthenticated',
+        });
 
         logger.info('Vault Secrets plugin initialized');
       },
