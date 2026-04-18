@@ -99,6 +99,11 @@ export function createRouter(options: RouterOptions): Router {
   });
 
   router.post('/openclaw/intake', async (req: Request, res: Response) => {
+    if (!isSameOriginRequest(req)) {
+      res.status(403).send('Cross-site request blocked');
+      return;
+    }
+
     const team = String(req.body.team ?? '').trim();
     const service = String(req.body.service ?? '').trim();
     const returnTo = sanitizeReturnTo(String(req.body.returnTo ?? '').trim());
@@ -218,6 +223,28 @@ function buildSelfUrl(req: Request): string {
   const proto = (req.headers['x-forwarded-proto'] as string)?.split(',')[0]?.trim() || req.protocol || 'https';
   const host = (req.headers['x-forwarded-host'] as string) || req.headers.host || '';
   return `${proto}://${host}${req.originalUrl}`;
+}
+
+function isSameOriginRequest(req: Request): boolean {
+  const proto = (req.headers['x-forwarded-proto'] as string)?.split(',')[0]?.trim() || req.protocol || 'https';
+  const host = (req.headers['x-forwarded-host'] as string) || req.headers.host || '';
+  if (!host) {
+    return false;
+  }
+  const expected = `${proto}://${host}`;
+  const origin = String(req.headers.origin ?? '').trim();
+  if (origin) {
+    return origin === expected;
+  }
+  const referer = String(req.headers.referer ?? '').trim();
+  if (referer) {
+    try {
+      return new URL(referer).origin === expected;
+    } catch {
+      return false;
+    }
+  }
+  return false;
 }
 
 function extractUserId(ownershipEntityRefs: string[]): string | undefined {
