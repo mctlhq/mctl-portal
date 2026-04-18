@@ -7,6 +7,7 @@ import {
   UserInfoService,
 } from '@backstage/backend-plugin-api';
 import { TenantStore } from '../../tenant-backend/src/tenantStore';
+import { readOidcSessionUserId } from '../../oidc-provider-backend/src/sessionAuth';
 
 export interface RouterOptions {
   logger: LoggerService;
@@ -18,6 +19,8 @@ export interface RouterOptions {
   vaultAddr: string;
   vaultToken: string;
   oidcLoginUrl: string;
+  /** Public base URL of this backend (e.g. https://app.mctl.ai). Trusted source of truth for building self-referential URLs. */
+  backendBaseUrl: string;
 }
 
 type TenantAuthResult =
@@ -25,9 +28,11 @@ type TenantAuthResult =
   | { ok: false; status: number; error: string };
 
 export function createRouter(options: RouterOptions): Router {
-  const { logger, httpAuth, userInfo, store, db, isPostgres, vaultAddr, vaultToken, oidcLoginUrl } = options;
+  const { logger, httpAuth, userInfo, store, db, isPostgres, vaultAddr, vaultToken, oidcLoginUrl, backendBaseUrl } = options;
   const router = Router();
   router.use(urlencoded({ extended: false }));
+
+  const trustedOrigin = deriveOrigin(backendBaseUrl);
 
   router.get('/teams/:team/:app/database', async (req: Request, res: Response) => {
     const { team, app } = req.params;
@@ -82,24 +87,29 @@ export function createRouter(options: RouterOptions): Router {
       return;
     }
 
-    const userId = await readOidcSessionUserId(req, db, isPostgres);
-    if (!userId) {
-      const selfUrl = buildSelfUrl(req);
-      res.redirect(`${oidcLoginUrl}?returnTo=${encodeURIComponent(selfUrl)}`);
-      return;
-    }
+    try {
+      const userId = await readOidcSessionUserId(req.headers.cookie, db, isPostgres);
+      if (!userId) {
+        const selfUrl = buildSelfUrl(trustedOrigin, req.originalUrl);
+        res.redirect(`${oidcLoginUrl}?returnTo=${encodeURIComponent(selfUrl)}`);
+        return;
+      }
 
-    const auth = await checkTenantRole(store, team, userId, 'owner');
-    if (!auth.ok) {
-      res.status(auth.status).send(auth.error);
-      return;
-    }
+      const auth = await checkTenantRole(store, team, userId, 'owner');
+      if (!auth.ok) {
+        res.status(auth.status).send(auth.error);
+        return;
+      }
 
-    res.type('html').send(renderOpenClawIntakePage(team, service, returnTo));
+      res.type('html').send(renderOpenClawIntakePage(team, service, returnTo));
+    } catch (err: any) {
+      logger.error(`openclaw intake GET failed: ${err?.stack ?? err}`);
+      res.status(500).send('Internal error');
+    }
   });
 
   router.post('/openclaw/intake', async (req: Request, res: Response) => {
-    if (!isSameOriginRequest(req)) {
+    if (!isSameOrigin(req, trustedOrigin)) {
       res.status(403).send('Cross-site request blocked');
       return;
     }
@@ -117,19 +127,19 @@ export function createRouter(options: RouterOptions): Router {
       return;
     }
 
-    const userId = await readOidcSessionUserId(req, db, isPostgres);
-    if (!userId) {
-      res.status(401).send('Authentication required');
-      return;
-    }
-
-    const auth = await checkTenantRole(store, team, userId, 'owner');
-    if (!auth.ok) {
-      res.status(auth.status).send(auth.error);
-      return;
-    }
-
     try {
+      const userId = await readOidcSessionUserId(req.headers.cookie, db, isPostgres);
+      if (!userId) {
+        res.status(401).send('Authentication required');
+        return;
+      }
+
+      const auth = await checkTenantRole(store, team, userId, 'owner');
+      if (!auth.ok) {
+        res.status(auth.status).send(auth.error);
+        return;
+      }
+
       await writeVaultKV(vaultAddr, vaultToken, `teams/${team}/${service}/telegram`, {
         'telegram-bot-token': botToken,
       });
@@ -140,8 +150,8 @@ export function createRouter(options: RouterOptions): Router {
       }
       res.type('html').send(renderOpenClawSavedPage(team, service));
     } catch (err: any) {
-      logger.error(`vault write failed for ${team}/${service}/telegram: ${err}`);
-      res.status(502).send('Failed to save secret to Vault');
+      logger.error(`openclaw intake POST failed for ${team}/${service}: ${err?.stack ?? err}`);
+      res.status(500).send('Internal error');
     }
   });
 
@@ -188,58 +198,27 @@ async function checkTenantRole(
   return { ok: true, userId, role: member.role };
 }
 
-async function readOidcSessionUserId(
-  req: Request,
-  db: Knex,
-  isPostgres: boolean,
-): Promise<string | undefined> {
-  const sessionId = parseCookie(req.headers.cookie ?? '', 'oidc_session');
-  if (!sessionId) {
-    return undefined;
+function deriveOrigin(backendBaseUrl: string): string {
+  try {
+    return new URL(backendBaseUrl).origin;
+  } catch {
+    throw new Error(`vault-secrets: invalid backend.baseUrl: ${backendBaseUrl}`);
   }
-  const query = isPostgres
-    ? db('oidc_sessions').withSchema('oidc-provider').where({ session_id: sessionId }).first()
-    : db('oidc_sessions').where({ session_id: sessionId }).first();
-  const row = await query;
-  if (!row) {
-    return undefined;
-  }
-  const expiresAt = Number(row.expires_at);
-  if (!Number.isFinite(expiresAt) || expiresAt <= Date.now()) {
-    return undefined;
-  }
-  return String(row.user_id);
 }
 
-function parseCookie(cookieHeader: string, name: string): string | undefined {
-  const match = cookieHeader
-    .split(';')
-    .map(c => c.trim())
-    .find(c => c.startsWith(`${name}=`));
-  return match?.slice(name.length + 1);
+function buildSelfUrl(trustedOrigin: string, originalUrl: string): string {
+  return `${trustedOrigin}${originalUrl}`;
 }
 
-function buildSelfUrl(req: Request): string {
-  const proto = (req.headers['x-forwarded-proto'] as string)?.split(',')[0]?.trim() || req.protocol || 'https';
-  const host = (req.headers['x-forwarded-host'] as string) || req.headers.host || '';
-  return `${proto}://${host}${req.originalUrl}`;
-}
-
-function isSameOriginRequest(req: Request): boolean {
-  const proto = (req.headers['x-forwarded-proto'] as string)?.split(',')[0]?.trim() || req.protocol || 'https';
-  const host = (req.headers['x-forwarded-host'] as string) || req.headers.host || '';
-  if (!host) {
-    return false;
-  }
-  const expected = `${proto}://${host}`;
+function isSameOrigin(req: Request, trustedOrigin: string): boolean {
   const origin = String(req.headers.origin ?? '').trim();
   if (origin) {
-    return origin === expected;
+    return origin === trustedOrigin;
   }
   const referer = String(req.headers.referer ?? '').trim();
   if (referer) {
     try {
-      return new URL(referer).origin === expected;
+      return new URL(referer).origin === trustedOrigin;
     } catch {
       return false;
     }
