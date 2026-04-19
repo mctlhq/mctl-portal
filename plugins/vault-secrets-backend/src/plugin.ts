@@ -3,7 +3,6 @@ import {
   coreServices,
 } from '@backstage/backend-plugin-api';
 import { createRouter } from './router';
-import { TenantStore } from '../../tenant-backend/src/tenantStore';
 
 export const vaultSecretsPlugin = createBackendPlugin({
   pluginId: 'vault-secrets',
@@ -24,8 +23,6 @@ export const vaultSecretsPlugin = createBackendPlugin({
           config.getOptionalString('vaultSecrets.oidcLoginUrl') ??
           '/api/oidc-provider/login';
         const backendBaseUrl = config.getString('backend.baseUrl');
-        const store = new TenantStore(database, logger);
-        await store.init();
 
         const db = await database.getClient();
         const isPostgres = db.client.config.client === 'pg';
@@ -34,7 +31,6 @@ export const vaultSecretsPlugin = createBackendPlugin({
           logger,
           httpAuth,
           userInfo,
-          store,
           db,
           isPostgres,
           vaultAddr,

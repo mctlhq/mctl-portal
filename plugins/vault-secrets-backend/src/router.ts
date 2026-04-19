@@ -6,14 +6,13 @@ import {
   LoggerService,
   UserInfoService,
 } from '@backstage/backend-plugin-api';
-import { TenantStore } from '../../tenant-backend/src/tenantStore';
+import { getTenantMember } from '../../tenant-backend/src/membershipLookup';
 import { readOidcSessionUserId } from '../../oidc-provider-backend/src/sessionAuth';
 
 export interface RouterOptions {
   logger: LoggerService;
   httpAuth: HttpAuthService;
   userInfo: UserInfoService;
-  store: TenantStore;
   db: Knex;
   isPostgres: boolean;
   vaultAddr: string;
@@ -28,7 +27,7 @@ type TenantAuthResult =
   | { ok: false; status: number; error: string };
 
 export function createRouter(options: RouterOptions): Router {
-  const { logger, httpAuth, userInfo, store, db, isPostgres, vaultAddr, vaultToken, oidcLoginUrl, backendBaseUrl } = options;
+  const { logger, httpAuth, userInfo, db, isPostgres, vaultAddr, vaultToken, oidcLoginUrl, backendBaseUrl } = options;
   const router = Router();
   router.use(urlencoded({ extended: false }));
 
@@ -36,7 +35,7 @@ export function createRouter(options: RouterOptions): Router {
 
   router.get('/teams/:team/:app/database', async (req: Request, res: Response) => {
     const { team, app } = req.params;
-    const auth = await requireTenantRole(req, httpAuth, userInfo, store, team, 'viewer');
+    const auth = await requireTenantRole(req, httpAuth, userInfo, db, isPostgres, team, 'viewer');
     if (!auth.ok) {
       res.status(auth.status).json({ error: auth.error });
       return;
@@ -63,7 +62,7 @@ export function createRouter(options: RouterOptions): Router {
 
   router.get('/teams/:team/:app/secrets', async (req: Request, res: Response) => {
     const { team, app } = req.params;
-    const auth = await requireTenantRole(req, httpAuth, userInfo, store, team, 'viewer');
+    const auth = await requireTenantRole(req, httpAuth, userInfo, db, isPostgres, team, 'viewer');
     if (!auth.ok) {
       res.status(auth.status).json({ error: auth.error });
       return;
@@ -95,7 +94,7 @@ export function createRouter(options: RouterOptions): Router {
         return;
       }
 
-      const auth = await checkTenantRole(store, team, userId, 'owner');
+      const auth = await checkTenantRole(db, isPostgres, team, userId, 'owner');
       if (!auth.ok) {
         res.status(auth.status).send(auth.error);
         return;
@@ -134,7 +133,7 @@ export function createRouter(options: RouterOptions): Router {
         return;
       }
 
-      const auth = await checkTenantRole(store, team, userId, 'owner');
+      const auth = await checkTenantRole(db, isPostgres, team, userId, 'owner');
       if (!auth.ok) {
         res.status(auth.status).send(auth.error);
         return;
@@ -162,7 +161,8 @@ async function requireTenantRole(
   req: Request,
   httpAuth: HttpAuthService,
   userInfo: UserInfoService,
-  store: TenantStore,
+  db: Knex,
+  isPostgres: boolean,
   team: string,
   minimumRole: 'viewer' | 'owner',
 ): Promise<TenantAuthResult> {
@@ -173,7 +173,7 @@ async function requireTenantRole(
     if (!userId) {
       return { ok: false, status: 401, error: 'Authentication required' };
     }
-    return checkTenantRole(store, team, userId, minimumRole);
+    return checkTenantRole(db, isPostgres, team, userId, minimumRole);
   } catch (err: any) {
     if (err?.name === 'AuthenticationError' || err?.message?.includes('auth')) {
       return { ok: false, status: 401, error: 'Authentication required' };
@@ -183,12 +183,13 @@ async function requireTenantRole(
 }
 
 async function checkTenantRole(
-  store: TenantStore,
+  db: Knex,
+  isPostgres: boolean,
   team: string,
   userId: string,
   minimumRole: 'viewer' | 'owner',
 ): Promise<TenantAuthResult> {
-  const member = await store.getMemberByTenant(team, userId.toLowerCase());
+  const member = await getTenantMember(db, isPostgres, team, userId.toLowerCase());
   if (!member) {
     return { ok: false, status: 403, error: `Access denied: not a member of team '${team}'` };
   }

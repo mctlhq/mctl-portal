@@ -1,6 +1,7 @@
 export { tenantPlugin } from './plugin';
 export { TenantStore } from './tenantStore';
 export { TenantSync } from './tenantSync';
+export { TENANT_MGMT_SCHEMA, getTenantMember } from './membershipLookup';
 export type {
   Tenant,
   TenantQuotas,
