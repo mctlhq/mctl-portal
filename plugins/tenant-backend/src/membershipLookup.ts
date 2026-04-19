@@ -21,9 +21,21 @@ export async function getTenantMember(
   const builder = isPostgres
     ? db('tenant_members').withSchema(TENANT_MGMT_SCHEMA)
     : db('tenant_members');
-  const row = await builder
-    .where({ tenant_name: tenantName, user_id: userId })
-    .first();
+  let row: any;
+  try {
+    row = await builder
+      .where({ tenant_name: tenantName, user_id: userId })
+      .first();
+  } catch (err: any) {
+    // Backstage scopes databases per plugin on SQLite (local dev), so a
+    // calling plugin whose client points at a different SQLite file cannot
+    // see tenant-management's tenant_members table. Treat that as "no
+    // membership" so the caller returns a clean 403 rather than a 500.
+    if (isMissingTableError(err)) {
+      return undefined;
+    }
+    throw err;
+  }
   if (!row) {
     return undefined;
   }
@@ -32,4 +44,15 @@ export async function getTenantMember(
     userId: String(row.user_id),
     role: String(row.role),
   };
+}
+
+function isMissingTableError(err: any): boolean {
+  const code = err?.code ?? '';
+  const msg = err?.message ?? '';
+  // Postgres (would indicate a misconfigured production DB, not local dev)
+  if (code === '42P01') return false;
+  // SQLite (better-sqlite3 / sqlite3)
+  if (code === 'SQLITE_ERROR' && /no such table/i.test(msg)) return true;
+  if (/no such table: tenant_members/i.test(msg)) return true;
+  return false;
 }
