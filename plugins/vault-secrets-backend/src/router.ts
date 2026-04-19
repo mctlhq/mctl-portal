@@ -100,6 +100,10 @@ export function createRouter(options: RouterOptions): Router {
         return;
       }
 
+      // Override Backstage's default Referrer-Policy: no-referrer so that
+      // the form POST from this page keeps its Origin/Referer headers,
+      // which our CSRF check relies on.
+      res.setHeader('Referrer-Policy', 'same-origin');
       res.type('html').send(renderOpenClawIntakePage(team, service, returnTo));
     } catch (err: any) {
       logger.error(`openclaw intake GET failed: ${err?.stack ?? err}`);
@@ -212,10 +216,13 @@ function buildSelfUrl(trustedOrigin: string, originalUrl: string): string {
 }
 
 function isSameOrigin(req: Request, trustedOrigin: string): boolean {
+  // Primary: Origin header. Sent by browsers for POST except under
+  // Referrer-Policy: no-referrer (which Chrome honors by dropping Origin too).
   const origin = String(req.headers.origin ?? '').trim();
   if (origin) {
     return origin === trustedOrigin;
   }
+  // Fallback: Referer header. Same caveat — suppressed under no-referrer.
   const referer = String(req.headers.referer ?? '').trim();
   if (referer) {
     try {
@@ -223,6 +230,14 @@ function isSameOrigin(req: Request, trustedOrigin: string): boolean {
     } catch {
       return false;
     }
+  }
+  // Last resort: Sec-Fetch-Site. Modern Fetch-Metadata header that can't be
+  // set by JavaScript and is sent regardless of Referrer-Policy. 'same-origin'
+  // means the browser initiated the request from the same origin as the
+  // target, which is exactly the CSRF safety we need.
+  const fetchSite = String(req.headers['sec-fetch-site'] ?? '').trim();
+  if (fetchSite === 'same-origin') {
+    return true;
   }
   return false;
 }
