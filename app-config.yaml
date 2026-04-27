@@ -183,6 +183,12 @@ platform:
   gitopsRepo: mctl-gitops
   containerRegistry: ghcr.io/mctlhq
 
+mctl:
+  proposals:
+    gitopsRepo: mctlhq/mctl-gitops
+    branch: main
+    basePath: platform-gitops/agents-state
+
 tenantManagement:
   githubOrg: mctlhq
   repoName: mctl-gitops

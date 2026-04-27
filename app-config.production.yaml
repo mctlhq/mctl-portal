@@ -133,6 +133,12 @@ platform:
   gitopsRepo: ${GITOPS_REPO_NAME}
   containerRegistry: ${CONTAINER_REGISTRY}
 
+mctl:
+  proposals:
+    gitopsRepo: ${GITOPS_REPO_ORG}/${GITOPS_REPO_NAME}
+    branch: main
+    basePath: platform-gitops/agents-state
+
 tenantManagement:
   githubOrg: ${GITOPS_REPO_ORG}
   repoName: ${GITOPS_REPO_NAME}

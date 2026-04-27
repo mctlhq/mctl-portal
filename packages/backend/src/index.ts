@@ -100,4 +100,11 @@ backend.add(import('@internal/plugin-oidc-provider-backend'));
 // custom domains — manage custom domain mappings for services
 backend.add(import('@internal/plugin-custom-domains-backend'));
 
+// proposals — review mctl-agents proposals from mctl-gitops
+backend.add(
+  import('@internal/plugin-proposals-backend').then(m => ({
+    default: m.proposalsPlugin,
+  })),
+);
+
 backend.start();
