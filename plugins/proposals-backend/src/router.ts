@@ -27,9 +27,11 @@ interface AdminAuth {
 
 /**
  * Resolve the caller as a Backstage user and verify membership of
- * `group:default/admins`. Service tokens (plugin-to-plugin) are also
- * accepted as admin so internal callers (e.g. Tier 2 implementer agents)
- * can read.
+ * `group:default/admins`. Service tokens (plugin-to-plugin) are
+ * authenticated for read access only — they are never marked as admin
+ * so they cannot drive write endpoints (`accept`/`reject`). Admin write
+ * authority must come from a user credential whose ownership refs
+ * include `group:default/admins`.
  */
 async function resolveAdmin(
   req: Request,
@@ -50,10 +52,38 @@ async function resolveAdmin(
   }
   try {
     await httpAuth.credentials(req, { allow: ['service'] });
-    return { ok: true, isAdmin: true };
+    // Service principals are read-only: never grant admin write access.
+    return { ok: true, isAdmin: false };
   } catch {
     return { ok: false, isAdmin: false, reason: 'No valid credentials' };
   }
+}
+
+/**
+ * Allowed status transition matrix for admin-driven decisions.
+ *
+ * Allowed:
+ *   proposed  → accepted   (Accept button)
+ *   proposed  → rejected   (Reject button)
+ *   accepted  → rejected   (change of mind before Tier 2 starts)
+ *   rejected  → accepted   (reversal)
+ *
+ * Forbidden (by design):
+ *   any transition to/from `in-progress`  (only Tier 2 implementer writes that)
+ *   any transition to/from `implemented`  (terminal)
+ *   no-op transitions (`accepted` → `accepted`, `rejected` → `rejected`)
+ */
+function isAllowedTransition(
+  current: ProposalStatus,
+  attempted: Extract<ProposalStatus, 'accepted' | 'rejected'>,
+): boolean {
+  if (attempted === 'accepted') {
+    return current === 'proposed' || current === 'rejected';
+  }
+  if (attempted === 'rejected') {
+    return current === 'proposed' || current === 'accepted';
+  }
+  return false;
 }
 
 function validateRouteParams(req: Request, res: Response): boolean {
@@ -148,6 +178,18 @@ export function createRouter(opts: RouterOptions): Router {
       const detail = await gitops.getProposal(service, slug);
       if (!detail) {
         res.status(404).json({ error: 'Proposal not found' });
+        return;
+      }
+
+      // Server-side terminal-status guard. The UI disables these actions but
+      // a direct API call must not be able to overwrite an `in-progress` or
+      // `implemented` proposal, nor perform a no-op re-decision.
+      if (!isAllowedTransition(detail.status, nextStatus)) {
+        res.status(409).json({
+          error: 'invalid status transition',
+          current: detail.status,
+          attempted: nextStatus,
+        });
         return;
       }
 
