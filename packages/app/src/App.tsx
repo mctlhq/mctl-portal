@@ -57,6 +57,17 @@ import { mctlTheme } from './theme/mctlTheme';
 const THEME_STORAGE_KEY = 'theme';
 const DEFAULT_THEME_ID = 'mctl-theme';
 
+// Backstage 1.50 introduced @backstage/ui (CSS-vars design system) for
+// catalog/notifications components. Its tokens key off
+// [data-theme-mode] on a parent. Without it, every BUI component falls
+// back to :root (light) tokens — entity cards render white over our
+// dark mctl chrome. Keep the attribute in sync with the active theme.
+const setBuiThemeMode = (mode: 'dark' | 'light') => {
+  if (typeof document !== 'undefined') {
+    document.documentElement.dataset.themeMode = mode;
+  }
+};
+
 if (typeof window !== 'undefined' && window.localStorage) {
   const savedTheme = window.localStorage.getItem(THEME_STORAGE_KEY);
   if (!savedTheme) {
@@ -119,34 +130,43 @@ const app = createApp({
       id: 'mctl-theme',
       title: 'MCTL Theme',
       variant: 'dark',
-      Provider: ({ children }) => (
-        <ThemeProvider theme={mctlTheme}>
-          <CssBaseline />
-          {children}
-        </ThemeProvider>
-      ),
+      Provider: ({ children }) => {
+        setBuiThemeMode('dark');
+        return (
+          <ThemeProvider theme={mctlTheme}>
+            <CssBaseline />
+            {children}
+          </ThemeProvider>
+        );
+      },
     },
     {
       id: 'backstage-dark',
       title: 'Backstage Dark',
       variant: 'dark',
-      Provider: ({ children }) => (
-        <ThemeProvider theme={backstageDefaultDark}>
-          <CssBaseline />
-          {children}
-        </ThemeProvider>
-      ),
+      Provider: ({ children }) => {
+        setBuiThemeMode('dark');
+        return (
+          <ThemeProvider theme={backstageDefaultDark}>
+            <CssBaseline />
+            {children}
+          </ThemeProvider>
+        );
+      },
     },
     {
       id: 'backstage-light',
       title: 'Backstage Light',
       variant: 'light',
-      Provider: ({ children }) => (
-        <ThemeProvider theme={backstageDefaultLight}>
-          <CssBaseline />
-          {children}
-        </ThemeProvider>
-      ),
+      Provider: ({ children }) => {
+        setBuiThemeMode('light');
+        return (
+          <ThemeProvider theme={backstageDefaultLight}>
+            <CssBaseline />
+            {children}
+          </ThemeProvider>
+        );
+      },
     },
   ],
   bindRoutes({ bind }) {
