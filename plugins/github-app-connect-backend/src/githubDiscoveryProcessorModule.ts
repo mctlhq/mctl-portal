@@ -12,8 +12,8 @@ import {
   EntityProvider,
   EntityProviderConnection,
   parseEntityYaml,
+  catalogProcessingExtensionPoint,
 } from '@backstage/plugin-catalog-node';
-import { catalogProcessingExtensionPoint } from '@backstage/plugin-catalog-node/alpha';
 import { minimatch } from 'minimatch';
 
 /**

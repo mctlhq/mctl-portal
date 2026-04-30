@@ -1,4 +1,4 @@
-export { tenantPlugin } from './plugin';
+export { tenantPlugin, tenantPlugin as default } from './plugin';
 export { TenantStore } from './tenantStore';
 export { TenantSync } from './tenantSync';
 export { TENANT_MGMT_SCHEMA, getTenantMember } from './membershipLookup';
