@@ -394,7 +394,7 @@ const systemPage = (
           RELATION_DEPENDS_ON,
         ]}
         unidirectional={false}
-     />
+      />
     </EntityLayout.Route>
   </AdminEntityLayout>
 );
