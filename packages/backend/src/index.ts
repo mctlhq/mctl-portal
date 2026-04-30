@@ -8,6 +8,12 @@
 
 import { createBackend } from '@backstage/backend-defaults';
 import { githubAuthModuleWithFallback } from './githubAuthModule';
+import {
+  authModuleGithubInstallRedirect,
+  scaffolderModuleGithubActionsStream,
+  scaffolderFiltersModule,
+  githubDiscoveryProcessorModule,
+} from '@internal/plugin-github-app-connect-backend';
 
 const backend = createBackend();
 
@@ -67,30 +73,14 @@ backend.add(import('@backstage/plugin-signals-backend'));
 // github app connect — self-service repo access via GitHub App installation
 backend.add(import('@internal/plugin-github-app-connect-backend'));
 // intercept GitHub App install callbacks at /api/auth/github/handler/frame
-backend.add(
-  import('@internal/plugin-github-app-connect-backend').then(m => ({
-    default: m.authModuleGithubInstallRedirect,
-  })),
-);
+backend.add(authModuleGithubInstallRedirect);
 // dispatch GitHub Actions workflows and stream logs into scaffolder console
-backend.add(
-  import('@internal/plugin-github-app-connect-backend').then(m => ({
-    default: m.scaffolderModuleGithubActionsStream,
-  })),
-);
+backend.add(scaffolderModuleGithubActionsStream);
 // custom Nunjucks template filters (repoName: "owner/repo" → "repo")
-backend.add(
-  import('@internal/plugin-github-app-connect-backend').then(m => ({
-    default: m.scaffolderFiltersModule,
-  })),
-);
+backend.add(scaffolderFiltersModule);
 // GithubDiscoveryProcessor: expands GitHub glob location URLs into individual
 // entity locations so that services/workers catalog-info.yaml files are found
-backend.add(
-  import('@internal/plugin-github-app-connect-backend').then(m => ({
-    default: m.githubDiscoveryProcessorModule,
-  })),
-);
+backend.add(githubDiscoveryProcessorModule);
 
 // vault secrets — serve DB credentials to authorized team members
 backend.add(import('@internal/plugin-vault-secrets-backend'));
@@ -99,25 +89,13 @@ backend.add(import('@internal/plugin-vault-secrets-backend'));
 backend.add(import('@internal/plugin-resource-usage-backend'));
 
 // tenant management — syncs tenant YAMLs from Git, serves REST API, creates tenants via Argo
-backend.add(
-  import('@internal/plugin-tenant-backend').then(m => ({
-    default: m.tenantPlugin,
-  })),
-);
+backend.add(import('@internal/plugin-tenant-backend'));
 
 // argo workflows — submit WorkflowTemplates from scaffolder (replaces GitHub Actions dispatch)
-backend.add(
-  import('@internal/plugin-argo-workflows-backend').then(m => ({
-    default: m.scaffolderModuleArgoWorkflows,
-  })),
-);
+backend.add(import('@internal/plugin-argo-workflows-backend'));
 
 // OIDC Provider — Backstage as identity provider for ArgoCD/Dex/Argo Workflows
-backend.add(
-  import('@internal/plugin-oidc-provider-backend').then(m => ({
-    default: m.oidcProviderPlugin,
-  })),
-);
+backend.add(import('@internal/plugin-oidc-provider-backend'));
 
 // custom domains — manage custom domain mappings for services
 backend.add(import('@internal/plugin-custom-domains-backend'));

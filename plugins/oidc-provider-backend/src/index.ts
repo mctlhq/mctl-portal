@@ -1,4 +1,4 @@
-export { oidcProviderPlugin } from './plugin';
+export { oidcProviderPlugin, oidcProviderPlugin as default } from './plugin';
 export {
   OIDC_SCHEMA,
   OIDC_SESSION_COOKIE,
