@@ -33,8 +33,16 @@ const ADMIN_TEAM = 'mctlhq/admins';
  *
  * Catalog visibility (all roles): entities owned by group:default/{tenantName}.
  */
+// A user is "viewer-only" if every one of their tenant groups has a corresponding
+// viewer-{tenant} marker. A user who is owner/developer in any tenant must not be
+// blocked from scaffolder tasks even if they happen to be a viewer in a different tenant.
 function isViewerRole(ownershipEntityRefs: string[]): boolean {
-  return ownershipEntityRefs.some(ref => ref.startsWith('group:default/viewer-'));
+  const tenantGroups = ownershipEntityRefs
+    .filter(ref => ref.startsWith('group:default/') && !ref.startsWith('group:default/viewer-'))
+    .map(ref => ref.slice('group:default/'.length));
+  return tenantGroups.length > 0 && tenantGroups.every(t =>
+    ownershipEntityRefs.includes(`group:default/viewer-${t}`)
+  );
 }
 
 class TeamBasedPermissionPolicy implements PermissionPolicy {

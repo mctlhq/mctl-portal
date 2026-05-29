@@ -124,11 +124,13 @@ async function resolveAuth(
     const { ownershipEntityRefs } = await userInfo.getUserInfo(credentials);
     const userId = extractUserId(ownershipEntityRefs);
 
-    // isAdmin requires owner role in admins tenant (verified in DB, not just group membership)
+    // isAdmin requires owner role in admins tenant (verified in DB, not just group membership).
+    // Use getMemberByTenant('admins', ...) directly — getMemberTenant does an unordered .first()
+    // which is non-deterministic when a user belongs to multiple tenants (e.g. admins + ovk).
     let isAdmin = false;
     if (userId && ownershipEntityRefs.some(ref => ref === 'group:default/admins')) {
-      const membership = await store.getMemberTenant(userId);
-      isAdmin = membership?.tenantName === 'admins' && membership?.role === 'owner';
+      const adminMembership = await store.getMemberByTenant('admins', userId);
+      isAdmin = adminMembership?.role === 'owner';
     }
 
     return {
