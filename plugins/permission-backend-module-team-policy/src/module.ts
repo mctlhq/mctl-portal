@@ -33,10 +33,6 @@ const ADMIN_TEAM = 'mctlhq/admins';
  *
  * Catalog visibility (all roles): entities owned by group:default/{tenantName}.
  */
-function isViewerRole(ownershipEntityRefs: string[]): boolean {
-  return ownershipEntityRefs.some(ref => ref.startsWith('group:default/viewer-'));
-}
-
 // Claims with viewer-marked tenant groups removed. Used to restrict template
 // visibility for mixed-role users (viewer in tenantA, owner in tenantB):
 // they can see tenantA catalog entities but NOT tenantA templates, which
