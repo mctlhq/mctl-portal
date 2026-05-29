@@ -194,6 +194,13 @@ export class TenantStore {
     return row ? rowToMember(row) : undefined;
   }
 
+  /** All tenant memberships for a single user (multi-tenant users have >1 row). */
+  async listMembershipsForUser(userId: string): Promise<TenantMember[]> {
+    const knex = await this.db.getClient();
+    const rows = await knex('tenant_members').where({ user_id: userId }).orderBy('tenant_name');
+    return rows.map(rowToMember);
+  }
+
   /** List ALL members across ALL tenants (used by catalog YAML generator) */
   async listAllMembers(): Promise<TenantMember[]> {
     const knex = await this.db.getClient();

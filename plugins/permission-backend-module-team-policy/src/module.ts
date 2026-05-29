@@ -33,16 +33,27 @@ const ADMIN_TEAM = 'mctlhq/admins';
  *
  * Catalog visibility (all roles): entities owned by group:default/{tenantName}.
  */
-// A user is "viewer-only" if every one of their tenant groups has a corresponding
-// viewer-{tenant} marker. A user who is owner/developer in any tenant must not be
-// blocked from scaffolder tasks even if they happen to be a viewer in a different tenant.
 function isViewerRole(ownershipEntityRefs: string[]): boolean {
-  const tenantGroups = ownershipEntityRefs
-    .filter(ref => ref.startsWith('group:default/') && !ref.startsWith('group:default/viewer-'))
-    .map(ref => ref.slice('group:default/'.length));
-  return tenantGroups.length > 0 && tenantGroups.every(t =>
-    ownershipEntityRefs.includes(`group:default/viewer-${t}`)
+  return ownershipEntityRefs.some(ref => ref.startsWith('group:default/viewer-'));
+}
+
+// Claims with viewer-marked tenant groups removed. Used to restrict template
+// visibility for mixed-role users (viewer in tenantA, owner in tenantB):
+// they can see tenantA catalog entities but NOT tenantA templates, which
+// prevents them from creating scaffolder tasks scoped to tenantA while
+// retaining full access to tenantB. For pure viewers the result is an empty
+// set of group claims, so no templates are visible either.
+function nonViewerClaims(ownershipEntityRefs: string[]): string[] {
+  const viewerTenants = new Set(
+    ownershipEntityRefs
+      .filter(ref => ref.startsWith('group:default/viewer-'))
+      .map(ref => ref.slice('group:default/viewer-'.length)),
   );
+  return ownershipEntityRefs.filter(ref => {
+    if (!ref.startsWith('group:default/')) return true;
+    if (ref.startsWith('group:default/viewer-')) return false;
+    return !viewerTenants.has(ref.slice('group:default/'.length));
+  });
 }
 
 class TeamBasedPermissionPolicy implements PermissionPolicy {
@@ -62,11 +73,12 @@ class TeamBasedPermissionPolicy implements PermissionPolicy {
       return { result: AuthorizeResult.ALLOW };
     }
 
-    // Viewer role: deny scaffolder task creation (read-only users)
-    // Scaffolder permissions include 'scaffolder.task.create' and related
-    if (isViewerRole(ownership) && request.permission.name.startsWith('scaffolder.')) {
-      return { result: AuthorizeResult.DENY };
-    }
+    // Claims with viewer-tenant groups stripped: used for template visibility so that
+    // a viewer in tenantA cannot see or run tenantA templates even if they are an
+    // owner/developer in another tenant. Pure viewers end up with no group claims here
+    // → no templates visible → scaffolder tasks naturally unavailable without a blunt
+    // global deny that would break mixed-role users.
+    const templateClaims = nonViewerClaims(ownership);
 
     // For catalog entity permissions, return a conditional decision that
     // filters entities based on team membership:
@@ -74,7 +86,9 @@ class TeamBasedPermissionPolicy implements PermissionPolicy {
     //   - Group, User: only those belonging to the user's team (spec.owner = user's group)
     //   - System: only those owned by user's groups
     //   - Component/API/Resource: only those owned by user's groups (unchanged)
-    //   - Template: global admin templates (owned by admins, not admin-only) OR owned by user's group
+    //   - Template: global admin templates (owned by admins, not admin-only) OR owned by
+    //               non-viewer memberships only (prevents viewers from running templates
+    //               in tenants where they have read-only access)
     if (isResourcePermission(request.permission, 'catalog-entity')) {
       return createCatalogConditionalDecision(
         request.permission,
@@ -116,11 +130,11 @@ class TeamBasedPermissionPolicy implements PermissionPolicy {
                 { not: catalogConditions.hasAnnotation({ annotation: 'mctl.me/admin-only' }) },
               ],
             },
-            // Group-specific templates: owned by user's group
+            // Group-specific templates: only via non-viewer memberships
             {
               allOf: [
                 catalogConditions.isEntityKind({ kinds: ['Template'] }),
-                catalogConditions.isEntityOwner({ claims: ownership }),
+                catalogConditions.isEntityOwner({ claims: templateClaims }),
               ],
             },
             // Domain and Location are intentionally omitted → DENY for non-admins

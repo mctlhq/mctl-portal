@@ -457,13 +457,15 @@ export function createRouter(opts: RouterOptions): Router {
       return;
     }
     try {
-      const membership = await store.getMemberTenant(auth.userId);
-      if (!membership) {
+      const memberships = await store.listMembershipsForUser(auth.userId);
+      if (!memberships.length) {
         res.status(200).json({ tenant: null });
         return;
       }
-      const tenant = await store.findByName(membership.tenantName);
-      res.json({ tenant, role: membership.role });
+      // Primary membership: first alphabetically (admins < labs < ovk, etc.)
+      const primary = memberships[0];
+      const tenant = await store.findByName(primary.tenantName);
+      res.json({ tenant, role: primary.role, tenants: memberships.map(m => ({ tenantName: m.tenantName, role: m.role })) });
     } catch (err: any) {
       logger.error(`[tenant-backend] GET /me/tenant error: ${err}`);
       res.status(500).json({ error: 'Internal error' });
@@ -482,8 +484,8 @@ export function createRouter(opts: RouterOptions): Router {
     try {
       // Check access: admin or member of this tenant
       if (!auth.isAdmin && auth.userId) {
-        const membership = await store.getMemberTenant(auth.userId);
-        if (!membership || membership.tenantName !== name) {
+        const membership = await store.getMemberByTenant(name, auth.userId);
+        if (!membership) {
           res.status(403).json({ error: 'Access denied' });
           return;
         }
@@ -512,8 +514,8 @@ export function createRouter(opts: RouterOptions): Router {
           res.status(403).json({ error: 'Access denied' });
           return;
         }
-        const membership = await store.getMemberTenant(auth.userId);
-        if (!membership || membership.tenantName !== name || membership.role !== 'owner') {
+        const membership = await store.getMemberByTenant(name, auth.userId);
+        if (!membership || membership.role !== 'owner') {
           res.status(403).json({ error: 'Only tenant owners can invite members' });
           return;
         }
@@ -586,8 +588,8 @@ export function createRouter(opts: RouterOptions): Router {
           res.status(403).json({ error: 'Access denied' });
           return;
         }
-        const membership = await store.getMemberTenant(auth.userId);
-        if (!membership || membership.tenantName !== name || membership.role !== 'owner') {
+        const membership = await store.getMemberByTenant(name, auth.userId);
+        if (!membership || membership.role !== 'owner') {
           res.status(403).json({ error: 'Only tenant owners can remove members' });
           return;
         }
@@ -625,8 +627,8 @@ export function createRouter(opts: RouterOptions): Router {
           res.status(403).json({ error: 'Access denied' });
           return;
         }
-        const membership = await store.getMemberTenant(auth.userId);
-        if (!membership || membership.tenantName !== name || membership.role !== 'owner') {
+        const membership = await store.getMemberByTenant(name, auth.userId);
+        if (!membership || membership.role !== 'owner') {
           res.status(403).json({ error: 'Only tenant owners can change roles' });
           return;
         }
