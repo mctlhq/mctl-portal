@@ -39,7 +39,7 @@ jobs:
             --ref main \
             -f repo=mctlhq/mctl-portal \
             -f git_ref="$TAG" \
-            -f image_name=mctlhq/mctl-portal \
+            -f image_name=ghcr.io/mctlhq/mctl-portal \
             -f image_tag="$TAG" \
             -f team_name=admins \
             -f component_name=mctl-portal \
