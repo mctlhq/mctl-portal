@@ -124,11 +124,10 @@ async function resolveAuth(
     const { ownershipEntityRefs } = await userInfo.getUserInfo(credentials);
     const userId = extractUserId(ownershipEntityRefs);
 
-    // isAdmin requires owner role in admins tenant (verified in DB, not just group membership).
-    // Use getMemberByTenant('admins', ...) directly — getMemberTenant does an unordered .first()
-    // which is non-deterministic when a user belongs to multiple tenants (e.g. admins + ovk).
+    // isAdmin requires owner role in admins tenant — always verified via DB, not catalog groups.
+    // Catalog-based ownership may lag or reflect the wrong primary tenant for multi-tenant users.
     let isAdmin = false;
-    if (userId && ownershipEntityRefs.some(ref => ref === 'group:default/admins')) {
+    if (userId) {
       const adminMembership = await store.getMemberByTenant('admins', userId);
       isAdmin = adminMembership?.role === 'owner';
     }
@@ -696,6 +695,34 @@ export function createRouter(opts: RouterOptions): Router {
             members: tenantMembers.map(m => m.userId),
           },
         });
+
+        // Owner marker group for admins tenant — permission policy checks this group
+        // (not the main admins group) to avoid granting full ALLOW to non-owner admins members.
+        if (tenant.name === 'admins') {
+          const owners = tenantMembers.filter(m => m.role === 'owner').map(m => m.userId);
+          if (owners.length > 0) {
+            docs.push({
+              apiVersion: 'backstage.io/v1alpha1',
+              kind: 'Group',
+              metadata: {
+                name: 'admins-owners',
+                namespace: 'default',
+                title: 'Platform Admins (Owners)',
+                annotations: {
+                  'mctl.me/tenant-name': 'admins',
+                  'mctl.me/role-marker': 'owner',
+                },
+              },
+              spec: {
+                type: 'virtual',
+                owner: 'group:default/admins',
+                profile: { displayName: 'Platform Admins (Owners)' },
+                children: [],
+                members: owners,
+              },
+            });
+          }
+        }
 
         // Viewer marker group — used by permission policy to restrict scaffolder access
         if (viewers.length > 0) {

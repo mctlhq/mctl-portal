@@ -49,8 +49,9 @@ class TeamBasedPermissionPolicy implements PermissionPolicy {
 
     const ownership = user.identity.ownershipEntityRefs ?? [];
 
-    // Admin team gets full access
-    if (ownership.some(ref => ref === `group:default/${ADMIN_TEAM.split('/')[1]}`)) {
+    // Admin team owners get full access. Check admins-owners (virtual marker group) rather than
+    // the main admins group — the main group includes all roles (developer/viewer too).
+    if (ownership.some(ref => ref === 'group:default/admins-owners')) {
       return { result: AuthorizeResult.ALLOW };
     }
 

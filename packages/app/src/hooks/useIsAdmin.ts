@@ -11,7 +11,7 @@ export const useIsAdmin = () => {
       .then(identity => {
         setIsAdmin(
           identity?.ownershipEntityRefs?.some(
-            (ref: string) => ref === 'group:default/admins',
+            (ref: string) => ref === 'group:default/admins-owners',
           ) ?? false,
         );
       })

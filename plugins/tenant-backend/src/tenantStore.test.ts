@@ -7,16 +7,23 @@ function makeStore(knex: Knex): TenantStore {
   return new TenantStore(db, logger);
 }
 
-async function freshStore(): Promise<TenantStore> {
+async function freshStore(): Promise<{ store: TenantStore; knex: Knex }> {
   const knex = knexLib({ client: 'better-sqlite3', connection: ':memory:', useNullAsDefault: true });
   const store = makeStore(knex);
   await store.init();
-  return store;
+  return { store, knex };
 }
+
+let currentKnex: Knex | undefined;
+afterEach(async () => {
+  await currentKnex?.destroy();
+  currentKnex = undefined;
+});
 
 describe('TenantStore.seedMember', () => {
   it('seeds a user into multiple tenants without conflict', async () => {
-    const store = await freshStore();
+    const { store, knex } = await freshStore();
+    currentKnex = knex;
     await store.seedMember('admins', 'mashkovd', 'owner');
     await store.seedMember('ovk', 'mashkovd', 'owner');
     const rows = await store.listMembershipsForUser('mashkovd');
@@ -24,7 +31,8 @@ describe('TenantStore.seedMember', () => {
   });
 
   it('upserts role idempotently within the same tenant', async () => {
-    const store = await freshStore();
+    const { store, knex } = await freshStore();
+    currentKnex = knex;
     await store.seedMember('labs', 'alice', 'developer');
     await store.seedMember('labs', 'alice', 'owner');
     const rows = await store.listMembershipsForUser('alice');
@@ -35,7 +43,8 @@ describe('TenantStore.seedMember', () => {
 
 describe('TenantStore.addMember', () => {
   it('rejects when the user is already in a different tenant', async () => {
-    const store = await freshStore();
+    const { store, knex } = await freshStore();
+    currentKnex = knex;
     await store.seedMember('ovk', 'bob', 'developer');
     await expect(
       store.addMember({
@@ -51,7 +60,8 @@ describe('TenantStore.addMember', () => {
 
 describe('TenantStore.listMembershipsForUser', () => {
   it('returns all rows ordered by tenant_name', async () => {
-    const store = await freshStore();
+    const { store, knex } = await freshStore();
+    currentKnex = knex;
     await store.seedMember('ovk', 'carol', 'owner');
     await store.seedMember('admins', 'carol', 'owner');
     const rows = await store.listMembershipsForUser('carol');
@@ -61,7 +71,8 @@ describe('TenantStore.listMembershipsForUser', () => {
 
 describe('TenantStore.getMemberByTenant', () => {
   it('returns only the matching tenant row', async () => {
-    const store = await freshStore();
+    const { store, knex } = await freshStore();
+    currentKnex = knex;
     await store.seedMember('admins', 'dave', 'owner');
     await store.seedMember('ovk', 'dave', 'developer');
     expect((await store.getMemberByTenant('admins', 'dave'))?.role).toBe('owner');

@@ -47,11 +47,15 @@ const TeamPickerComponent = (
   const [selected, setSelected] = useState<string>('');
 
   useEffect(() => {
-    if (defaultRef && !selected) {
-      setSelected(defaultRef);
-      if (defaultRef !== formData) onChange(defaultRef);
-    }
-  }, [defaultRef, selected, formData, onChange]);
+    if (!defaultRef || selected) return;
+    // Prefer a pre-existing formData value that is still a valid tenant option (remount case).
+    const initial =
+      formData && allTenants.some(t => `group:default/${t.tenantName}` === formData)
+        ? formData
+        : defaultRef;
+    setSelected(initial);
+    if (initial !== formData) onChange(initial);
+  }, [defaultRef, selected, formData, onChange, allTenants]);
 
   if (isMulti) {
     return (
