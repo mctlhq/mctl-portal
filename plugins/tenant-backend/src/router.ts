@@ -738,21 +738,16 @@ export function createRouter(opts: RouterOptions): Router {
         });
       }
 
-      // User entities — one per unique user, memberOf includes ALL their tenants.
-      // Viewers get an extra viewer-{tenant} marker group per tenant for policy detection.
-      const userMemberships = new Map<string, Array<typeof allMembers[0]>>();
+      // User entities (one per unique invited user).
+      // Primary tenant = first alphabetically (listAllMembers orders by tenant_name).
+      // Viewers get memberOf: [tenantName, viewer-tenantName] for permission policy detection.
+      const userMap = new Map<string, typeof allMembers[0]>();
       for (const m of allMembers) {
-        const existing = userMemberships.get(m.userId) ?? [];
-        existing.push(m);
-        userMemberships.set(m.userId, existing);
+        if (!userMap.has(m.userId)) userMap.set(m.userId, m);
       }
-      for (const [userId, memberships] of userMemberships.entries()) {
-        const memberOf: string[] = [];
-        for (const m of memberships) {
-          memberOf.push(m.tenantName);
-          if (m.role === 'viewer') memberOf.push(`viewer-${m.tenantName}`);
-        }
-        const primary = memberships[0];
+      for (const [userId, member] of userMap.entries()) {
+        const memberOf = [member.tenantName];
+        if (member.role === 'viewer') memberOf.push(`viewer-${member.tenantName}`);
         docs.push({
           apiVersion: 'backstage.io/v1alpha1',
           kind: 'User',
@@ -761,13 +756,13 @@ export function createRouter(opts: RouterOptions): Router {
             namespace: 'default',
             annotations: {
               'github.com/user-login': userId,
-              'mctl.me/tenant-role': primary.role,
+              'mctl.me/tenant-role': member.role,
             },
           },
           spec: {
             profile: { displayName: userId },
             memberOf,
-            owner: `group:default/${primary.tenantName}`,
+            owner: `group:default/${member.tenantName}`,
           },
         });
       }
