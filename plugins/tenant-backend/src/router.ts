@@ -124,11 +124,12 @@ async function resolveAuth(
     const { ownershipEntityRefs } = await userInfo.getUserInfo(credentials);
     const userId = extractUserId(ownershipEntityRefs);
 
-    // isAdmin requires owner role in admins tenant (verified in DB, not just group membership)
+    // isAdmin requires owner role in admins tenant — always verified via DB, not catalog groups.
+    // Catalog-based ownership may lag or reflect the wrong primary tenant for multi-tenant users.
     let isAdmin = false;
-    if (userId && ownershipEntityRefs.some(ref => ref === 'group:default/admins')) {
-      const membership = await store.getMemberTenant(userId);
-      isAdmin = membership?.tenantName === 'admins' && membership?.role === 'owner';
+    if (userId) {
+      const adminMembership = await store.getMemberByTenant('admins', userId);
+      isAdmin = adminMembership?.role === 'owner';
     }
 
     return {
@@ -455,13 +456,18 @@ export function createRouter(opts: RouterOptions): Router {
       return;
     }
     try {
-      const membership = await store.getMemberTenant(auth.userId);
-      if (!membership) {
+      const memberships = await store.listMembershipsForUser(auth.userId);
+      if (!memberships.length) {
         res.status(200).json({ tenant: null });
         return;
       }
-      const tenant = await store.findByName(membership.tenantName);
-      res.json({ tenant, role: membership.role });
+      // Primary: owner > developer > viewer, then alphabetical within the same role.
+      const roleRank = (r: string) => r === 'owner' ? 0 : r === 'developer' ? 1 : 2;
+      const primary = memberships.slice().sort((a, b) =>
+        roleRank(a.role) - roleRank(b.role) || a.tenantName.localeCompare(b.tenantName),
+      )[0];
+      const tenant = await store.findByName(primary.tenantName);
+      res.json({ tenant, role: primary.role, tenants: memberships.map(m => ({ tenantName: m.tenantName, role: m.role })) });
     } catch (err: any) {
       logger.error(`[tenant-backend] GET /me/tenant error: ${err}`);
       res.status(500).json({ error: 'Internal error' });
@@ -480,8 +486,8 @@ export function createRouter(opts: RouterOptions): Router {
     try {
       // Check access: admin or member of this tenant
       if (!auth.isAdmin && auth.userId) {
-        const membership = await store.getMemberTenant(auth.userId);
-        if (!membership || membership.tenantName !== name) {
+        const membership = await store.getMemberByTenant(name, auth.userId);
+        if (!membership) {
           res.status(403).json({ error: 'Access denied' });
           return;
         }
@@ -510,8 +516,8 @@ export function createRouter(opts: RouterOptions): Router {
           res.status(403).json({ error: 'Access denied' });
           return;
         }
-        const membership = await store.getMemberTenant(auth.userId);
-        if (!membership || membership.tenantName !== name || membership.role !== 'owner') {
+        const membership = await store.getMemberByTenant(name, auth.userId);
+        if (!membership || membership.role !== 'owner') {
           res.status(403).json({ error: 'Only tenant owners can invite members' });
           return;
         }
@@ -584,8 +590,8 @@ export function createRouter(opts: RouterOptions): Router {
           res.status(403).json({ error: 'Access denied' });
           return;
         }
-        const membership = await store.getMemberTenant(auth.userId);
-        if (!membership || membership.tenantName !== name || membership.role !== 'owner') {
+        const membership = await store.getMemberByTenant(name, auth.userId);
+        if (!membership || membership.role !== 'owner') {
           res.status(403).json({ error: 'Only tenant owners can remove members' });
           return;
         }
@@ -623,8 +629,8 @@ export function createRouter(opts: RouterOptions): Router {
           res.status(403).json({ error: 'Access denied' });
           return;
         }
-        const membership = await store.getMemberTenant(auth.userId);
-        if (!membership || membership.tenantName !== name || membership.role !== 'owner') {
+        const membership = await store.getMemberByTenant(name, auth.userId);
+        if (!membership || membership.role !== 'owner') {
           res.status(403).json({ error: 'Only tenant owners can change roles' });
           return;
         }
@@ -690,6 +696,34 @@ export function createRouter(opts: RouterOptions): Router {
           },
         });
 
+        // Owner marker group for admins tenant — permission policy checks this group
+        // (not the main admins group) to avoid granting full ALLOW to non-owner admins members.
+        if (tenant.name === 'admins') {
+          const owners = tenantMembers.filter(m => m.role === 'owner').map(m => m.userId);
+          if (owners.length > 0) {
+            docs.push({
+              apiVersion: 'backstage.io/v1alpha1',
+              kind: 'Group',
+              metadata: {
+                name: 'admins-owners',
+                namespace: 'default',
+                title: 'Platform Admins (Owners)',
+                annotations: {
+                  'mctl.me/tenant-name': 'admins',
+                  'mctl.me/role-marker': 'owner',
+                },
+              },
+              spec: {
+                type: 'virtual',
+                owner: 'group:default/admins',
+                profile: { displayName: 'Platform Admins (Owners)' },
+                children: [],
+                members: owners,
+              },
+            });
+          }
+        }
+
         // Viewer marker group — used by permission policy to restrict scaffolder access
         if (viewers.length > 0) {
           docs.push({
@@ -734,8 +768,9 @@ export function createRouter(opts: RouterOptions): Router {
         });
       }
 
-      // User entities (one per unique invited user)
-      // Viewers get memberOf: [tenantName, viewer-tenantName] for permission policy detection
+      // User entities (one per unique invited user).
+      // Primary tenant = first alphabetically (listAllMembers orders by tenant_name).
+      // Viewers get memberOf: [tenantName, viewer-tenantName] for permission policy detection.
       const userMap = new Map<string, typeof allMembers[0]>();
       for (const m of allMembers) {
         if (!userMap.has(m.userId)) userMap.set(m.userId, m);

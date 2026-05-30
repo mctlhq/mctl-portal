@@ -18,8 +18,6 @@ import {
   createCatalogConditionalDecision,
 } from '@backstage/plugin-catalog-backend/alpha';
 
-const ADMIN_TEAM = 'mctlhq/admins';
-
 /**
  * Roles and enforcement strategy:
  *
@@ -49,13 +47,13 @@ class TeamBasedPermissionPolicy implements PermissionPolicy {
 
     const ownership = user.identity.ownershipEntityRefs ?? [];
 
-    // Admin team gets full access
-    if (ownership.some(ref => ref === `group:default/${ADMIN_TEAM.split('/')[1]}`)) {
+    // Admin team owners get full access. Check admins-owners (virtual marker group) rather than
+    // the main admins group — the main group includes all roles (developer/viewer too).
+    if (ownership.some(ref => ref === 'group:default/admins-owners')) {
       return { result: AuthorizeResult.ALLOW };
     }
 
     // Viewer role: deny scaffolder task creation (read-only users)
-    // Scaffolder permissions include 'scaffolder.task.create' and related
     if (isViewerRole(ownership) && request.permission.name.startsWith('scaffolder.')) {
       return { result: AuthorizeResult.DENY };
     }

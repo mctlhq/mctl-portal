@@ -140,23 +140,15 @@ export class TenantStore {
   }
 
   /**
-   * Seed a member from values.yaml (system sync, no one-tenant constraint).
-   * Skips if the user is already in a *different* tenant (to avoid conflicts).
+   * Seed a member from values.yaml (system sync). Gitops is the source of
+   * truth — a user may legitimately appear in multiple tenant values files
+   * (e.g. a platform admin who is also a member of a product tenant), so no
+   * single-tenant constraint is enforced here. That constraint lives only in
+   * addMember() which handles user-initiated invites.
    */
   async seedMember(tenantName: string, userId: string, role: string): Promise<void> {
     const knex = await this.db.getClient();
     const normalized = userId.toLowerCase().trim();
-    // Only skip if already in a different tenant; allow upsert within same tenant
-    const conflict = await knex('tenant_members')
-      .where({ user_id: normalized })
-      .whereNot({ tenant_name: tenantName })
-      .first();
-    if (conflict) {
-      this.logger.debug(
-        `[TenantStore] seedMember: skipping '${normalized}' — already in tenant '${conflict.tenant_name}'`,
-      );
-      return;
-    }
     await knex('tenant_members')
       .insert({
         tenant_name: tenantName,
@@ -200,6 +192,13 @@ export class TenantStore {
     const knex = await this.db.getClient();
     const row = await knex('tenant_members').where({ tenant_name: tenantName, user_id: userId }).first();
     return row ? rowToMember(row) : undefined;
+  }
+
+  /** All tenant memberships for a single user (multi-tenant users have >1 row). */
+  async listMembershipsForUser(userId: string): Promise<TenantMember[]> {
+    const knex = await this.db.getClient();
+    const rows = await knex('tenant_members').where({ user_id: userId }).orderBy('tenant_name');
+    return rows.map(rowToMember);
   }
 
   /** List ALL members across ALL tenants (used by catalog YAML generator) */
