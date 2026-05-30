@@ -18,8 +18,6 @@ import {
   createCatalogConditionalDecision,
 } from '@backstage/plugin-catalog-backend/alpha';
 
-const ADMIN_TEAM = 'mctlhq/admins';
-
 /**
  * Roles and enforcement strategy:
  *
