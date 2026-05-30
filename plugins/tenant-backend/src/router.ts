@@ -462,8 +462,11 @@ export function createRouter(opts: RouterOptions): Router {
         res.status(200).json({ tenant: null });
         return;
       }
-      // Primary membership: first alphabetically (admins < labs < ovk, etc.)
-      const primary = memberships[0];
+      // Primary: owner > developer > viewer, then alphabetical within the same role.
+      const roleRank = (r: string) => r === 'owner' ? 0 : r === 'developer' ? 1 : 2;
+      const primary = memberships.slice().sort((a, b) =>
+        roleRank(a.role) - roleRank(b.role) || a.tenantName.localeCompare(b.tenantName),
+      )[0];
       const tenant = await store.findByName(primary.tenantName);
       res.json({ tenant, role: primary.role, tenants: memberships.map(m => ({ tenantName: m.tenantName, role: m.role })) });
     } catch (err: any) {

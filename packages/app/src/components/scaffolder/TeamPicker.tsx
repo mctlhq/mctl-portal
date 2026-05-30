@@ -1,8 +1,9 @@
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { scaffolderPlugin } from '@backstage/plugin-scaffolder';
 import { createScaffolderFieldExtension } from '@backstage/plugin-scaffolder-react';
 import { useApi, discoveryApiRef, fetchApiRef } from '@backstage/core-plugin-api';
 import TextField from '@material-ui/core/TextField';
+import MenuItem from '@material-ui/core/MenuItem';
 import CircularProgress from '@material-ui/core/CircularProgress';
 import useAsync from 'react-use/esm/useAsync';
 import type { FieldExtensionComponentProps } from '@backstage/plugin-scaffolder-react';
@@ -14,6 +15,10 @@ import type { FieldExtensionComponentProps } from '@backstage/plugin-scaffolder-
  *
  * Returns entity ref format: "group:default/{tenantName}" — compatible
  * with existing template expressions like `parseEntityRef | pick('name')`.
+ *
+ * For multi-tenant users (e.g. platform admins who are also product tenant
+ * owners) the picker renders a dropdown so they can choose the target tenant.
+ * Single-tenant users see a disabled read-only field as before.
  */
 const TeamPickerComponent = (
   props: FieldExtensionComponentProps<string>,
@@ -22,25 +27,60 @@ const TeamPickerComponent = (
   const discoveryApi = useApi(discoveryApiRef);
   const fetchApi = useApi(fetchApiRef);
 
-  const { value: team, loading } = useAsync(async () => {
+  const { value: data, loading } = useAsync(async () => {
     const baseUrl = await discoveryApi.getBaseUrl('tenant-management');
     const resp = await fetchApi.fetch(`${baseUrl}/me/tenant`);
     if (!resp.ok) return null;
-    const data = (await resp.json()) as {
+    return (await resp.json()) as {
       tenant: { name: string; displayName: string } | null;
       role?: string;
+      tenants?: Array<{ tenantName: string; role: string }>;
     };
-    return data.tenant;
   }, [discoveryApi, fetchApi]);
 
-  const entityRef = team ? `group:default/${team.name}` : '';
+  const primaryTenant = data?.tenant;
+  const allTenants = data?.tenants ?? (primaryTenant ? [{ tenantName: primaryTenant.name, role: data?.role ?? 'owner' }] : []);
+  const isMulti = allTenants.length > 1;
 
-  // Auto-select when team loads
+  // Selected value: default to primary
+  const defaultRef = primaryTenant ? `group:default/${primaryTenant.name}` : '';
+  const [selected, setSelected] = useState<string>('');
+
   useEffect(() => {
-    if (entityRef && entityRef !== formData) {
-      onChange(entityRef);
+    if (defaultRef && !selected) {
+      setSelected(defaultRef);
+      if (defaultRef !== formData) onChange(defaultRef);
     }
-  }, [entityRef, formData, onChange]);
+  }, [defaultRef, selected, formData, onChange]);
+
+  if (isMulti) {
+    return (
+      <TextField
+        select
+        label={schema.title || 'Team'}
+        required={required}
+        error={rawErrors && rawErrors.length > 0}
+        helperText={schema.description || 'Select your target team'}
+        variant="outlined"
+        margin="dense"
+        fullWidth
+        value={selected}
+        onChange={e => {
+          setSelected(e.target.value);
+          onChange(e.target.value);
+        }}
+        InputProps={{
+          endAdornment: loading ? <CircularProgress size={18} /> : undefined,
+        }}
+      >
+        {allTenants.map(t => (
+          <MenuItem key={t.tenantName} value={`group:default/${t.tenantName}`}>
+            {t.tenantName} ({t.role})
+          </MenuItem>
+        ))}
+      </TextField>
+    );
+  }
 
   return (
     <TextField
@@ -51,7 +91,7 @@ const TeamPickerComponent = (
       variant="outlined"
       margin="dense"
       fullWidth
-      value={team?.displayName ?? (loading ? 'Loading…' : 'No team found')}
+      value={primaryTenant?.displayName ?? (loading ? 'Loading…' : 'No team found')}
       disabled
       InputProps={{
         endAdornment: loading ? <CircularProgress size={18} /> : undefined,
