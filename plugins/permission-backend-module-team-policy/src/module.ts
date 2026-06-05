@@ -10,9 +10,9 @@ import {
 import {
   PermissionPolicy,
   PolicyQuery,
+  PolicyQueryUser,
 } from '@backstage/plugin-permission-node';
 import { policyExtensionPoint } from '@backstage/plugin-permission-node/alpha';
-import { BackstageIdentityResponse } from '@backstage/plugin-auth-node';
 import {
   catalogConditions,
   createCatalogConditionalDecision,
@@ -38,14 +38,14 @@ function isViewerRole(ownershipEntityRefs: string[]): boolean {
 class TeamBasedPermissionPolicy implements PermissionPolicy {
   async handle(
     request: PolicyQuery,
-    user?: BackstageIdentityResponse,
+    user?: PolicyQueryUser,
   ): Promise<PolicyDecision> {
     // Allow unauthenticated service-to-service calls
     if (!user) {
       return { result: AuthorizeResult.ALLOW };
     }
 
-    const ownership = user.identity.ownershipEntityRefs ?? [];
+    const ownership = user.info.ownershipEntityRefs ?? [];
 
     // Admin team owners get full access. Check admins-owners (virtual marker group) rather than
     // the main admins group — the main group includes all roles (developer/viewer too).
