@@ -158,7 +158,9 @@ async function findInstallation(
 
 export function createRouter(options: RouterOptions): Router {
   const { logger, store, appSlug, appId, privateKey, baseUrl, webhookSecret, catalogClient, scaffolderClient, notifications } = options;
-  const stateSecret = privateKey.slice(0, 64); // derive state encryption key from private key
+  // Derive the state key from the full private key (full entropy) rather than
+  // a low-entropy PEM-header prefix. 64 hex chars keeps the existing shape.
+  const stateSecret = crypto.createHash('sha256').update(privateKey).digest('hex');
 
   const router = Router();
 
