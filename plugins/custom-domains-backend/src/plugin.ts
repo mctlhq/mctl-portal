@@ -23,8 +23,6 @@ export const customDomainsPlugin = createBackendPlugin({
         const router = createRouter({ logger, store });
         httpRouter.use(router);
         httpRouter.addAuthPolicy({ path: '/health', allow: 'unauthenticated' });
-        httpRouter.addAuthPolicy({ path: '/domains', allow: 'unauthenticated' });
-        httpRouter.addAuthPolicy({ path: '/domains/', allow: 'unauthenticated' });
 
         logger.info('Custom Domains plugin initialized');
       },
