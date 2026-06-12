@@ -20,7 +20,8 @@ export interface RouterOptions {
 }
 
 // State tokens: encrypted JSON with nonce + expiry
-function encryptState(data: object, secret: string): string {
+// Exported for unit testing (see router.test.ts).
+export function encryptState(data: object, secret: string): string {
   const iv = crypto.randomBytes(16);
   const key = crypto.scryptSync(secret, 'salt', 32);
   const cipher = crypto.createCipheriv('aes-256-cbc', key, iv);
@@ -30,7 +31,7 @@ function encryptState(data: object, secret: string): string {
   return iv.toString('hex') + ':' + encrypted;
 }
 
-function decryptState(token: string, secret: string): Record<string, unknown> | null {
+export function decryptState(token: string, secret: string): Record<string, unknown> | null {
   try {
     const [ivHex, encrypted] = token.split(':');
     const iv = Buffer.from(ivHex, 'hex');
