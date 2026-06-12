@@ -1,3 +1,4 @@
+import crypto from 'crypto';
 import { encryptState, decryptState } from './router';
 
 // The OAuth install flow round-trips an encrypted `state` blob through GitHub.
@@ -36,5 +37,19 @@ describe('github-app-connect state tokens', () => {
     nowSpy.mockReturnValue(realNow + 11 * 60 * 1000);
     expect(decryptState(token, secret)).toBeNull();
     nowSpy.mockRestore();
+  });
+
+  // Rollout safety: tokens minted by the previous version (key = privateKey
+  // slice) cannot be read with the new sha256-derived key, so createRouter
+  // chains a legacy-secret fallback (decodeState) during the deploy window.
+  it('legacy-key tokens decode only with the legacy secret', () => {
+    const priv = 'PRIVATEKEYMATERIAL'.repeat(8);
+    const newSecret = crypto.createHash('sha256').update(priv).digest('hex');
+    const legacySecret = priv.slice(0, 64);
+    const legacyToken = encryptState({ repo: 'mctlhq/x' }, legacySecret);
+    // A pod running only the new key cannot read an in-flight legacy token...
+    expect(decryptState(legacyToken, newSecret)).toBeNull();
+    // ...but the legacy-secret fallback can, which is what decodeState chains.
+    expect(decryptState(legacyToken, legacySecret)).toMatchObject({ repo: 'mctlhq/x' });
   });
 });

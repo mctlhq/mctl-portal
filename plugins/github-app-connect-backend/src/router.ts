@@ -162,6 +162,13 @@ export function createRouter(options: RouterOptions): Router {
   // Derive the state key from the full private key (full entropy) rather than
   // a low-entropy PEM-header prefix. 64 hex chars keeps the existing shape.
   const stateSecret = crypto.createHash('sha256').update(privateKey).digest('hex');
+  // Previous derivation, kept ONLY to decrypt state tokens minted by the prior
+  // version so in-flight OAuth installs survive a rolling deploy. New tokens are
+  // always signed with stateSecret; this fallback can be removed one deploy
+  // cycle after rollout (tokens expire after 10 minutes anyway).
+  const legacyStateSecret = privateKey.slice(0, 64);
+  const decodeState = (token: string): Record<string, unknown> | null =>
+    decryptState(token, stateSecret) ?? decryptState(token, legacyStateSecret);
 
   const router = Router();
 
@@ -269,7 +276,7 @@ export function createRouter(options: RouterOptions): Router {
 
     // Flow 2: With encrypted state param (from install-url)
     if (stateParam) {
-      const stateData = decryptState(stateParam as string, stateSecret);
+      const stateData = decodeState(stateParam as string);
       if (!stateData) {
         res.status(400).json({ error: 'Invalid or expired state parameter' });
         return;
@@ -466,7 +473,7 @@ export function createRouter(options: RouterOptions): Router {
     let repoName = repo as string;
 
     if (stateParam) {
-      const stateData = decryptState(stateParam as string, stateSecret);
+      const stateData = decodeState(stateParam as string);
       if (stateData) {
         teamId = teamId || (stateData.team as string);
         serviceId = serviceId || (stateData.service as string);
