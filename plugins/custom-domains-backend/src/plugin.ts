@@ -5,6 +5,18 @@ import {
 import { createRouter } from './router';
 import { CustomDomainStore } from './store';
 
+/**
+ * Registers the plugin's HTTP auth policies. Only `/health` is public; every
+ * other route (notably `/domains*`) falls back to the Backstage default of
+ * requiring authentication. Exported so a unit test can assert that the
+ * previously-present unauthenticated `/domains` policies are not reintroduced.
+ */
+export function registerAuthPolicies(httpRouter: {
+  addAuthPolicy: (policy: { path: string; allow: 'unauthenticated' | 'user-cookie' }) => void;
+}): void {
+  httpRouter.addAuthPolicy({ path: '/health', allow: 'unauthenticated' });
+}
+
 export const customDomainsPlugin = createBackendPlugin({
   pluginId: 'custom-domains',
   register(env) {
@@ -22,9 +34,7 @@ export const customDomainsPlugin = createBackendPlugin({
 
         const router = createRouter({ logger, store });
         httpRouter.use(router);
-        httpRouter.addAuthPolicy({ path: '/health', allow: 'unauthenticated' });
-        httpRouter.addAuthPolicy({ path: '/domains', allow: 'unauthenticated' });
-        httpRouter.addAuthPolicy({ path: '/domains/', allow: 'unauthenticated' });
+        registerAuthPolicies(httpRouter);
 
         logger.info('Custom Domains plugin initialized');
       },
