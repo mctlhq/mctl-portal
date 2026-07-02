@@ -1,5 +1,13 @@
 # Changelog
 
+## [4.6.1](https://github.com/mctlhq/mctl-portal/compare/4.6.0...4.6.1) (2026-07-02)
+
+
+### Bug Fixes
+
+* point incremental lint at origin/main not origin/master ([4592bca](https://github.com/mctlhq/mctl-portal/commit/4592bca71ccbc5b929efa0f55de1562c054fec91))
+* point incremental lint at origin/main not origin/master ([f7923a4](https://github.com/mctlhq/mctl-portal/commit/f7923a40bd539da48591ed6c8e78ef42461f048e))
+
 ## [4.6.0](https://github.com/mctlhq/mctl-portal/compare/4.5.13...4.6.0) (2026-05-30)
 
 
