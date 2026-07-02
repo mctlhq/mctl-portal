@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   Box,
   Button,
@@ -122,6 +122,9 @@ export const ProposalDetailPage = () => {
   }, [api, service, slug]);
 
   const [reloadKey, setReloadKey] = useState(0);
+  useEffect(() => {
+    setReloadKey(0);
+  }, [service, slug]);
   const reloaded = useAsync(async () => {
     if (reloadKey === 0) return null;
     if (!service || !slug) return null;
@@ -129,11 +132,14 @@ export const ProposalDetailPage = () => {
   }, [api, service, slug, reloadKey]);
 
   const detail: ProposalDetail | undefined =
-    reloaded.value ?? fetchState.value;
+    reloadKey > 0 ? (reloaded.value ?? fetchState.value) : fetchState.value;
   const loading = fetchState.loading || reloaded.loading;
   const error = fetchState.error ?? reloaded.error;
 
   const [tab, setTab] = useState<TabKey>('requirements');
+  useEffect(() => {
+    setTab('requirements');
+  }, [service, slug]);
   const [rejectOpen, setRejectOpen] = useState(false);
   const [rejectNotes, setRejectNotes] = useState('');
 
@@ -184,12 +190,25 @@ export const ProposalDetailPage = () => {
     detail.status === 'implemented' ||
     acceptState.loading ||
     rejectState.loading;
+  const acceptNoOp = !!detail && detail.status === 'accepted';
+  const rejectNoOp = !!detail && detail.status === 'rejected';
 
   let acceptDisabledReason = '';
   if (!isAdmin) {
     acceptDisabledReason = 'Only admins can change proposal status';
   } else if (decisionDisabled) {
     acceptDisabledReason = 'Cannot change status while in-progress or implemented';
+  } else if (acceptNoOp) {
+    acceptDisabledReason = 'Proposal is already accepted';
+  }
+
+  let rejectDisabledReason = '';
+  if (!isAdmin) {
+    rejectDisabledReason = 'Only admins can change proposal status';
+  } else if (decisionDisabled) {
+    rejectDisabledReason = 'Cannot change status while in-progress or implemented';
+  } else if (rejectNoOp) {
+    rejectDisabledReason = 'Proposal is already rejected';
   }
 
   return (
@@ -284,7 +303,7 @@ export const ProposalDetailPage = () => {
                       <Button
                         variant="contained"
                         color="primary"
-                        disabled={!isAdmin || decisionDisabled}
+                        disabled={!isAdmin || decisionDisabled || acceptNoOp}
                         onClick={() => doAccept()}
                       >
                         {acceptState.loading ? 'Accepting…' : 'Accept'}
@@ -292,14 +311,14 @@ export const ProposalDetailPage = () => {
                     </span>
                   </Tooltip>
                   <Tooltip
-                    title={acceptDisabledReason}
-                    disableHoverListener={!acceptDisabledReason}
+                    title={rejectDisabledReason}
+                    disableHoverListener={!rejectDisabledReason}
                   >
                     <span>
                       <Button
                         variant="outlined"
                         color="secondary"
-                        disabled={!isAdmin || decisionDisabled}
+                        disabled={!isAdmin || decisionDisabled || rejectNoOp}
                         onClick={() => setRejectOpen(true)}
                       >
                         Reject…

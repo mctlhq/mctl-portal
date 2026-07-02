@@ -4,7 +4,7 @@ import {
   LoggerService,
   UserInfoService,
 } from '@backstage/backend-plugin-api';
-import { GitopsClient } from './gitops-client';
+import { GitopsClient, GitopsConflictError } from './gitops-client';
 import { ProposalStatus, StatusYaml } from './types';
 
 export interface RouterOptions {
@@ -14,7 +14,10 @@ export interface RouterOptions {
   gitops: GitopsClient;
 }
 
-const ADMIN_GROUP_REF = 'group:default/admins';
+// Owner-role virtual marker group, not the broad `admins` team group which
+// also includes developer/viewer roles. Matches tenant-backend's DB-verified
+// owner check, the permission policy, and the frontend's useIsAdmin hook.
+const ADMIN_GROUP_REF = 'group:default/admins-owners';
 const SLUG_RE = /^[a-z0-9][a-z0-9._-]{0,127}$/i;
 
 interface AdminAuth {
@@ -27,11 +30,11 @@ interface AdminAuth {
 
 /**
  * Resolve the caller as a Backstage user and verify membership of
- * `group:default/admins`. Service tokens (plugin-to-plugin) are
+ * `group:default/admins-owners`. Service tokens (plugin-to-plugin) are
  * authenticated for read access only — they are never marked as admin
  * so they cannot drive write endpoints (`accept`/`reject`). Admin write
  * authority must come from a user credential whose ownership refs
- * include `group:default/admins`.
+ * include `group:default/admins-owners`.
  */
 async function resolveAdmin(
   req: Request,
@@ -198,7 +201,7 @@ export function createRouter(opts: RouterOptions): Router {
         updated_at: new Date().toISOString(),
         updated_by: auth.userId ?? 'backstage',
         ...(detail.pr ? { pr: detail.pr } : {}),
-        ...(notes ? { notes } : {}),
+        ...(notes ? { notes } : detail.notes ? { notes: detail.notes } : {}),
       };
       const commitMessage = `chore(proposals): ${nextStatus === 'accepted' ? 'accept' : 'reject'} ${service}/${slug}`;
       await gitops.writeStatus(service, slug, payload, commitMessage);
@@ -212,6 +215,10 @@ export function createRouter(opts: RouterOptions): Router {
       logger.error(
         `[proposals-backend] write ${nextStatus} for ${service}/${slug}: ${err}`,
       );
+      if (err instanceof GitopsConflictError) {
+        res.status(409).json({ error: err.message });
+        return;
+      }
       res.status(500).json({ error: String(err?.message ?? 'Internal error') });
     }
   }

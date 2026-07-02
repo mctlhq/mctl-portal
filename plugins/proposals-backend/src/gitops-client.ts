@@ -9,6 +9,7 @@ import { dump as yamlDump, load as yamlLoad } from 'js-yaml';
 import {
   ProposalDetail,
   ProposalDocuments,
+  ProposalStatus,
   ProposalSummary,
   StatusYaml,
 } from './types';
@@ -45,6 +46,17 @@ const DOC_FILES = [
   'tasks.md',
   'proposed-content.md',
 ] as const;
+
+const VALID_STATUSES: ReadonlySet<ProposalStatus> = new Set([
+  'proposed',
+  'accepted',
+  'in-progress',
+  'implemented',
+  'rejected',
+]);
+
+/** Thrown when a `.status.yaml` write loses a race with a concurrent writer. */
+export class GitopsConflictError extends Error {}
 
 /**
  * Wraps GitHub REST API calls for the proposals workflow.
@@ -123,8 +135,11 @@ export class GitopsClient {
     if (!parsed || typeof parsed !== 'object') {
       return { status: 'proposed' };
     }
+    const status = VALID_STATUSES.has(parsed.status as ProposalStatus)
+      ? (parsed.status as ProposalStatus)
+      : 'proposed';
     return {
-      status: (parsed.status ?? 'proposed') as StatusYaml['status'],
+      status,
       updated_at: parsed.updated_at,
       updated_by: parsed.updated_by,
       pr: parsed.pr,
@@ -268,6 +283,11 @@ export class GitopsClient {
       headers: { ...headers, 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     });
+    if (res.status === 409 || res.status === 422) {
+      throw new GitopsConflictError(
+        `${service}/${slug} was modified concurrently; reload and retry`,
+      );
+    }
     if (!res.ok) {
       throw new Error(
         `GitHub API ${res.status} on PUT ${path}: ${await res.text()}`,
