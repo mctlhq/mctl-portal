@@ -79,6 +79,17 @@ function verifyLandingJwt(token: string, secret: string): Record<string, unknown
   }
 }
 
+/** Timing-safe comparison of a caller-supplied static token against the configured one. */
+export function staticTokenEquals(
+  provided: string | undefined,
+  expected: string | undefined,
+): boolean {
+  if (!provided || !expected) return false;
+  const providedBuf = Buffer.from(provided);
+  const expectedBuf = Buffer.from(expected);
+  return providedBuf.length === expectedBuf.length && timingSafeEqual(providedBuf, expectedBuf);
+}
+
 /**
  * Resolve caller identity with three tiers:
  *   1. Landing-page JWT or static token (for Cloudflare Worker)
@@ -109,10 +120,7 @@ async function resolveAuth(
       }
 
       // Fallback: static token comparison (backward compatibility)
-      // Use timing-safe comparison to prevent timing attacks
-      const tokenBuf = Buffer.from(bearerValue);
-      const expectedBuf = Buffer.from(landingPageToken);
-      if (tokenBuf.length === expectedBuf.length && timingSafeEqual(tokenBuf, expectedBuf)) {
+      if (staticTokenEquals(bearerValue, landingPageToken)) {
         return { authorized: true, isAdmin: true, callerInfo: 'landing-page', userId: undefined };
       }
     }
@@ -656,8 +664,27 @@ export function createRouter(opts: RouterOptions): Router {
 
   // ── GET /backstage/catalog.yaml ────────────────────────────────────────────
   // Returns all tenant User and Group entities as Backstage catalog YAML.
-  // No auth required — registered as a catalog location in app-config.
-  router.get('/backstage/catalog.yaml', async (_req: Request, res: Response) => {
+  // The output contains PII (contact emails, member lists), so it requires the
+  // static landing token even though it is registered as a catalog location on
+  // a public origin. The catalog's UrlReader cannot send headers, so the token
+  // is also accepted as a `?token=` query parameter (see app-config locations).
+  router.get('/backstage/catalog.yaml', async (req: Request, res: Response) => {
+    if (!landingPageToken) {
+      res
+        .status(503)
+        .send('# catalog export disabled: tenantManagement.landingPageToken is not configured');
+      return;
+    }
+    const authHeader = req.headers['authorization'];
+    const provided = authHeader?.startsWith('Bearer ')
+      ? authHeader.slice(7)
+      : typeof req.query.token === 'string'
+        ? req.query.token
+        : undefined;
+    if (!staticTokenEquals(provided, landingPageToken)) {
+      res.status(401).send('# unauthorized');
+      return;
+    }
     try {
       const [tenants, allMembers] = await Promise.all([
         store.listAll(),

@@ -101,7 +101,10 @@ catalog:
       rules:
         - allow: [User, Group]
 
-    # Tenant-managed User and Group entities (generated from tenant_members DB)
+    # Tenant-managed User and Group entities (generated from tenant_members DB).
+    # The endpoint now requires tenantManagement.landingPageToken; when you
+    # enable it locally, append ?token=<value> here, otherwise this location
+    # logs 503s and tenant User/Group entities stay absent in local dev.
     - type: url
       target: http://localhost:7007/api/tenant-management/backstage/catalog.yaml
       rules:

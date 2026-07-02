@@ -123,6 +123,9 @@ export const tenantPlugin = createBackendPlugin({
           getGithubToken: getToken,
         });
         httpRouter.use(router);
+        // The catalog's UrlReader cannot send Backstage credentials, so this must
+        // bypass the auth middleware; the handler enforces the landing token
+        // (Bearer header or ?token= query parameter) itself.
         httpRouter.addAuthPolicy({
           path: '/backstage/catalog.yaml',
           allow: 'unauthenticated',
