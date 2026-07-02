@@ -1,5 +1,24 @@
 # Changelog
 
+## [4.7.0](https://github.com/mctlhq/mctl-portal/compare/4.6.1...4.7.0) (2026-07-02)
+
+
+### Features
+
+* **app:** add /proposals page for agents review ([6281344](https://github.com/mctlhq/mctl-portal/commit/62813447f5fb5417cfbcf878b5435c7687a49aec))
+* **app:** add /proposals page with list and detail views ([08a442d](https://github.com/mctlhq/mctl-portal/commit/08a442d836fd4d9b12dfe7c490ad2871952d9ecd))
+* **proposals-backend:** scaffold plugin with read and write endpoints ([a1e8aa6](https://github.com/mctlhq/mctl-portal/commit/a1e8aa6709eefad60664ef04b67ea2889ff3a217))
+
+
+### Bug Fixes
+
+* **proposals-backend:** address P1/P2 review findings ([79d0d5d](https://github.com/mctlhq/mctl-portal/commit/79d0d5da2e895295930d6802594e1dabadbd96a0))
+* **proposals-backend:** address remaining P2/P3 review findings ([86acb3f](https://github.com/mctlhq/mctl-portal/commit/86acb3f77884dc6150dde5624e140a4b98601864))
+* **proposals-backend:** bump [@backstage](https://github.com/backstage) deps to match post-rebase workspace ([7085cb4](https://github.com/mctlhq/mctl-portal/commit/7085cb47883cd9e5b14aa53f4aad97410b890ab2))
+* **proposals-backend:** scope admin to users + enforce status transitions ([22de290](https://github.com/mctlhq/mctl-portal/commit/22de2906590824b51980bc2b1d639fa43f724240))
+* **security:** derive OAuth state key from full key hash ([af077e6](https://github.com/mctlhq/mctl-portal/commit/af077e6986d2212b705a021db32c60315877ac64))
+* **security:** remove legacy-key OAuth state fallback ([fea0196](https://github.com/mctlhq/mctl-portal/commit/fea019629be773c7c2ee36a06f3b6c6bda98d1d2))
+
 ## [4.6.1](https://github.com/mctlhq/mctl-portal/compare/4.6.0...4.6.1) (2026-07-02)
 
 
