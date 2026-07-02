@@ -1,5 +1,15 @@
 # Changelog
 
+## [4.7.1](https://github.com/mctlhq/mctl-portal/compare/4.7.0...4.7.1) (2026-07-02)
+
+
+### Bug Fixes
+
+* **security:** require landing token for backstage/catalog.yaml ([bb8f727](https://github.com/mctlhq/mctl-portal/commit/bb8f727abda5c252fd8e03781144c7967d11d513))
+* **security:** require landing token for backstage/catalog.yaml ([17689b6](https://github.com/mctlhq/mctl-portal/commit/17689b6e7c3a0cd3cc494ceabd34318f7404d7e7))
+* **security:** validate team/service slugs and escape intake page HTML ([fe47325](https://github.com/mctlhq/mctl-portal/commit/fe473250e1046236211d6ee4a5031391f5eae839))
+* **security:** validate team/service slugs and escape OpenClaw intake HTML ([7c5a36e](https://github.com/mctlhq/mctl-portal/commit/7c5a36e350d642065eadad2ada902669c1a132d4))
+
 ## [4.7.0](https://github.com/mctlhq/mctl-portal/compare/4.6.1...4.7.0) (2026-07-02)
 
 
