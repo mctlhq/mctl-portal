@@ -118,9 +118,11 @@ catalog:
         - allow: [Resource]
 
     # Tenant-managed User and Group entities (generated from tenant_members DB)
-    # The catalog reads this URL periodically; entities appear ~60s after invite
+    # The catalog reads this URL periodically; entities appear ~60s after invite.
+    # The endpoint serves PII (emails, member lists) and requires the landing
+    # token; UrlReader cannot send headers, so it goes in the query string.
     - type: url
-      target: ${BACKEND_BASE_URL}/api/tenant-management/backstage/catalog.yaml
+      target: ${BACKEND_BASE_URL}/api/tenant-management/backstage/catalog.yaml?token=${BACKSTAGE_LANDING_TOKEN}
       rules:
         - allow: [User, Group, System]
 
