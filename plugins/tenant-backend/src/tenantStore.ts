@@ -97,7 +97,7 @@ export class TenantStore {
   /** Get all tenant names currently in DB */
   async listNames(): Promise<string[]> {
     const knex = await this.db.getClient();
-    const rows = await knex('tenants').select('name');
+    const rows = await knex('tenants').select('name').orderBy('name');
     return rows.map((r: any) => r.name as string);
   }
 

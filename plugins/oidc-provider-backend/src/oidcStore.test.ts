@@ -126,6 +126,31 @@ describe('OidcStore access tokens', () => {
   });
 });
 
+// OidcStore is a persistence layer: reads return the stored row (including its
+// expiresAt) regardless of whether it is past due. Expiry is enforced by callers
+// in router.ts (e.g. consumeCode at :479, getAccessToken at :532, getSession at
+// :229/:563). These tests pin that contract so the responsibility boundary stays
+// explicit; cleanupExpired() is the mechanism that eventually purges stale rows.
+describe('OidcStore expiry is caller-enforced, not store-enforced', () => {
+  it('returns a past-due code/session/token so the caller can reject it', async () => {
+    const { store, knex } = await freshStore();
+    currentKnex = knex;
+    const past = Date.now() - 60_000;
+    await store.saveCode('old-code', {
+      userId: 'u',
+      clientId: 'c',
+      redirectUri: 'r',
+      expiresAt: past,
+    });
+    await store.saveSession('old-session', 'u', past);
+    await store.saveAccessToken('old-token', 'u', past);
+
+    expect((await store.consumeCode('old-code'))?.expiresAt).toBe(past);
+    expect((await store.getSession('old-session'))?.expiresAt).toBe(past);
+    expect((await store.getAccessToken('old-token'))?.expiresAt).toBe(past);
+  });
+});
+
 describe('OidcStore.cleanupExpired', () => {
   it('deletes only rows expired before now across all tables', async () => {
     const { store, knex } = await freshStore();

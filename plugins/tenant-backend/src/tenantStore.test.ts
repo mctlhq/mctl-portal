@@ -135,7 +135,7 @@ describe('TenantStore.listAll / listNames', () => {
     await store.upsert(makeTenant('admins'));
     await store.upsert(makeTenant('labs'));
     expect((await store.listAll()).map(t => t.name)).toEqual(['admins', 'labs', 'ovk']);
-    expect((await store.listNames()).sort()).toEqual(['admins', 'labs', 'ovk']);
+    expect(await store.listNames()).toEqual(['admins', 'labs', 'ovk']);
   });
 });
 
