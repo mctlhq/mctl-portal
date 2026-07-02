@@ -196,7 +196,9 @@ export const ProposalDetailPage = () => {
   let acceptDisabledReason = '';
   if (!isAdmin) {
     acceptDisabledReason = 'Only admins can change proposal status';
-  } else if (decisionDisabled) {
+  } else if (acceptState.loading || rejectState.loading) {
+    acceptDisabledReason = 'A status update is already in progress';
+  } else if (!detail || detail.status === 'in-progress' || detail.status === 'implemented') {
     acceptDisabledReason = 'Cannot change status while in-progress or implemented';
   } else if (acceptNoOp) {
     acceptDisabledReason = 'Proposal is already accepted';
@@ -205,7 +207,9 @@ export const ProposalDetailPage = () => {
   let rejectDisabledReason = '';
   if (!isAdmin) {
     rejectDisabledReason = 'Only admins can change proposal status';
-  } else if (decisionDisabled) {
+  } else if (acceptState.loading || rejectState.loading) {
+    rejectDisabledReason = 'A status update is already in progress';
+  } else if (!detail || detail.status === 'in-progress' || detail.status === 'implemented') {
     rejectDisabledReason = 'Cannot change status while in-progress or implemented';
   } else if (rejectNoOp) {
     rejectDisabledReason = 'Proposal is already rejected';

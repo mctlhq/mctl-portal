@@ -219,6 +219,18 @@ export const ProposalsListPage = () => {
                         )}/${encodeURIComponent(p.slug)}`,
                       )
                     }
+                    onKeyDown={e => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        navigate(
+                          `/proposals/${encodeURIComponent(
+                            p.service,
+                          )}/${encodeURIComponent(p.slug)}`,
+                        );
+                      }
+                    }}
+                    role="link"
+                    tabIndex={0}
                     hover
                   >
                     <TableCell>{p.service}</TableCell>

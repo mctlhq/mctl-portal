@@ -59,6 +59,34 @@ const VALID_STATUSES: ReadonlySet<ProposalStatus> = new Set([
 export class GitopsConflictError extends Error {}
 
 /**
+ * Parse a raw `.status.yaml` blob. Unknown/malformed `status` values (typos,
+ * manual edits, a future schema) and unparseable YAML both fall back to
+ * `proposed` rather than propagating an arbitrary string to the frontend's
+ * status-to-color map or throwing out of a read path.
+ */
+export function parseStatusYaml(raw: string): StatusYaml {
+  let parsed: Partial<StatusYaml> | undefined | null;
+  try {
+    parsed = yamlLoad(raw) as Partial<StatusYaml> | undefined | null;
+  } catch {
+    return { status: 'proposed' };
+  }
+  if (!parsed || typeof parsed !== 'object') {
+    return { status: 'proposed' };
+  }
+  const status = VALID_STATUSES.has(parsed.status as ProposalStatus)
+    ? (parsed.status as ProposalStatus)
+    : 'proposed';
+  return {
+    status,
+    updated_at: parsed.updated_at,
+    updated_by: parsed.updated_by,
+    pr: parsed.pr,
+    notes: parsed.notes,
+  };
+}
+
+/**
  * Wraps GitHub REST API calls for the proposals workflow.
  *
  * Auth uses Backstage's standard ScmIntegrations + DefaultGithubCredentialsProvider,
@@ -130,23 +158,6 @@ export class GitopsClient {
     return { content: decoded, sha: body.sha };
   }
 
-  private parseStatusYaml(raw: string): StatusYaml {
-    const parsed = yamlLoad(raw) as Partial<StatusYaml> | undefined | null;
-    if (!parsed || typeof parsed !== 'object') {
-      return { status: 'proposed' };
-    }
-    const status = VALID_STATUSES.has(parsed.status as ProposalStatus)
-      ? (parsed.status as ProposalStatus)
-      : 'proposed';
-    return {
-      status,
-      updated_at: parsed.updated_at,
-      updated_by: parsed.updated_by,
-      pr: parsed.pr,
-      notes: parsed.notes,
-    };
-  }
-
   /** List all `<service>/proposals/<slug>` pairs under `basePath`. */
   async listProposals(): Promise<ProposalSummary[]> {
     const services = await this.getContent(this.opts.basePath);
@@ -175,7 +186,7 @@ export class GitopsClient {
         let status: StatusYaml = { status: 'proposed' };
         try {
           const file = await this.getFile(statusPath);
-          if (file) status = this.parseStatusYaml(file.content);
+          if (file) status = parseStatusYaml(file.content);
         } catch (err) {
           this.opts.logger.warn(
             `[proposals-backend] Could not read ${statusPath}: ${err}`,
@@ -232,7 +243,7 @@ export class GitopsClient {
 
     let status: StatusYaml = { status: 'proposed' };
     const statusFile = await this.getFile(`${dir}/.status.yaml`);
-    if (statusFile) status = this.parseStatusYaml(statusFile.content);
+    if (statusFile) status = parseStatusYaml(statusFile.content);
 
     return {
       service,
@@ -247,17 +258,40 @@ export class GitopsClient {
   }
 
   /**
-   * Write `.status.yaml` for a proposal. Reads current sha first (if any) so the
-   * Contents API call updates rather than 422s.
+   * Lightweight status lookup for the accept/reject write path — unlike
+   * `getProposal`, this does not fetch the (unused, in this context) doc
+   * markdown files. Existence is confirmed via the proposals directory
+   * listing rather than probing every doc file.
+   */
+  async getStatusForWrite(
+    service: string,
+    slug: string,
+  ): Promise<(StatusYaml & { sha?: string }) | null> {
+    const dir = `${this.opts.basePath}/${service}/proposals/${slug}`;
+    const entries = await this.getContent(dir);
+    if (!entries) return null;
+
+    const statusFile = await this.getFile(`${dir}/.status.yaml`);
+    if (!statusFile) return { status: 'proposed' };
+    return { ...parseStatusYaml(statusFile.content), sha: statusFile.sha };
+  }
+
+  /**
+   * Write `.status.yaml` for a proposal. Pass `knownSha` when the caller
+   * already fetched the current file (e.g. via `getStatusForWrite`) to skip
+   * a redundant GET; otherwise it is looked up here so the Contents API call
+   * updates rather than 422s.
    */
   async writeStatus(
     service: string,
     slug: string,
     payload: StatusYaml,
     commitMessage: string,
+    knownSha?: string,
   ): Promise<void> {
     const path = `${this.opts.basePath}/${service}/proposals/${slug}/.status.yaml`;
-    const existing = await this.getFile(path);
+    const existingSha =
+      knownSha ?? (await this.getFile(path))?.sha;
 
     // Stable key order so diffs are readable.
     const ordered: StatusYaml = {
@@ -276,7 +310,7 @@ export class GitopsClient {
       content: Buffer.from(yaml, 'utf-8').toString('base64'),
       branch: this.opts.branch,
     };
-    if (existing) body.sha = existing.sha;
+    if (existingSha) body.sha = existingSha;
 
     const res = await fetch(url, {
       method: 'PUT',

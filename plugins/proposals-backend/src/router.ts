@@ -76,7 +76,7 @@ async function resolveAdmin(
  *   any transition to/from `implemented`  (terminal)
  *   no-op transitions (`accepted` → `accepted`, `rejected` → `rejected`)
  */
-function isAllowedTransition(
+export function isAllowedTransition(
   current: ProposalStatus,
   attempted: Extract<ProposalStatus, 'accepted' | 'rejected'>,
 ): boolean {
@@ -178,8 +178,10 @@ export function createRouter(opts: RouterOptions): Router {
 
     try {
       // Make sure the proposal actually exists before writing the status file.
-      const detail = await gitops.getProposal(service, slug);
-      if (!detail) {
+      // Uses a lightweight lookup (no doc-file fetches) since the write path
+      // only needs status/notes/pr/sha.
+      const current = await gitops.getStatusForWrite(service, slug);
+      if (!current) {
         res.status(404).json({ error: 'Proposal not found' });
         return;
       }
@@ -187,10 +189,10 @@ export function createRouter(opts: RouterOptions): Router {
       // Server-side terminal-status guard. The UI disables these actions but
       // a direct API call must not be able to overwrite an `in-progress` or
       // `implemented` proposal, nor perform a no-op re-decision.
-      if (!isAllowedTransition(detail.status, nextStatus)) {
+      if (!isAllowedTransition(current.status, nextStatus)) {
         res.status(409).json({
           error: 'invalid status transition',
-          current: detail.status,
+          current: current.status,
           attempted: nextStatus,
         });
         return;
@@ -200,11 +202,11 @@ export function createRouter(opts: RouterOptions): Router {
         status: nextStatus,
         updated_at: new Date().toISOString(),
         updated_by: auth.userId ?? 'backstage',
-        ...(detail.pr ? { pr: detail.pr } : {}),
-        ...(notes ? { notes } : detail.notes ? { notes: detail.notes } : {}),
+        ...(current.pr ? { pr: current.pr } : {}),
+        ...(notes ? { notes } : current.notes ? { notes: current.notes } : {}),
       };
       const commitMessage = `chore(proposals): ${nextStatus === 'accepted' ? 'accept' : 'reject'} ${service}/${slug}`;
-      await gitops.writeStatus(service, slug, payload, commitMessage);
+      await gitops.writeStatus(service, slug, payload, commitMessage, current.sha);
       res.json({
         ok: true,
         status: nextStatus,
