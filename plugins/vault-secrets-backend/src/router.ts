@@ -85,6 +85,10 @@ export function createRouter(options: RouterOptions): Router {
       res.status(400).send('Missing team or service');
       return;
     }
+    if (!SLUG_RE.test(team) || !SLUG_RE.test(service)) {
+      res.status(400).send('Invalid team or service name');
+      return;
+    }
 
     try {
       const userId = await readOidcSessionUserId(req.headers.cookie, db, isPostgres);
@@ -123,6 +127,10 @@ export function createRouter(options: RouterOptions): Router {
     const botToken = String(req.body.telegram_bot_token ?? '').trim();
     if (!team || !service) {
       res.status(400).send('Missing team or service');
+      return;
+    }
+    if (!SLUG_RE.test(team) || !SLUG_RE.test(service)) {
+      res.status(400).send('Invalid team or service name');
       return;
     }
     if (!botToken) {
@@ -293,7 +301,23 @@ function sanitizeReturnTo(value: string): string {
   }
 }
 
-function renderOpenClawIntakePage(team: string, service: string, returnTo: string): string {
+// Team and service names are kebab-case slugs (see CONVENTIONS.md). Both are
+// interpolated into intake HTML below, so reject anything else up front.
+export const SLUG_RE = /^[a-z0-9][a-z0-9-]{0,30}$/;
+
+export function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+export function renderOpenClawIntakePage(rawTeam: string, rawService: string, rawReturnTo: string): string {
+  const team = escapeHtml(rawTeam);
+  const service = escapeHtml(rawService);
+  const returnTo = escapeHtml(rawReturnTo);
   return `<!doctype html>
 <html lang="en">
   <head>
@@ -333,7 +357,9 @@ function renderOpenClawIntakePage(team: string, service: string, returnTo: strin
 </html>`;
 }
 
-function renderOpenClawSavedPage(team: string, service: string): string {
+export function renderOpenClawSavedPage(rawTeam: string, rawService: string): string {
+  const team = escapeHtml(rawTeam);
+  const service = escapeHtml(rawService);
   return `<!doctype html>
 <html lang="en">
   <head>
