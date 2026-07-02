@@ -303,9 +303,9 @@ function sanitizeReturnTo(value: string): string {
 
 // Team and service names are kebab-case slugs (see CONVENTIONS.md). Both are
 // interpolated into intake HTML below, so reject anything else up front.
-const SLUG_RE = /^[a-z0-9][a-z0-9-]{0,30}$/;
+export const SLUG_RE = /^[a-z0-9][a-z0-9-]{0,30}$/;
 
-function escapeHtml(value: string): string {
+export function escapeHtml(value: string): string {
   return value
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
@@ -314,7 +314,7 @@ function escapeHtml(value: string): string {
     .replace(/'/g, '&#39;');
 }
 
-function renderOpenClawIntakePage(rawTeam: string, rawService: string, rawReturnTo: string): string {
+export function renderOpenClawIntakePage(rawTeam: string, rawService: string, rawReturnTo: string): string {
   const team = escapeHtml(rawTeam);
   const service = escapeHtml(rawService);
   const returnTo = escapeHtml(rawReturnTo);
@@ -357,7 +357,7 @@ function renderOpenClawIntakePage(rawTeam: string, rawService: string, rawReturn
 </html>`;
 }
 
-function renderOpenClawSavedPage(rawTeam: string, rawService: string): string {
+export function renderOpenClawSavedPage(rawTeam: string, rawService: string): string {
   const team = escapeHtml(rawTeam);
   const service = escapeHtml(rawService);
   return `<!doctype html>
