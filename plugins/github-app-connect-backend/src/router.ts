@@ -161,14 +161,17 @@ export function createRouter(options: RouterOptions): Router {
   const { logger, store, appSlug, appId, privateKey, baseUrl, webhookSecret, catalogClient, scaffolderClient, notifications } = options;
   // Derive the state key from the full private key (full entropy) rather than
   // a low-entropy PEM-header prefix. 64 hex chars keeps the existing shape.
+  //
+  // No legacy-key fallback: state tokens expire after 10 minutes, so a
+  // rolling deploy just fails in-flight installs with "Invalid or expired
+  // state parameter" and the user retries. A fallback keyed on the old
+  // low-entropy derivation would reintroduce the vulnerability this fixes
+  // and, since anyone holding that key can forge the token's own `exp`
+  // claim, would stay exploitable indefinitely rather than for one deploy
+  // cycle.
   const stateSecret = crypto.createHash('sha256').update(privateKey).digest('hex');
-  // Previous derivation, kept ONLY to decrypt state tokens minted by the prior
-  // version so in-flight OAuth installs survive a rolling deploy. New tokens are
-  // always signed with stateSecret; this fallback can be removed one deploy
-  // cycle after rollout (tokens expire after 10 minutes anyway).
-  const legacyStateSecret = privateKey.slice(0, 64);
   const decodeState = (token: string): Record<string, unknown> | null =>
-    decryptState(token, stateSecret) ?? decryptState(token, legacyStateSecret);
+    decryptState(token, stateSecret);
 
   const router = Router();
 
