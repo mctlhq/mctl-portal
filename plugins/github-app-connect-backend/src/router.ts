@@ -20,7 +20,8 @@ export interface RouterOptions {
 }
 
 // State tokens: encrypted JSON with nonce + expiry
-function encryptState(data: object, secret: string): string {
+// Exported for unit testing (see router.test.ts).
+export function encryptState(data: object, secret: string): string {
   const iv = crypto.randomBytes(16);
   const key = crypto.scryptSync(secret, 'salt', 32);
   const cipher = crypto.createCipheriv('aes-256-cbc', key, iv);
@@ -30,7 +31,7 @@ function encryptState(data: object, secret: string): string {
   return iv.toString('hex') + ':' + encrypted;
 }
 
-function decryptState(token: string, secret: string): Record<string, unknown> | null {
+export function decryptState(token: string, secret: string): Record<string, unknown> | null {
   try {
     const [ivHex, encrypted] = token.split(':');
     const iv = Buffer.from(ivHex, 'hex');
@@ -158,7 +159,19 @@ async function findInstallation(
 
 export function createRouter(options: RouterOptions): Router {
   const { logger, store, appSlug, appId, privateKey, baseUrl, webhookSecret, catalogClient, scaffolderClient, notifications } = options;
-  const stateSecret = privateKey.slice(0, 64); // derive state encryption key from private key
+  // Derive the state key from the full private key (full entropy) rather than
+  // a low-entropy PEM-header prefix. 64 hex chars keeps the existing shape.
+  //
+  // No legacy-key fallback: state tokens expire after 10 minutes, so a
+  // rolling deploy just fails in-flight installs with "Invalid or expired
+  // state parameter" and the user retries. A fallback keyed on the old
+  // low-entropy derivation would reintroduce the vulnerability this fixes
+  // and, since anyone holding that key can forge the token's own `exp`
+  // claim, would stay exploitable indefinitely rather than for one deploy
+  // cycle.
+  const stateSecret = crypto.createHash('sha256').update(privateKey).digest('hex');
+  const decodeState = (token: string): Record<string, unknown> | null =>
+    decryptState(token, stateSecret);
 
   const router = Router();
 
@@ -266,7 +279,7 @@ export function createRouter(options: RouterOptions): Router {
 
     // Flow 2: With encrypted state param (from install-url)
     if (stateParam) {
-      const stateData = decryptState(stateParam as string, stateSecret);
+      const stateData = decodeState(stateParam as string);
       if (!stateData) {
         res.status(400).json({ error: 'Invalid or expired state parameter' });
         return;
@@ -463,7 +476,7 @@ export function createRouter(options: RouterOptions): Router {
     let repoName = repo as string;
 
     if (stateParam) {
-      const stateData = decryptState(stateParam as string, stateSecret);
+      const stateData = decodeState(stateParam as string);
       if (stateData) {
         teamId = teamId || (stateData.team as string);
         serviceId = serviceId || (stateData.service as string);
