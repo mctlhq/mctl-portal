@@ -1,5 +1,13 @@
 # Changelog
 
+## [4.7.2](https://github.com/mctlhq/mctl-portal/compare/4.7.1...4.7.2) (2026-07-02)
+
+
+### Bug Fixes
+
+* copy proposals-backend package.json in Docker build ([739c388](https://github.com/mctlhq/mctl-portal/commit/739c388607efee90393100ff54ba8ffa8e775066))
+* copy proposals-backend package.json in Docker build ([cccd481](https://github.com/mctlhq/mctl-portal/commit/cccd481a2bb8c74b32f6aeae05d80d4d76d1676d))
+
 ## [4.7.1](https://github.com/mctlhq/mctl-portal/compare/4.7.0...4.7.1) (2026-07-02)
 
 
