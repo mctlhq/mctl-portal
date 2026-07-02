@@ -50,6 +50,7 @@
     "@internal/plugin-github-app-connect-backend": "workspace:*",
     "@internal/plugin-oidc-provider-backend": "workspace:*",
     "@internal/plugin-permission-backend-module-team-policy": "workspace:*",
+    "@internal/plugin-proposals-backend": "workspace:*",
     "@internal/plugin-resource-usage-backend": "workspace:*",
     "@internal/plugin-tenant-backend": "workspace:*",
     "@internal/plugin-vault-secrets-backend": "workspace:*",

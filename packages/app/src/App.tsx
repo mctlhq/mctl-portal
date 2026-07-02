@@ -30,6 +30,7 @@ import { entityPage } from './components/catalog/EntityPage';
 import { searchPage } from './components/search/SearchPage';
 import { Root } from './components/Root';
 import { NoTenantPage } from './components/tenant/NoTenantPage';
+import { ProposalsRoutes } from './components/proposals';
 
 import {
   AlertDisplay,
@@ -261,6 +262,7 @@ const routes = (
     <Route path="/catalog-graph" element={<CatalogGraphPage />} />
     <Route path="/notifications" element={<NotificationsPage />} />
     <Route path="/no-tenant" element={<NoTenantPage />} />
+    <Route path="/proposals/*" element={<ProposalsRoutes />} />
   </FlatRoutes>
 );
 
