@@ -5,7 +5,7 @@ Backstage-based developer portal. Service catalog, templates, deploy UI.
 ## Stack
 - Backstage (Node.js 22), TypeScript
 - yarn for package management
-- 8 custom backend plugins
+- 9 custom backend plugins
 
 ## Conventions
 - TypeScript strict mode (`strict: true`)
@@ -20,9 +20,10 @@ Backstage-based developer portal. Service catalog, templates, deploy UI.
 3. `github-app-connect-backend` — GitHub App orchestration
 4. `oidc-provider-backend` — SSO provider
 5. `permission-backend-module-team-policy` — Team RBAC
-6. `resource-usage-backend` — Quota monitoring
-7. `tenant-backend` — Workspace management
-8. `vault-secrets-backend` — Secret injection
+6. `proposals-backend` — Review/approve mctl-agents proposals (agents-state in gitops)
+7. `resource-usage-backend` — Quota monitoring
+8. `tenant-backend` — Workspace management
+9. `vault-secrets-backend` — Secret injection
 
 ## Key Paths
 - `app-config.yaml` — local dev config
