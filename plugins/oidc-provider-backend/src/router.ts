@@ -2,6 +2,7 @@ import { Request, Response, Router } from 'express';
 import express from 'express';
 import Router_ from 'express-promise-router';
 import { v4 as uuid } from 'uuid';
+import { createHash } from 'crypto';
 import { LoggerService } from '@backstage/backend-plugin-api';
 import { KeyStore } from './keyStore';
 import { OidcStore } from './oidcStore';
@@ -19,6 +20,7 @@ export interface MembershipLookup {
   getUserGroups(userId: string): Promise<string[]>;
   userExists(userId: string): Promise<boolean>;
   getUserRole(userId: string, tenantName: string): Promise<string | null>;
+  getUserTenantRoles(userId: string): Promise<Record<string, string>>;
 }
 
 export interface RouterOptions {
@@ -43,12 +45,13 @@ export function createRouter(options: RouterOptions): Router {
   // Derive the GitHub OAuth callback URL from the issuer
   const githubCallbackUrl = `${issuer}/github/callback`;
 
-  // Cleanup expired entries every 60 seconds
+  // Cleanup expired entries every 60 seconds; unref so the timer never
+  // keeps the process (or a test worker) alive on its own.
   setInterval(() => {
     store.cleanupExpired().catch(err => {
       logger.warn(`[OIDC] Cleanup error: ${err?.message}`);
     });
-  }, 60_000);
+  }, 60_000).unref?.();
 
   // ── Helper: find registered client ──────────────────────────────────
   function findClient(clientId: string): OidcClient | undefined {
@@ -164,11 +167,12 @@ export function createRouter(options: RouterOptions): Router {
       token_endpoint: `${issuer}/token`,
       userinfo_endpoint: `${issuer}/userinfo`,
       jwks_uri: `${issuer}/.well-known/jwks.json`,
-      scopes_supported: ['openid', 'profile', 'email', 'groups'],
+      scopes_supported: ['openid', 'profile', 'email', 'groups', 'tenant_roles'],
       response_types_supported: ['code'],
       grant_types_supported: ['authorization_code'],
       subject_types_supported: ['public'],
       id_token_signing_alg_values_supported: ['RS256'],
+      code_challenge_methods_supported: ['S256'],
       claims_supported: [
         'sub',
         'name',
@@ -176,6 +180,7 @@ export function createRouter(options: RouterOptions): Router {
         'email_verified',
         'preferred_username',
         'groups',
+        'tenant_roles',
         'iss',
         'aud',
         'exp',
@@ -202,6 +207,8 @@ export function createRouter(options: RouterOptions): Router {
       scope: _scope,
       state,
       nonce,
+      code_challenge,
+      code_challenge_method,
     } = req.query as Record<string, string>;
 
     if (response_type !== 'code') {
@@ -223,6 +230,25 @@ export function createRouter(options: RouterOptions): Router {
       return;
     }
 
+    // PKCE (RFC 7636) is opt-in per request: clients that send no
+    // code_challenge (e.g. Dex) keep the plain confidential-client flow.
+    if (code_challenge || code_challenge_method) {
+      if (code_challenge_method !== 'S256') {
+        res.status(400).json({
+          error: 'invalid_request',
+          error_description: 'Only code_challenge_method=S256 is supported',
+        });
+        return;
+      }
+      if (!code_challenge || !/^[A-Za-z0-9_-]{43,128}$/.test(code_challenge)) {
+        res.status(400).json({
+          error: 'invalid_request',
+          error_description: 'Malformed code_challenge',
+        });
+        return;
+      }
+    }
+
     // Check session cookie
     const session = await readSessionCookie(req);
 
@@ -235,6 +261,8 @@ export function createRouter(options: RouterOptions): Router {
         redirectUri: redirect_uri,
         expiresAt: Date.now() + 5 * 60 * 1000,
         nonce,
+        codeChallenge: code_challenge || undefined,
+        codeChallengeMethod: code_challenge ? 'S256' : undefined,
       });
       const url = new URL(redirect_uri);
       url.searchParams.set('code', code);
@@ -449,7 +477,7 @@ export function createRouter(options: RouterOptions): Router {
   // POST /token  (application/x-www-form-urlencoded)
   // grant_type=authorization_code&code=X&redirect_uri=Y&client_id=Z&client_secret=S
   router.post('/token', async (req: Request, res: Response) => {
-    const { grant_type, code, redirect_uri, client_id, client_secret } =
+    const { grant_type, code, redirect_uri, client_id, client_secret, code_verifier } =
       req.body;
 
     if (grant_type !== 'authorization_code') {
@@ -481,8 +509,22 @@ export function createRouter(options: RouterOptions): Router {
       return;
     }
 
-    // Look up user groups
+    // PKCE verification: mandatory when the code was issued with a challenge.
+    if (codeData.codeChallenge) {
+      if (typeof code_verifier !== 'string' || !code_verifier) {
+        res.status(400).json({ error: 'invalid_grant', error_description: 'code_verifier required' });
+        return;
+      }
+      const computed = createHash('sha256').update(code_verifier).digest('base64url');
+      if (computed !== codeData.codeChallenge) {
+        res.status(400).json({ error: 'invalid_grant', error_description: 'code_verifier mismatch' });
+        return;
+      }
+    }
+
+    // Look up user groups + per-tenant roles
     const groups = await membership.getUserGroups(codeData.userId);
+    const tenantRoles = await membership.getUserTenantRoles(codeData.userId);
 
     // Build claims
     const claims: Record<string, unknown> = {
@@ -492,6 +534,7 @@ export function createRouter(options: RouterOptions): Router {
       email: `${codeData.userId}@mctl.me`,
       email_verified: true,
       groups,
+      tenant_roles: tenantRoles,
     };
     if (codeData.nonce) {
       claims.nonce = codeData.nonce;
@@ -512,7 +555,7 @@ export function createRouter(options: RouterOptions): Router {
       token_type: 'Bearer',
       expires_in: 28800,
       id_token: idToken,
-      scope: 'openid profile email groups',
+      scope: 'openid profile email groups tenant_roles',
     });
 
     logger.info(
@@ -535,6 +578,7 @@ export function createRouter(options: RouterOptions): Router {
     }
 
     const groups = await membership.getUserGroups(data.userId);
+    const tenantRoles = await membership.getUserTenantRoles(data.userId);
 
     res.json({
       sub: data.userId,
@@ -543,6 +587,7 @@ export function createRouter(options: RouterOptions): Router {
       email: `${data.userId}@mctl.me`,
       email_verified: true,
       groups,
+      tenant_roles: tenantRoles,
     });
   });
 

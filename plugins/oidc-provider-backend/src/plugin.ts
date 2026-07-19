@@ -20,18 +20,25 @@ export const oidcProviderPlugin = createBackendPlugin({
         // ── Config ─────────────────────────────────────────────────────
         const issuer = config.getString('oidcProvider.issuer');
         const clientsConfig = config.getConfigArray('oidcProvider.clients');
-        const clients: OidcClient[] = clientsConfig.map(c => ({
-          clientId: c.getString('clientId'),
-          clientSecret: c.getString('clientSecret'),
-          redirectUris: c.getStringArray('redirectUris'),
-        }));
+        // Entries whose env-substituted values are missing are skipped (with
+        // a warning) instead of crashing the whole portal: a client whose
+        // secret has not reached the deployment yet must not take SSO down.
+        const clients: OidcClient[] = [];
+        for (const c of clientsConfig) {
+          const clientId = c.getOptionalString('clientId');
+          const clientSecret = c.getOptionalString('clientSecret');
+          const redirectUris = c.getOptionalStringArray('redirectUris');
+          if (!clientId || !clientSecret || !redirectUris?.length) {
+            logger.warn(
+              `[OIDC Provider] Skipping incompletely configured client (clientId=${clientId ?? 'missing'})`,
+            );
+            continue;
+          }
+          clients.push({ clientId, clientSecret, redirectUris });
+        }
 
         const githubClientId = config.getString('oidcProvider.github.clientId');
         const githubClientSecret = config.getString('oidcProvider.github.clientSecret');
-
-        // ── Signing keys ───────────────────────────────────────────────
-        const keyStore = new KeyStore(logger);
-        await keyStore.init();
 
         // ── Membership lookup ──────────────────────────────────────────
         // pluginDivisionMode=schema: all plugins share the same PG database
@@ -84,11 +91,31 @@ export const oidcProviderPlugin = createBackendPlugin({
                   .first();
             return row?.role ? String(row.role) : null;
           },
+          async getUserTenantRoles(userId: string): Promise<Record<string, string>> {
+            const id = userId.toLowerCase();
+            const rows = isPostgres
+              ? await dbClient('tenant_members')
+                  .withSchema(tmSchema)
+                  .select('tenant_name', 'role')
+                  .whereRaw('LOWER(user_id) = ?', [id])
+              : await dbClient('tenant_members')
+                  .select('tenant_name', 'role')
+                  .whereRaw('LOWER(user_id) = ?', [id]);
+            const roles: Record<string, string> = {};
+            for (const row of rows as Array<{ tenant_name: string; role: string }>) {
+              roles[row.tenant_name] = String(row.role);
+            }
+            return roles;
+          },
         };
 
         // ── OIDC persistent store ────────────────────────────────────
         const oidcStore = new OidcStore(dbClient, logger, isPostgres);
         await oidcStore.init();
+
+        // ── Signing keys (persisted; restarts keep tokens verifiable) ──
+        const keyStore = new KeyStore(logger);
+        await keyStore.init(oidcStore);
 
         // ── Router ─────────────────────────────────────────────────────
         const router = createRouter({

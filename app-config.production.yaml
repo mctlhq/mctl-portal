@@ -174,3 +174,10 @@ oidcProvider:
       clientSecret: ${OIDC_CLIENT_SECRET}
       redirectUris:
         - ${OPS_DEX_CALLBACK_URL}
+    # mctl-rules is a confidential client that additionally uses PKCE S256.
+    # The entry is skipped (not fatal) while OIDC_RULES_CLIENT_SECRET is absent.
+    - clientId: mctl-rules
+      clientSecret: ${OIDC_RULES_CLIENT_SECRET}
+      redirectUris:
+        - https://rules.mctl.ai/api/auth/callback
+        - https://labs-mctl-rules.mctl.ai/api/auth/callback

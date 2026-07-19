@@ -1,9 +1,30 @@
 import * as jose from 'jose';
+import { randomBytes } from 'crypto';
 import { LoggerService } from '@backstage/backend-plugin-api';
 
 /**
+ * Persistence contract for signing keys (implemented by OidcStore).
+ * Keys survive pod restarts so previously issued ID tokens stay verifiable.
+ */
+export interface SigningKeyPersistence {
+  getSigningKeys(): Promise<
+    Array<{ kid: string; privateJwk: string; publicJwk: string; createdAt: number }>
+  >;
+  saveSigningKey(key: {
+    kid: string;
+    privateJwk: string;
+    publicJwk: string;
+    createdAt: number;
+  }): Promise<void>;
+}
+
+/**
  * Manages RSA key pairs for signing OIDC tokens.
- * Generates a new keypair on startup and exposes JWKS for verification.
+ *
+ * With a persistence store: loads the newest stored key for signing and
+ * publishes ALL stored public keys in JWKS, so tokens signed before a
+ * restart (or by a previous key) keep verifying. Without a store
+ * (tests/local): generates an ephemeral keypair, as before.
  */
 export class KeyStore {
   private privateKey!: jose.KeyLike;
@@ -12,25 +33,50 @@ export class KeyStore {
 
   constructor(private readonly logger: LoggerService) {}
 
-  async init(): Promise<void> {
+  async init(persistence?: SigningKeyPersistence): Promise<void> {
+    if (persistence) {
+      const stored = await persistence.getSigningKeys();
+      if (stored.length > 0) {
+        const newest = stored[stored.length - 1];
+        this.privateKey = (await jose.importJWK(
+          JSON.parse(newest.privateJwk),
+          'RS256',
+        )) as jose.KeyLike;
+        this.kid = newest.kid;
+        this.jwks = { keys: stored.map(k => JSON.parse(k.publicJwk)) };
+        this.logger.info(
+          `[OIDC] Loaded persisted signing key, kid=${this.kid} (${stored.length} key(s) in JWKS)`,
+        );
+        return;
+      }
+    }
+
     const { publicKey, privateKey } = await jose.generateKeyPair('RS256', {
       extractable: true,
     });
     this.privateKey = privateKey;
-    this.kid = jose.base64url.encode(
-      new Uint8Array(
-        await crypto.subtle
-          ? crypto.getRandomValues(new Uint8Array(16))
-          : Buffer.from(Date.now().toString(16), 'hex'),
-      ),
-    );
-    // Build JWKS
-    const jwk = await jose.exportJWK(publicKey);
-    jwk.kid = this.kid;
-    jwk.use = 'sig';
-    jwk.alg = 'RS256';
-    this.jwks = { keys: [jwk] };
-    this.logger.info(`[OIDC] Generated RSA256 signing key, kid=${this.kid}`);
+    this.kid = jose.base64url.encode(randomBytes(16));
+
+    const publicJwk = await jose.exportJWK(publicKey);
+    publicJwk.kid = this.kid;
+    publicJwk.use = 'sig';
+    publicJwk.alg = 'RS256';
+    this.jwks = { keys: [publicJwk] };
+
+    if (persistence) {
+      const privateJwk = await jose.exportJWK(privateKey);
+      privateJwk.kid = this.kid;
+      privateJwk.alg = 'RS256';
+      await persistence.saveSigningKey({
+        kid: this.kid,
+        privateJwk: JSON.stringify(privateJwk),
+        publicJwk: JSON.stringify(publicJwk),
+        createdAt: Date.now(),
+      });
+      this.logger.info(`[OIDC] Generated and persisted RSA256 signing key, kid=${this.kid}`);
+    } else {
+      this.logger.info(`[OIDC] Generated ephemeral RSA256 signing key, kid=${this.kid}`);
+    }
   }
 
   /** Sign a JWT payload and return the compact token string */

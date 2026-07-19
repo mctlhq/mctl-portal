@@ -33,6 +33,16 @@ export class OidcStore {
         ? knex.schema.withSchema(schema).createTable(name, builder)
         : knex.schema.createTable(name, builder);
 
+    const hasColumn = async (tableName: string, column: string) =>
+      schema
+        ? knex.schema.withSchema(schema).hasColumn(tableName, column)
+        : knex.schema.hasColumn(tableName, column);
+
+    const alterTable = (name: string, builder: (t: Knex.AlterTableBuilder) => void) =>
+      schema
+        ? knex.schema.withSchema(schema).alterTable(name, builder)
+        : knex.schema.alterTable(name, builder);
+
     if (!(await hasTable('oidc_codes'))) {
       await createTable('oidc_codes', t => {
         t.string('code', 128).primary().notNullable();
@@ -41,6 +51,14 @@ export class OidcStore {
         t.string('redirect_uri', 2048).notNullable();
         t.bigInteger('expires_at').notNullable();
         t.string('nonce', 256).nullable();
+        t.string('code_challenge', 128).nullable();
+        t.string('code_challenge_method', 16).nullable();
+      });
+    } else if (!(await hasColumn('oidc_codes', 'code_challenge'))) {
+      // In-place upgrade for deployments created before PKCE support.
+      await alterTable('oidc_codes', t => {
+        t.string('code_challenge', 128).nullable();
+        t.string('code_challenge_method', 16).nullable();
       });
     }
 
@@ -68,6 +86,15 @@ export class OidcStore {
       });
     }
 
+    if (!(await hasTable('oidc_signing_keys'))) {
+      await createTable('oidc_signing_keys', t => {
+        t.string('kid', 64).primary().notNullable();
+        t.text('private_jwk').notNullable();
+        t.text('public_jwk').notNullable();
+        t.bigInteger('created_at').notNullable();
+      });
+    }
+
     this.logger.info('[OIDC Store] Tables initialized');
   }
 
@@ -83,7 +110,15 @@ export class OidcStore {
 
   async saveCode(
     code: string,
-    data: { userId: string; clientId: string; redirectUri: string; expiresAt: number; nonce?: string },
+    data: {
+      userId: string;
+      clientId: string;
+      redirectUri: string;
+      expiresAt: number;
+      nonce?: string;
+      codeChallenge?: string;
+      codeChallengeMethod?: string;
+    },
   ): Promise<void> {
     await this.table('oidc_codes').insert({
       code,
@@ -92,6 +127,8 @@ export class OidcStore {
       redirect_uri: data.redirectUri,
       expires_at: data.expiresAt,
       nonce: data.nonce ?? null,
+      code_challenge: data.codeChallenge ?? null,
+      code_challenge_method: data.codeChallengeMethod ?? null,
     });
   }
 
@@ -101,6 +138,8 @@ export class OidcStore {
     redirectUri: string;
     expiresAt: number;
     nonce?: string;
+    codeChallenge?: string;
+    codeChallengeMethod?: string;
   } | undefined> {
     const row = await this.table('oidc_codes').where({ code }).first();
     if (!row) return undefined;
@@ -112,6 +151,8 @@ export class OidcStore {
       redirectUri: row.redirect_uri,
       expiresAt: Number(row.expires_at),
       nonce: row.nonce ?? undefined,
+      codeChallenge: row.code_challenge ?? undefined,
+      codeChallengeMethod: row.code_challenge_method ?? undefined,
     };
   }
 
@@ -162,6 +203,34 @@ export class OidcStore {
     const row = await this.table('oidc_access_tokens').where({ token }).first();
     if (!row) return undefined;
     return { userId: row.user_id, expiresAt: Number(row.expires_at) };
+  }
+
+  // ── Signing Keys ───────────────────────────────────────────────────
+
+  async getSigningKeys(): Promise<
+    Array<{ kid: string; privateJwk: string; publicJwk: string; createdAt: number }>
+  > {
+    const rows = await this.table('oidc_signing_keys').orderBy('created_at', 'asc');
+    return rows.map((row: any) => ({
+      kid: row.kid,
+      privateJwk: row.private_jwk,
+      publicJwk: row.public_jwk,
+      createdAt: Number(row.created_at),
+    }));
+  }
+
+  async saveSigningKey(key: {
+    kid: string;
+    privateJwk: string;
+    publicJwk: string;
+    createdAt: number;
+  }): Promise<void> {
+    await this.table('oidc_signing_keys').insert({
+      kid: key.kid,
+      private_jwk: key.privateJwk,
+      public_jwk: key.publicJwk,
+      created_at: key.createdAt,
+    });
   }
 
   // ── Cleanup ────────────────────────────────────────────────────────
