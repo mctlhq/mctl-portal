@@ -6,7 +6,7 @@ import {
   LoggerService,
   UserInfoService,
 } from '@backstage/backend-plugin-api';
-import { getTenantMember } from '../../tenant-backend/src/membershipLookup';
+import { getTenantMember, isAdminUser } from '../../tenant-backend/src/membershipLookup';
 import { readOidcSessionUserId } from '../../oidc-provider-backend/src/sessionAuth';
 
 export interface RouterOptions {
@@ -194,13 +194,18 @@ async function requireTenantRole(
   }
 }
 
-async function checkTenantRole(
+export async function checkTenantRole(
   db: Knex,
   isPostgres: boolean,
   team: string,
   userId: string,
   minimumRole: 'viewer' | 'owner',
 ): Promise<TenantAuthResult> {
+  // Platform admins (owner role in the 'admins' tenant) bypass per-team
+  // membership, mirroring tenant-backend's isAdmin pattern in resolveAuth().
+  if (await isAdminUser(db, isPostgres, userId)) {
+    return { ok: true, userId, role: 'owner' };
+  }
   const member = await getTenantMember(db, isPostgres, team, userId.toLowerCase());
   if (!member) {
     return { ok: false, status: 403, error: `Access denied: not a member of team '${team}'` };

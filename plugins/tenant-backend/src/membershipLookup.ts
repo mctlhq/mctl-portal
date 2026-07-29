@@ -46,6 +46,20 @@ export async function getTenantMember(
   };
 }
 
+/**
+ * Whether userId holds owner role in the platform-wide 'admins' tenant.
+ * Mirrors the isAdmin check in tenant-backend's resolveAuth() so other
+ * plugins can grant the same cross-tenant admin bypass.
+ */
+export async function isAdminUser(
+  db: Knex,
+  isPostgres: boolean,
+  userId: string,
+): Promise<boolean> {
+  const member = await getTenantMember(db, isPostgres, 'admins', userId.toLowerCase());
+  return member?.role === 'owner';
+}
+
 function isMissingTableError(err: any): boolean {
   const code = err?.code ?? '';
   const msg = err?.message ?? '';

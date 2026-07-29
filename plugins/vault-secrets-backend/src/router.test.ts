@@ -1,5 +1,7 @@
+import type { Knex } from 'knex';
 import {
   SLUG_RE,
+  checkTenantRole,
   escapeHtml,
   renderOpenClawIntakePage,
   renderOpenClawSavedPage,
@@ -43,6 +45,52 @@ describe('escapeHtml', () => {
 
   it('leaves plain slugs untouched', () => {
     expect(escapeHtml('my-service')).toBe('my-service');
+  });
+});
+
+// checkTenantRole gates 4 routes in this file: GET/POST /openclaw/intake
+// (minimumRole 'owner') and, via requireTenantRole, GET .../database and
+// GET .../secrets (minimumRole 'viewer'). This exercises the admin bypass
+// added for platform admins (owner role in the 'admins' tenant), who should
+// pass regardless of their membership in the target team.
+describe('checkTenantRole (admin bypass)', () => {
+  // Mirrors getTenantMember's real query shape: db('tenant_members')
+  // [.withSchema(...) on Postgres].where({ tenant_name, user_id }).first()
+  function fakeDb(memberships: Record<string, { role: string }>): Knex {
+    const db = jest.fn((_table: string) => {
+      const builder: any = {
+        withSchema: jest.fn().mockReturnThis(),
+        where(cond: { tenant_name: string; user_id: string }) {
+          builder._cond = cond;
+          return builder;
+        },
+        async first() {
+          const key = `${builder._cond.tenant_name}:${builder._cond.user_id}`;
+          const role = memberships[key]?.role;
+          return role
+            ? { tenant_name: builder._cond.tenant_name, user_id: builder._cond.user_id, role }
+            : undefined;
+        },
+      };
+      return builder;
+    });
+    return db as unknown as Knex;
+  }
+
+  it('grants an admins-tenant owner access to a team they are not a member of', async () => {
+    const db = fakeDb({ 'admins:alice': { role: 'owner' } });
+    const result = await checkTenantRole(db, false, 'nfc', 'alice', 'viewer');
+    expect(result).toEqual({ ok: true, userId: 'alice', role: 'owner' });
+  });
+
+  it('still denies a non-admin who is not a member of the team', async () => {
+    const db = fakeDb({});
+    const result = await checkTenantRole(db, false, 'nfc', 'bob', 'viewer');
+    expect(result).toEqual({
+      ok: false,
+      status: 403,
+      error: "Access denied: not a member of team 'nfc'",
+    });
   });
 });
 
