@@ -1,9 +1,11 @@
 import { createBackendModule, coreServices } from '@backstage/backend-plugin-api';
 import { scaffolderActionsExtensionPoint } from '@backstage/plugin-scaffolder-node';
 import { createSubmitWorkflowAction } from './scaffolderActions';
+import { createRequireTeamAccessAction } from './teamAccessAction';
 
 /**
- * Backstage backend module that registers the `mctl:workflow:submit` scaffolder action.
+ * Backstage backend module that registers the `mctl:workflow:submit` and
+ * `mctl:auth:requireTeamAccess` scaffolder actions.
  *
  * Required config:
  *   argoWorkflows:
@@ -19,9 +21,13 @@ export const scaffolderModuleArgoWorkflows = createBackendModule({
       deps: {
         scaffolder: scaffolderActionsExtensionPoint,
         config: coreServices.rootConfig,
+        database: coreServices.database,
       },
-      async init({ scaffolder, config }) {
-        scaffolder.addActions(createSubmitWorkflowAction({ config }));
+      async init({ scaffolder, config, database }) {
+        scaffolder.addActions(
+          createSubmitWorkflowAction({ config }),
+          createRequireTeamAccessAction({ database }),
+        );
       },
     });
   },
