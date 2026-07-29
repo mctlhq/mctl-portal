@@ -1,5 +1,22 @@
 # Changelog
 
+## [4.8.0](https://github.com/mctlhq/mctl-portal/compare/4.7.2...4.8.0) (2026-07-29)
+
+
+### Features
+
+* **scaffolder:** add mctl:auth:requireTeamAccess action ([a03f2c1](https://github.com/mctlhq/mctl-portal/commit/a03f2c12e2af74dd183c8bfd253c4403a85c9294))
+* **scaffolder:** add mctl:auth:requireTeamAccess action ([a8ec273](https://github.com/mctlhq/mctl-portal/commit/a8ec273cef4ccc767e562e095fec49af12543a10))
+
+
+### Bug Fixes
+
+* **ci:** detect claude-review SDK failure the outcome field misses ([524f0d2](https://github.com/mctlhq/mctl-portal/commit/524f0d24f7a239475b35318a635fcc2ca03a8856))
+* **ci:** detect claude-review SDK failure the outcome field misses ([c9e63f7](https://github.com/mctlhq/mctl-portal/commit/c9e63f75d5cb8e21d842c835b8f1a0f3d1f33d8b))
+* **ci:** preserve zero diff-line count in Claude review ([#45](https://github.com/mctlhq/mctl-portal/issues/45)) ([44acedd](https://github.com/mctlhq/mctl-portal/commit/44aceddbf7bfdb2650717a7e9517d63e42b57da0))
+* platform admins bypass tenant membership for vault-secrets routes ([bfa568f](https://github.com/mctlhq/mctl-portal/commit/bfa568f6b10ea7335c052975665945a6df55b231))
+* platform admins bypass tenant membership for vault-secrets routes ([e18bd62](https://github.com/mctlhq/mctl-portal/commit/e18bd62c46128fb11b81953857fd45886517d8d7))
+
 ## [4.7.2](https://github.com/mctlhq/mctl-portal/compare/4.7.1...4.7.2) (2026-07-02)
 
 
