@@ -141,10 +141,8 @@ describe('kubernetesTokenProvider', () => {
 
   // A failed renewal must not wedge the provider: the rejected login has to be
   // cleared from inFlight so the next caller gets a real attempt instead of
-  // the same stored rejection forever. (Clearing `cached` on that path is
-  // belt-and-braces — the renewAfter check already forces a re-login — so this
-  // test deliberately pins the recovery, not the internal bookkeeping.)
-  it('retries successfully after a renewal login fails', async () => {
+  // the same stored rejection forever.
+  it('retries successfully after a renewal login fails and the old lease is gone', async () => {
     fetchMock
       .mockResolvedValueOnce(loginOk('s.first', 100))
       .mockResolvedValueOnce({ ok: false, status: 500, json: async () => ({}) })
@@ -153,11 +151,33 @@ describe('kubernetesTokenProvider', () => {
     const provider = build({ now: () => clock });
 
     expect(await provider.getToken()).toBe('s.first');
-    clock = 90_000; // lease elapsed
+    clock = 100_001; // past the token's actual 100s lease, not just the 80% mark
     await expect(provider.getToken()).rejects.toThrow(/HTTP 500/);
     // The dead token must not come back, and the stored rejection must not be
     // replayed — the next call gets a fresh login.
     expect(await provider.getToken()).toBe('s.third');
+  });
+
+  // Codex P2 (portal#53, 2026-08-01): a transient renewal failure — the
+  // Kubernetes TokenReview API blipping while Vault's KV endpoint stays up —
+  // used to clear the cached token even though it was still valid for the
+  // rest of its lease, turning a blip into an outage for every route that
+  // reads or writes secrets.
+  it('keeps serving the old token when a renewal fails but its lease has not actually expired', async () => {
+    fetchMock
+      .mockResolvedValueOnce(loginOk('s.first', 100))
+      .mockResolvedValueOnce({ ok: false, status: 500, json: async () => ({}) })
+      .mockResolvedValueOnce(loginOk('s.third', 100));
+    let clock = 0;
+    const provider = build({ now: () => clock });
+
+    expect(await provider.getToken()).toBe('s.first');
+    clock = 90_000; // past the 80s renew threshold, well inside the 100s lease
+    expect(await provider.getToken()).toBe('s.first');
+    expect(fetchMock).toHaveBeenCalledTimes(2); // renewal was attempted and failed
+    clock = 95_000;
+    expect(await provider.getToken()).toBe('s.third'); // next call retries and succeeds
+    expect(fetchMock).toHaveBeenCalledTimes(3);
   });
 
   it('includes the Vault error detail, which is what names the actual cause', async () => {

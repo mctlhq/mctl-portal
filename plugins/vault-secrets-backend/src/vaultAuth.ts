@@ -78,7 +78,7 @@ export function kubernetesTokenProvider(
     now = () => Date.now(),
   } = options;
 
-  let cached: { token: string; renewAfter: number } | undefined;
+  let cached: { token: string; renewAfter: number; hardExpiry: number } | undefined;
   // Concurrent requests must not each start their own login; they await the
   // same one.
   let inFlight: Promise<string> | undefined;
@@ -126,9 +126,11 @@ export function kubernetesTokenProvider(
     // lease_duration is seconds. A zero/absent lease means a root-ish token
     // with no expiry; re-login hourly anyway so a revoked one self-heals.
     const leaseSeconds = Number(body.auth?.lease_duration) || 3600;
+    const issuedAt = now();
     cached = {
       token,
-      renewAfter: now() + leaseSeconds * RENEW_AT * 1000,
+      renewAfter: issuedAt + leaseSeconds * RENEW_AT * 1000,
+      hardExpiry: issuedAt + leaseSeconds * 1000,
     };
     logger.info('Vault kubernetes auth succeeded', {
       role,
@@ -143,10 +145,25 @@ export function kubernetesTokenProvider(
         return cached.token;
       }
       if (!inFlight) {
+        // A proactive renewal (past renewAfter, i.e. 80% of the lease) can
+        // fail for reasons that have nothing to do with the old token's
+        // validity — a blip on the Kubernetes TokenReview API, say — while
+        // Vault's KV endpoint stays healthy. The old token is still good for
+        // the remaining 20% of its lease, so keep serving it instead of
+        // turning a transient renewal hiccup into a hard outage.
+        const fallback = cached;
         inFlight = login()
           .catch(err => {
-            // Drop the expired entry that sent us here, so the closure never
-            // holds a token we already know Vault will refuse.
+            if (fallback && now() < fallback.hardExpiry) {
+              logger.warn(
+                'Vault kubernetes auth renewal failed; reusing the still-valid cached token until its lease expires',
+                { role, error: (err as Error).message },
+              );
+              return fallback.token;
+            }
+            // No usable fallback — either this is the first login ever, or
+            // the old token's lease has actually run out. Drop it so the
+            // closure never holds a token we already know Vault will refuse.
             cached = undefined;
             throw err;
           })
