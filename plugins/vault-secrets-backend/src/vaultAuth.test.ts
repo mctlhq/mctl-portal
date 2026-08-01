@@ -139,7 +139,12 @@ describe('kubernetesTokenProvider', () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
-  it('drops the expired entry when a renewal login fails', async () => {
+  // A failed renewal must not wedge the provider: the rejected login has to be
+  // cleared from inFlight so the next caller gets a real attempt instead of
+  // the same stored rejection forever. (Clearing `cached` on that path is
+  // belt-and-braces — the renewAfter check already forces a re-login — so this
+  // test deliberately pins the recovery, not the internal bookkeeping.)
+  it('retries successfully after a renewal login fails', async () => {
     fetchMock
       .mockResolvedValueOnce(loginOk('s.first', 100))
       .mockResolvedValueOnce({ ok: false, status: 500, json: async () => ({}) })
@@ -150,7 +155,8 @@ describe('kubernetesTokenProvider', () => {
     expect(await provider.getToken()).toBe('s.first');
     clock = 90_000; // lease elapsed
     await expect(provider.getToken()).rejects.toThrow(/HTTP 500/);
-    // The dead token must not come back on the next call.
+    // The dead token must not come back, and the stored rejection must not be
+    // replayed — the next call gets a fresh login.
     expect(await provider.getToken()).toBe('s.third');
   });
 
