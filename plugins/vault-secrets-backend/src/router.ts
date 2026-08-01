@@ -23,7 +23,7 @@ export interface RouterOptions {
 }
 
 type TenantAuthResult =
-  | { ok: true; userId: string; role: string }
+  | { ok: true; userId: string; role: string; viaAdminBypass: boolean }
   | { ok: false; status: number; error: string };
 
 // Vault KV v2 paths (relative to the secret/ mount). These mirror what the
@@ -35,6 +35,38 @@ export const databaseVaultPath = (team: string, app: string) =>
   `teams/${team}/${app}/database`;
 export const secretsVaultPath = (team: string, app: string) =>
   `teams/${team}/${app}`;
+
+/**
+ * Audit trail for successful secret reads. These two routes hand out live
+ * credentials — DB passwords and service secrets — and since the admin bypass
+ * landed, a platform admin can read them for a tenant they are not a member
+ * of. Without this the read leaves no trace at all.
+ *
+ * Logs metadata only: who, what, and whether membership was bypassed. Secret
+ * VALUES are never logged; for /secrets the key names are recorded (they are
+ * env-var names like BETTER_AUTH_SECRET, not sensitive) so an investigation
+ * can tell what was exposed.
+ */
+export function auditSecretRead(
+  logger: LoggerService,
+  kind: 'database' | 'secrets',
+  team: string,
+  app: string,
+  auth: { userId: string; role: string; viaAdminBypass: boolean },
+  secretKeys?: string[],
+): void {
+  logger.info('vault-secrets read', {
+    audit: 'secret_read',
+    kind,
+    team,
+    app,
+    user: auth.userId,
+    role: auth.role,
+    // The signal worth alerting on: a non-member reading a tenant's secrets.
+    via_admin_bypass: auth.viaAdminBypass,
+    ...(secretKeys ? { secret_keys: secretKeys.join(',') } : {}),
+  });
+}
 
 export function createRouter(options: RouterOptions): Router {
   const { logger, httpAuth, userInfo, db, isPostgres, vaultAddr, vaultToken, oidcLoginUrl, backendBaseUrl } = options;
@@ -57,6 +89,7 @@ export function createRouter(options: RouterOptions): Router {
         res.status(404).json({ error: `No database found for ${team}/${app}` });
         return;
       }
+      auditSecretRead(logger, 'database', team, app, auth);
       res.json({
         host: creds.host,
         port: creds.port,
@@ -80,6 +113,7 @@ export function createRouter(options: RouterOptions): Router {
 
     try {
       const secrets = await readVaultKV(vaultAddr, vaultToken, secretsVaultPath(team, app));
+      auditSecretRead(logger, 'secrets', team, app, auth, Object.keys(secrets ?? {}));
       res.json({ secrets: secrets ?? {} });
     } catch (err: any) {
       logger.error(`vault-secrets error for ${team}/${app}: ${err}`);
@@ -214,7 +248,7 @@ export async function checkTenantRole(
   // Platform admins (owner role in the 'admins' tenant) bypass per-team
   // membership, mirroring tenant-backend's isAdmin pattern in resolveAuth().
   if (await isAdminUser(db, isPostgres, userId)) {
-    return { ok: true, userId, role: 'owner' };
+    return { ok: true, userId, role: 'owner', viaAdminBypass: true };
   }
   const member = await getTenantMember(db, isPostgres, team, userId.toLowerCase());
   if (!member) {
@@ -223,7 +257,7 @@ export async function checkTenantRole(
   if (minimumRole === 'owner' && member.role !== 'owner') {
     return { ok: false, status: 403, error: `Access denied: owner role required for team '${team}'` };
   }
-  return { ok: true, userId, role: member.role };
+  return { ok: true, userId, role: member.role, viaAdminBypass: false };
 }
 
 function deriveOrigin(backendBaseUrl: string): string {
