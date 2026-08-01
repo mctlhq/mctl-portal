@@ -1,5 +1,19 @@
 # Changelog
 
+## [4.10.0](https://github.com/mctlhq/mctl-portal/compare/4.9.0...4.10.0) (2026-08-01)
+
+
+### Features
+
+* **vault-secrets:** authenticate to Vault with the pod ServiceAccount ([fbd5a8a](https://github.com/mctlhq/mctl-portal/commit/fbd5a8ae3328e70ff9bd723d56eca48c6c82250f))
+* **vault-secrets:** authenticate to Vault with the pod ServiceAccount ([f141894](https://github.com/mctlhq/mctl-portal/commit/f141894e11d99d2d78c8095cf71b9d184bd10edf))
+
+
+### Bug Fixes
+
+* **vault-secrets-backend:** keep serving the cached k8s token during a transient renewal failure ([17b58e6](https://github.com/mctlhq/mctl-portal/commit/17b58e67b26f07056015481f941176e04b519407))
+* **vault-secrets:** scope token invalidation to the rejected credential ([d95f32f](https://github.com/mctlhq/mctl-portal/commit/d95f32f0fb8f847ac0437613ee1b1b19f5fe3dca))
+
 ## [4.9.0](https://github.com/mctlhq/mctl-portal/compare/4.8.0...4.9.0) (2026-08-01)
 
 
