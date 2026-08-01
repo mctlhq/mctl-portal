@@ -71,8 +71,8 @@ Every Backstage scaffolder template has a `spec.type` that classifies its intent
    | K8s Secret (DB creds) | `{team}-{app}-db-creds` | `payments-billing-db-creds` |
    | PostgreSQL role | `{team}-{app}` | `payments-billing` |
    | PostgreSQL database | `{team}-{app}` | `payments-billing` |
-   | Vault path (DB) | `platform/teams/{team}/{app}/database` | `platform/teams/payments/billing/database` |
-   | Vault path (env secrets) | `teams/{team}/{service}/env` | `teams/payments/billing/env` |
+   | Vault path (DB) | `teams/{team}/{app}/database` | `teams/payments/billing/database` |
+   | Vault path (env secrets) | `teams/{team}/{service}` | `teams/payments/billing` |
    | ArgoCD app *(internal)* | `preview-{team}-{app}` | `preview-payments-billing` |
 
 ---

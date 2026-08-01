@@ -1,4 +1,5 @@
 import type { Knex } from 'knex';
+import fetch from 'node-fetch';
 import {
   SLUG_RE,
   auditSecretRead,
@@ -8,7 +9,13 @@ import {
   renderOpenClawIntakePage,
   renderOpenClawSavedPage,
   secretsVaultPath,
+  vaultFetch,
 } from './router';
+import { staticTokenProvider } from './vaultAuth';
+
+jest.mock('node-fetch', () => jest.fn());
+
+const fetchMock = fetch as unknown as jest.Mock;
 
 // team/service are interpolated into the intake HTML pages. These tests guard
 // the two layers that prevent reflected XSS there: the kebab-case slug gate
@@ -209,6 +216,25 @@ describe('auditSecretRead', () => {
     ]);
   });
 
+  // The /secrets route answers 200 {} when the Vault path is absent, passing
+  // Object.keys({}) here. That read still happened and still has to be
+  // auditable — an empty key list must not collapse into "no secret_keys
+  // field", which is how the database route signals something different.
+  it('still records a read that returned no secrets at all', () => {
+    const logger = fakeLogger();
+    auditSecretRead(
+      logger,
+      'secrets',
+      'nfc',
+      'quirestack-api',
+      { userId: 'alice', role: 'owner', viaAdminBypass: true },
+      [],
+    );
+    const meta = logger.info.mock.calls[0][1];
+    expect(meta).toHaveProperty('secret_keys', '');
+    expect(meta.via_admin_bypass).toBe(true);
+  });
+
   it('omits secret_keys for the database route', () => {
     const logger = fakeLogger();
     auditSecretRead(logger, 'database', 'nfc', 'quirestack-api', {
@@ -217,6 +243,92 @@ describe('auditSecretRead', () => {
       viaAdminBypass: false,
     });
     expect(logger.info.mock.calls[0][1]).not.toHaveProperty('secret_keys');
+  });
+});
+
+// A revoked Vault token used to be terminal: the plugin held one string for
+// the process lifetime, so every route 500'd until someone minted a new token
+// and restarted the pod. vaultFetch is what makes that self-healing.
+describe('vaultFetch (token refresh on rejection)', () => {
+  const ok = { ok: true, status: 200, json: async () => ({}) };
+  const denied = (status: number) => ({ ok: false, status, json: async () => ({}) });
+
+  beforeEach(() => fetchMock.mockReset());
+
+  it('sends the provider token and does not retry a successful call', async () => {
+    fetchMock.mockResolvedValue(ok);
+    const tokens = staticTokenProvider('s.tok');
+
+    await vaultFetch('https://vault.example', tokens, 'teams/nfc/api');
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledWith(
+      'https://vault.example/v1/secret/data/teams/nfc/api',
+      expect.objectContaining({
+        method: 'GET',
+        headers: expect.objectContaining({ 'X-Vault-Token': 's.tok' }),
+      }),
+    );
+  });
+
+  it.each([401, 403])('invalidates and retries once on HTTP %i', async status => {
+    fetchMock.mockResolvedValueOnce(denied(status)).mockResolvedValueOnce(ok);
+    const tokens = staticTokenProvider('s.tok');
+    const invalidate = jest.spyOn(tokens, 'invalidate');
+
+    const resp = await vaultFetch('https://vault.example', tokens, 'teams/nfc/api');
+
+    expect(invalidate).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(resp.ok).toBe(true);
+  });
+
+  it('retries only once, so a real policy denial still surfaces', async () => {
+    fetchMock.mockResolvedValue(denied(403));
+    const resp = await vaultFetch(
+      'https://vault.example',
+      staticTokenProvider('s.tok'),
+      'teams/nfc/api',
+    );
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(resp.status).toBe(403);
+  });
+
+  it('does not retry a 404, which means the path is absent, not the token bad', async () => {
+    fetchMock.mockResolvedValue(denied(404));
+    const tokens = staticTokenProvider('s.tok');
+    const invalidate = jest.spyOn(tokens, 'invalidate');
+
+    await vaultFetch('https://vault.example', tokens, 'teams/nfc/api');
+
+    expect(invalidate).not.toHaveBeenCalled();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('sends a JSON body and content-type for writes', async () => {
+    fetchMock.mockResolvedValue(ok);
+    await vaultFetch(
+      'https://vault.example',
+      staticTokenProvider('s.tok'),
+      'teams/nfc/api/telegram',
+      { method: 'POST', body: JSON.stringify({ data: { k: 'v' } }) },
+    );
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'https://vault.example/v1/secret/data/teams/nfc/api/telegram',
+      expect.objectContaining({
+        method: 'POST',
+        body: '{"data":{"k":"v"}}',
+        headers: expect.objectContaining({ 'Content-Type': 'application/json' }),
+      }),
+    );
+  });
+
+  it('omits a content-type on reads', async () => {
+    fetchMock.mockResolvedValue(ok);
+    await vaultFetch('https://vault.example', staticTokenProvider('s.tok'), 'teams/nfc/api');
+    expect(fetchMock.mock.calls[0][1].headers).not.toHaveProperty('Content-Type');
   });
 });
 

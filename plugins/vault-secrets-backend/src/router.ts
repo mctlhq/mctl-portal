@@ -8,6 +8,7 @@ import {
 } from '@backstage/backend-plugin-api';
 import { getTenantMember, isAdminUser } from '../../tenant-backend/src/membershipLookup';
 import { readOidcSessionUserId } from '../../oidc-provider-backend/src/sessionAuth';
+import type { VaultTokenProvider } from './vaultAuth';
 
 export interface RouterOptions {
   logger: LoggerService;
@@ -16,7 +17,8 @@ export interface RouterOptions {
   db: Knex;
   isPostgres: boolean;
   vaultAddr: string;
-  vaultToken: string;
+  /** Supplies (and can refresh) the Vault token. See vaultAuth.ts. */
+  vaultTokens: VaultTokenProvider;
   oidcLoginUrl: string;
   /** Public base URL of this backend (e.g. https://app.mctl.ai). Trusted source of truth for building self-referential URLs. */
   backendBaseUrl: string;
@@ -69,7 +71,7 @@ export function auditSecretRead(
 }
 
 export function createRouter(options: RouterOptions): Router {
-  const { logger, httpAuth, userInfo, db, isPostgres, vaultAddr, vaultToken, oidcLoginUrl, backendBaseUrl } = options;
+  const { logger, httpAuth, userInfo, db, isPostgres, vaultAddr, vaultTokens, oidcLoginUrl, backendBaseUrl } = options;
   const router = Router();
   router.use(urlencoded({ extended: false }));
 
@@ -84,7 +86,7 @@ export function createRouter(options: RouterOptions): Router {
     }
 
     try {
-      const creds = await readVaultKV(vaultAddr, vaultToken, databaseVaultPath(team, app));
+      const creds = await readVaultKV(vaultAddr, vaultTokens, databaseVaultPath(team, app));
       if (!creds) {
         res.status(404).json({ error: `No database found for ${team}/${app}` });
         return;
@@ -112,7 +114,7 @@ export function createRouter(options: RouterOptions): Router {
     }
 
     try {
-      const secrets = await readVaultKV(vaultAddr, vaultToken, secretsVaultPath(team, app));
+      const secrets = await readVaultKV(vaultAddr, vaultTokens, secretsVaultPath(team, app));
       auditSecretRead(logger, 'secrets', team, app, auth, Object.keys(secrets ?? {}));
       res.json({ secrets: secrets ?? {} });
     } catch (err: any) {
@@ -195,7 +197,7 @@ export function createRouter(options: RouterOptions): Router {
         return;
       }
 
-      await writeVaultKV(vaultAddr, vaultToken, `teams/${team}/${service}/telegram`, {
+      await writeVaultKV(vaultAddr, vaultTokens, `teams/${team}/${service}/telegram`, {
         'telegram-bot-token': botToken,
       });
       if (returnTo) {
@@ -304,10 +306,42 @@ function extractUserId(ownershipEntityRefs: string[]): string | undefined {
   return ref?.split('/').pop();
 }
 
-async function readVaultKV(vaultAddr: string, vaultToken: string, path: string): Promise<Record<string, string> | undefined> {
-  const vaultResp = await fetch(`${vaultAddr}/v1/secret/data/${path}`, {
-    headers: { 'X-Vault-Token': vaultToken },
-  });
+/**
+ * Issues a Vault request, retrying once with a fresh token if Vault rejects
+ * the credential.
+ *
+ * Vault answers both "token is dead" and "token lacks this path" with 403, and
+ * the response body doesn't reliably distinguish them, so the retry fires on
+ * either. That costs one wasted login on a genuine policy error and buys
+ * automatic recovery from a revoked or expired token — the failure mode that
+ * took the DB-credentials card down for months.
+ */
+export async function vaultFetch(
+  vaultAddr: string,
+  tokens: VaultTokenProvider,
+  path: string,
+  init: { method?: string; body?: string } = {},
+): Promise<{ status: number; ok: boolean; json: () => Promise<any> }> {
+  const send = async (token: string) =>
+    fetch(`${vaultAddr}/v1/secret/data/${path}`, {
+      method: init.method ?? 'GET',
+      headers: {
+        'X-Vault-Token': token,
+        ...(init.body ? { 'Content-Type': 'application/json' } : {}),
+      },
+      ...(init.body ? { body: init.body } : {}),
+    });
+
+  let resp = await send(await tokens.getToken());
+  if (resp.status === 401 || resp.status === 403) {
+    tokens.invalidate();
+    resp = await send(await tokens.getToken());
+  }
+  return resp;
+}
+
+async function readVaultKV(vaultAddr: string, tokens: VaultTokenProvider, path: string): Promise<Record<string, string> | undefined> {
+  const vaultResp = await vaultFetch(vaultAddr, tokens, path);
   if (vaultResp.status === 404) {
     return undefined;
   }
@@ -318,13 +352,9 @@ async function readVaultKV(vaultAddr: string, vaultToken: string, path: string):
   return vaultData?.data?.data ?? undefined;
 }
 
-async function writeVaultKV(vaultAddr: string, vaultToken: string, path: string, data: Record<string, string>): Promise<void> {
-  const vaultResp = await fetch(`${vaultAddr}/v1/secret/data/${path}`, {
+async function writeVaultKV(vaultAddr: string, tokens: VaultTokenProvider, path: string, data: Record<string, string>): Promise<void> {
+  const vaultResp = await vaultFetch(vaultAddr, tokens, path, {
     method: 'POST',
-    headers: {
-      'X-Vault-Token': vaultToken,
-      'Content-Type': 'application/json',
-    },
     body: JSON.stringify({ data }),
   });
   if (!vaultResp.ok) {
