@@ -1,5 +1,18 @@
 # Changelog
 
+## [4.9.0](https://github.com/mctlhq/mctl-portal/compare/4.8.0...4.9.0) (2026-08-01)
+
+
+### Features
+
+* **vault-secrets:** audit-log credential reads, flagging admin bypass ([ae0e025](https://github.com/mctlhq/mctl-portal/commit/ae0e025fbb9a351c60b040fba37760ab6e0af9a6))
+
+
+### Bug Fixes
+
+* **vault-secrets:** read DB creds from the path provision-database writes ([42850f5](https://github.com/mctlhq/mctl-portal/commit/42850f59cb326be047ceb09a4f68d63b99293c8c))
+* **vault-secrets:** read DB creds from the path provision-database writes ([a559b4f](https://github.com/mctlhq/mctl-portal/commit/a559b4f32187b002d4b470f1a0bddb37c2a819b2))
+
 ## [4.8.0](https://github.com/mctlhq/mctl-portal/compare/4.7.2...4.8.0) (2026-07-29)
 
 
