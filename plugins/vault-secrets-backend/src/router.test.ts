@@ -278,9 +278,29 @@ describe('vaultFetch (token refresh on rejection)', () => {
 
     const resp = await vaultFetch('https://vault.example', tokens, 'teams/nfc/api');
 
-    expect(invalidate).toHaveBeenCalledTimes(1);
+    // Scoped to the token that was actually rejected, so a request that
+    // already refreshed keeps its fresh one.
+    expect(invalidate).toHaveBeenCalledWith('s.tok');
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(resp.ok).toBe(true);
+  });
+
+  it('propagates a login failure raised while retrying', async () => {
+    fetchMock.mockResolvedValueOnce(denied(403));
+    const tokens = {
+      getToken: jest
+        .fn()
+        .mockResolvedValueOnce('s.dead')
+        .mockRejectedValueOnce(new Error('Vault k8s auth failed')),
+      invalidate: jest.fn(),
+    };
+
+    await expect(
+      vaultFetch('https://vault.example', tokens, 'teams/nfc/api'),
+    ).rejects.toThrow('Vault k8s auth failed');
+    // The route's own try/catch turns this into a 500 — the point is that it
+    // surfaces rather than hanging or being swallowed.
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   it('retries only once, so a real policy denial still surfaces', async () => {

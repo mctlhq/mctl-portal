@@ -16,10 +16,17 @@ export interface VaultTokenProvider {
   /** Current token, logging in or refreshing if needed. */
   getToken(): Promise<string>;
   /**
-   * Discard the cached token. Called when Vault rejects it, so the next
-   * getToken() re-authenticates rather than replaying a dead credential.
+   * Discard the cached token, but only if it is still `rejected` — the exact
+   * token Vault turned down.
+   *
+   * The scoping matters under concurrency. Several in-flight requests can each
+   * get a 403 for the same dead token; the first one to notice logs in and
+   * caches a fresh one. An unconditional invalidate would let the stragglers
+   * throw that fresh token away and log in again, one after another, turning a
+   * single revocation into a login storm. Comparing first makes every
+   * straggler a no-op.
    */
-  invalidate(): void;
+  invalidate(rejected: string): void;
 }
 
 /** Wraps a pre-issued token. Nothing to refresh — invalidate is a no-op. */
@@ -88,12 +95,27 @@ export function kubernetesTokenProvider(
       body: JSON.stringify({ role, jwt }),
     });
     if (!resp.ok) {
+      // Vault puts the actionable part in the body — "role not found",
+      // "service account name not authorized", "JWT validation failed" all
+      // arrive as the same HTTP status. Losing it would leave a production
+      // auth failure diagnosable only by guessing.
+      let detail = '';
+      try {
+        const errBody = (await resp.json()) as { errors?: string[] };
+        detail = errBody?.errors?.join('; ') ?? '';
+      } catch {
+        // Non-JSON body (a proxy error page, say) — the status still stands.
+      }
       throw new Error(
-        `Vault k8s auth failed for role '${role}': HTTP ${resp.status}`,
+        `Vault k8s auth failed for role '${role}': HTTP ${resp.status}${
+          detail ? ` — ${detail}` : ''
+        }`,
       );
     }
 
-    const body = (await resp.json()) as any;
+    const body = (await resp.json()) as {
+      auth?: { client_token?: string; lease_duration?: number };
+    };
     const token = body?.auth?.client_token;
     if (!token) {
       throw new Error(
@@ -103,7 +125,7 @@ export function kubernetesTokenProvider(
 
     // lease_duration is seconds. A zero/absent lease means a root-ish token
     // with no expiry; re-login hourly anyway so a revoked one self-heals.
-    const leaseSeconds = Number(body.auth.lease_duration) || 3600;
+    const leaseSeconds = Number(body.auth?.lease_duration) || 3600;
     cached = {
       token,
       renewAfter: now() + leaseSeconds * RENEW_AT * 1000,
@@ -121,14 +143,23 @@ export function kubernetesTokenProvider(
         return cached.token;
       }
       if (!inFlight) {
-        inFlight = login().finally(() => {
-          inFlight = undefined;
-        });
+        inFlight = login()
+          .catch(err => {
+            // Drop the expired entry that sent us here, so the closure never
+            // holds a token we already know Vault will refuse.
+            cached = undefined;
+            throw err;
+          })
+          .finally(() => {
+            inFlight = undefined;
+          });
       }
       return inFlight;
     },
-    invalidate() {
-      cached = undefined;
+    invalidate(rejected: string) {
+      if (cached?.token === rejected) {
+        cached = undefined;
+      }
     },
   };
 }

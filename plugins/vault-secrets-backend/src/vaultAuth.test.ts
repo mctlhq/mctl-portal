@@ -23,7 +23,7 @@ describe('staticTokenProvider', () => {
   it('returns the configured token and survives invalidate', async () => {
     const provider = staticTokenProvider('s.static');
     expect(await provider.getToken()).toBe('s.static');
-    provider.invalidate();
+    provider.invalidate('s.static');
     // Nothing to re-issue — a static token is all we have, so it must keep
     // being handed out rather than becoming undefined.
     expect(await provider.getToken()).toBe('s.static');
@@ -99,8 +99,8 @@ describe('kubernetesTokenProvider', () => {
       .mockResolvedValueOnce('jwt-rotated');
     const provider = build({ readJwt, now: () => 0 });
 
-    await provider.getToken();
-    provider.invalidate();
+    const first = await provider.getToken();
+    provider.invalidate(first);
     await provider.getToken();
 
     expect(readJwt).toHaveBeenCalledTimes(2);
@@ -113,9 +113,69 @@ describe('kubernetesTokenProvider', () => {
       .mockResolvedValueOnce(loginOk('s.second'));
     const provider = build();
 
-    expect(await provider.getToken()).toBe('s.first');
-    provider.invalidate();
+    const first = await provider.getToken();
+    provider.invalidate(first);
     expect(await provider.getToken()).toBe('s.second');
+  });
+
+  // Several requests can each get a 403 for the same dead token. The first to
+  // notice refreshes; the rest must not undo that, or one revocation turns
+  // into a cascade of logins.
+  it('ignores an invalidate for a token that has already been replaced', async () => {
+    fetchMock
+      .mockResolvedValueOnce(loginOk('s.stale'))
+      .mockResolvedValueOnce(loginOk('s.fresh'));
+    const provider = build();
+
+    const stale = await provider.getToken();
+    provider.invalidate(stale); // first straggler: this one is real
+    expect(await provider.getToken()).toBe('s.fresh');
+
+    // Two more late 403s arriving with the old token.
+    provider.invalidate(stale);
+    provider.invalidate(stale);
+
+    expect(await provider.getToken()).toBe('s.fresh');
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('drops the expired entry when a renewal login fails', async () => {
+    fetchMock
+      .mockResolvedValueOnce(loginOk('s.first', 100))
+      .mockResolvedValueOnce({ ok: false, status: 500, json: async () => ({}) })
+      .mockResolvedValueOnce(loginOk('s.third', 100));
+    let clock = 0;
+    const provider = build({ now: () => clock });
+
+    expect(await provider.getToken()).toBe('s.first');
+    clock = 90_000; // lease elapsed
+    await expect(provider.getToken()).rejects.toThrow(/HTTP 500/);
+    // The dead token must not come back on the next call.
+    expect(await provider.getToken()).toBe('s.third');
+  });
+
+  it('includes the Vault error detail, which is what names the actual cause', async () => {
+    fetchMock.mockResolvedValue({
+      ok: false,
+      status: 400,
+      json: async () => ({ errors: ["role 'backstage' could not be found"] }),
+    });
+    await expect(build().getToken()).rejects.toThrow(
+      "Vault k8s auth failed for role 'backstage': HTTP 400 — role 'backstage' could not be found",
+    );
+  });
+
+  it('still reports the status when the error body is not JSON', async () => {
+    fetchMock.mockResolvedValue({
+      ok: false,
+      status: 502,
+      json: async () => {
+        throw new Error('not json');
+      },
+    });
+    await expect(build().getToken()).rejects.toThrow(
+      "Vault k8s auth failed for role 'backstage': HTTP 502",
+    );
   });
 
   it('does not start a second login while one is in flight', async () => {

@@ -332,9 +332,12 @@ export async function vaultFetch(
       ...(init.body ? { body: init.body } : {}),
     });
 
-  let resp = await send(await tokens.getToken());
+  const used = await tokens.getToken();
+  let resp = await send(used);
   if (resp.status === 401 || resp.status === 403) {
-    tokens.invalidate();
+    // Pass the rejected token so a concurrent request that already refreshed
+    // doesn't get its fresh credential thrown away. See VaultTokenProvider.
+    tokens.invalidate(used);
     resp = await send(await tokens.getToken());
   }
   return resp;
