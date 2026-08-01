@@ -1,10 +1,13 @@
 import type { Knex } from 'knex';
 import {
   SLUG_RE,
+  auditSecretRead,
   checkTenantRole,
+  databaseVaultPath,
   escapeHtml,
   renderOpenClawIntakePage,
   renderOpenClawSavedPage,
+  secretsVaultPath,
 } from './router';
 
 // team/service are interpolated into the intake HTML pages. These tests guard
@@ -80,7 +83,23 @@ describe('checkTenantRole (admin bypass)', () => {
   it('grants an admins-tenant owner access to a team they are not a member of', async () => {
     const db = fakeDb({ 'admins:alice': { role: 'owner' } });
     const result = await checkTenantRole(db, false, 'nfc', 'alice', 'viewer');
-    expect(result).toEqual({ ok: true, userId: 'alice', role: 'owner' });
+    expect(result).toEqual({
+      ok: true,
+      userId: 'alice',
+      role: 'owner',
+      viaAdminBypass: true,
+    });
+  });
+
+  it('marks a genuine team member as not having used the bypass', async () => {
+    const db = fakeDb({ 'nfc:carol': { role: 'viewer' } });
+    const result = await checkTenantRole(db, false, 'nfc', 'carol', 'viewer');
+    expect(result).toEqual({
+      ok: true,
+      userId: 'carol',
+      role: 'viewer',
+      viaAdminBypass: false,
+    });
   });
 
   it('still denies a non-admin who is not a member of the team', async () => {
@@ -91,6 +110,113 @@ describe('checkTenantRole (admin bypass)', () => {
       status: 403,
       error: "Access denied: not a member of team 'nfc'",
     });
+  });
+});
+
+// The /database route spent its whole life reading platform/teams/<team>/<app>/
+// database, a prefix nothing ever wrote — provision-database writes to
+// teams/<team>/<app>/database. These pin both paths to what the platform
+// actually stores so the prefix can't creep back in.
+describe('Vault KV paths', () => {
+  it('builds the database path provision-database writes to', () => {
+    expect(databaseVaultPath('nfc', 'quirestack-api')).toBe(
+      'teams/nfc/quirestack-api/database',
+    );
+  });
+
+  it('builds the service secrets path', () => {
+    expect(secretsVaultPath('nfc', 'quirestack-api')).toBe('teams/nfc/quirestack-api');
+  });
+
+  it('never prefixes either path with platform/', () => {
+    expect(databaseVaultPath('labs', 'mctl-telegram')).not.toMatch(/^platform\//);
+    expect(secretsVaultPath('labs', 'mctl-telegram')).not.toMatch(/^platform\//);
+  });
+
+  it('keeps the database path under the secrets path, as the Vault policy assumes', () => {
+    // vault-policy-backstage-teams-rw.hcl grants teams/+/+ and teams/+/+/*;
+    // the database path must be a child of the service path to be covered.
+    expect(
+      databaseVaultPath('nfc', 'quirestack-api').startsWith(
+        `${secretsVaultPath('nfc', 'quirestack-api')}/`,
+      ),
+    ).toBe(true);
+  });
+});
+
+// Both credential routes hand out live secrets, and since the admin bypass
+// landed a platform admin can read them for a tenant they don't belong to.
+// The audit line is the only trace that read ever happened.
+describe('auditSecretRead', () => {
+  const fakeLogger = () => ({ info: jest.fn() } as any);
+
+  it('records who read which tenant/service, flagging the admin bypass', () => {
+    const logger = fakeLogger();
+    auditSecretRead(logger, 'database', 'nfc', 'quirestack-api', {
+      userId: 'alice',
+      role: 'owner',
+      viaAdminBypass: true,
+    });
+    expect(logger.info).toHaveBeenCalledWith(
+      'vault-secrets read',
+      expect.objectContaining({
+        audit: 'secret_read',
+        kind: 'database',
+        team: 'nfc',
+        app: 'quirestack-api',
+        user: 'alice',
+        via_admin_bypass: true,
+      }),
+    );
+  });
+
+  it('marks a genuine member read as not a bypass', () => {
+    const logger = fakeLogger();
+    auditSecretRead(logger, 'database', 'nfc', 'quirestack-api', {
+      userId: 'carol',
+      role: 'viewer',
+      viaAdminBypass: false,
+    });
+    expect(logger.info).toHaveBeenCalledWith(
+      'vault-secrets read',
+      expect.objectContaining({ via_admin_bypass: false }),
+    );
+  });
+
+  it('records secret key names but never values', () => {
+    const logger = fakeLogger();
+    auditSecretRead(
+      logger,
+      'secrets',
+      'nfc',
+      'quirestack-api',
+      { userId: 'alice', role: 'owner', viaAdminBypass: true },
+      ['BETTER_AUTH_SECRET'],
+    );
+    const meta = logger.info.mock.calls[0][1];
+    expect(meta.secret_keys).toBe('BETTER_AUTH_SECRET');
+    // Pin the exact payload shape: anything added here later is a deliberate
+    // decision, not an accidental secret value riding along in the audit log.
+    expect(Object.keys(meta).sort()).toEqual([
+      'app',
+      'audit',
+      'kind',
+      'role',
+      'secret_keys',
+      'team',
+      'user',
+      'via_admin_bypass',
+    ]);
+  });
+
+  it('omits secret_keys for the database route', () => {
+    const logger = fakeLogger();
+    auditSecretRead(logger, 'database', 'nfc', 'quirestack-api', {
+      userId: 'alice',
+      role: 'owner',
+      viaAdminBypass: false,
+    });
+    expect(logger.info.mock.calls[0][1]).not.toHaveProperty('secret_keys');
   });
 });
 
