@@ -2,9 +2,11 @@ import type { Knex } from 'knex';
 import {
   SLUG_RE,
   checkTenantRole,
+  databaseVaultPath,
   escapeHtml,
   renderOpenClawIntakePage,
   renderOpenClawSavedPage,
+  secretsVaultPath,
 } from './router';
 
 // team/service are interpolated into the intake HTML pages. These tests guard
@@ -91,6 +93,37 @@ describe('checkTenantRole (admin bypass)', () => {
       status: 403,
       error: "Access denied: not a member of team 'nfc'",
     });
+  });
+});
+
+// The /database route spent its whole life reading platform/teams/<team>/<app>/
+// database, a prefix nothing ever wrote — provision-database writes to
+// teams/<team>/<app>/database. These pin both paths to what the platform
+// actually stores so the prefix can't creep back in.
+describe('Vault KV paths', () => {
+  it('builds the database path provision-database writes to', () => {
+    expect(databaseVaultPath('nfc', 'quirestack-api')).toBe(
+      'teams/nfc/quirestack-api/database',
+    );
+  });
+
+  it('builds the service secrets path', () => {
+    expect(secretsVaultPath('nfc', 'quirestack-api')).toBe('teams/nfc/quirestack-api');
+  });
+
+  it('never prefixes either path with platform/', () => {
+    expect(databaseVaultPath('labs', 'mctl-telegram')).not.toMatch(/^platform\//);
+    expect(secretsVaultPath('labs', 'mctl-telegram')).not.toMatch(/^platform\//);
+  });
+
+  it('keeps the database path under the secrets path, as the Vault policy assumes', () => {
+    // vault-policy-backstage-teams-rw.hcl grants teams/+/+ and teams/+/+/*;
+    // the database path must be a child of the service path to be covered.
+    expect(
+      databaseVaultPath('nfc', 'quirestack-api').startsWith(
+        `${secretsVaultPath('nfc', 'quirestack-api')}/`,
+      ),
+    ).toBe(true);
   });
 });
 

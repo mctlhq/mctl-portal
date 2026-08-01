@@ -26,6 +26,16 @@ type TenantAuthResult =
   | { ok: true; userId: string; role: string }
   | { ok: false; status: number; error: string };
 
+// Vault KV v2 paths (relative to the secret/ mount). These mirror what the
+// platform actually writes: wft-provision-database.yaml stores DB credentials
+// at teams/<team>/<app>/database, and the ExternalSecret it generates reads
+// back from the same place. Keep both in step — a path nothing writes reads
+// back as a 404, or as a 403 if the token's policy doesn't cover the prefix.
+export const databaseVaultPath = (team: string, app: string) =>
+  `teams/${team}/${app}/database`;
+export const secretsVaultPath = (team: string, app: string) =>
+  `teams/${team}/${app}`;
+
 export function createRouter(options: RouterOptions): Router {
   const { logger, httpAuth, userInfo, db, isPostgres, vaultAddr, vaultToken, oidcLoginUrl, backendBaseUrl } = options;
   const router = Router();
@@ -42,7 +52,7 @@ export function createRouter(options: RouterOptions): Router {
     }
 
     try {
-      const creds = await readVaultKV(vaultAddr, vaultToken, `platform/teams/${team}/${app}/database`);
+      const creds = await readVaultKV(vaultAddr, vaultToken, databaseVaultPath(team, app));
       if (!creds) {
         res.status(404).json({ error: `No database found for ${team}/${app}` });
         return;
@@ -69,7 +79,7 @@ export function createRouter(options: RouterOptions): Router {
     }
 
     try {
-      const secrets = await readVaultKV(vaultAddr, vaultToken, `teams/${team}/${app}`);
+      const secrets = await readVaultKV(vaultAddr, vaultToken, secretsVaultPath(team, app));
       res.json({ secrets: secrets ?? {} });
     } catch (err: any) {
       logger.error(`vault-secrets error for ${team}/${app}: ${err}`);
