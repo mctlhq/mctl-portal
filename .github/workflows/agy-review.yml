@@ -1,0 +1,17 @@
+name: Agy PR review
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, ready_for_review]
+
+permissions: {}
+
+jobs:
+  agy-review:
+    uses: mctlhq/.github/.github/workflows/agy-review.yml@main
+    permissions:
+      contents: read
+      pull-requests: write
+    with:
+      conventions: |
+        Focus on: Backstage plugin architecture compliance (`plugins/`), TypeScript strict type safety, RBAC team policy enforcement (`permission-backend-module-team-policy`), Vault secrets handling security (`vault-secrets-backend`), Backstage `app-config.yaml` / `app-config.production.yaml` schema validity, async error handling, and test coverage.
