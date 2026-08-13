@@ -10,7 +10,6 @@ import { createBackend } from '@backstage/backend-defaults';
 import { githubAuthModuleWithFallback } from './githubAuthModule';
 import {
   authModuleGithubInstallRedirect,
-  scaffolderModuleGithubActionsStream,
   scaffolderFiltersModule,
   githubDiscoveryProcessorModule,
 } from '@internal/plugin-github-app-connect-backend';
@@ -74,8 +73,6 @@ backend.add(import('@backstage/plugin-signals-backend'));
 backend.add(import('@internal/plugin-github-app-connect-backend'));
 // intercept GitHub App install callbacks at /api/auth/github/handler/frame
 backend.add(authModuleGithubInstallRedirect);
-// dispatch GitHub Actions workflows and stream logs into scaffolder console
-backend.add(scaffolderModuleGithubActionsStream);
 // custom Nunjucks template filters (repoName: "owner/repo" → "repo")
 backend.add(scaffolderFiltersModule);
 // GithubDiscoveryProcessor: expands GitHub glob location URLs into individual
