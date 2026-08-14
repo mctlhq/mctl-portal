@@ -1,5 +1,15 @@
 # Changelog
 
+## [4.11.2](https://github.com/mctlhq/mctl-portal/compare/4.11.1...4.11.2) (2026-08-14)
+
+
+### Bug Fixes
+
+* **portal:** register catalog provider in tenant plugin ([5679349](https://github.com/mctlhq/mctl-portal/commit/56793499618c07b426687e59f9ee0483606ad501))
+* **portal:** register catalog provider in tenant plugin ([91e8b7d](https://github.com/mctlhq/mctl-portal/commit/91e8b7d424d472d39274227c12ca082e8aeb7dc1))
+* **portal:** share TenantStore via root service, not an EP ([5e748a0](https://github.com/mctlhq/mctl-portal/commit/5e748a091187517b750e85892b83e05805215631))
+* **portal:** type catalog EP dep without ServiceRef multiton ([34cc6b3](https://github.com/mctlhq/mctl-portal/commit/34cc6b3cf5ac426487d537bcc76430812b63904a))
+
 ## [4.11.1](https://github.com/mctlhq/mctl-portal/compare/4.11.0...4.11.1) (2026-08-14)
 
 
