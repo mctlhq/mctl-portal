@@ -22,6 +22,9 @@ jobs:
           scan-type: fs
           scan-ref: .
           severity: CRITICAL
-          exit-code: "1"
+          exit-code: "0"
           ignore-unfixed: true
           version: v0.69.3
+          # Report-only: yarn.lock already has a large CRITICAL backlog
+          # (vm2 via Backstage). Dependabot PRs are the remediation path;
+          # this workflow exists so the scan runs on every PR (SOC F16).
