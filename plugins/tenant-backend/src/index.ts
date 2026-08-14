@@ -1,5 +1,6 @@
 export { tenantPlugin, tenantPlugin as default } from './plugin';
 export { tenantCatalogModule } from './tenantCatalogModule';
+export { tenantStoreServiceRef } from './tenantStoreService';
 export { TenantStore } from './tenantStore';
 export { TenantSync } from './tenantSync';
 export { TENANT_MGMT_SCHEMA, getTenantMember } from './membershipLookup';

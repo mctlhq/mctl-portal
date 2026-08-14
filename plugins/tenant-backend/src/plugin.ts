@@ -7,20 +7,11 @@ import { TenantStore } from './tenantStore';
 import { TenantSync } from './tenantSync';
 import { createRouter } from './router';
 import { getGithubAppInstallationToken } from './githubAppToken';
-import { tenantStoreExtensionPoint } from './tenantStoreExtension';
+import { tenantStoreServiceRef } from './tenantStoreService';
 
 export const tenantPlugin = createBackendPlugin({
   pluginId: 'tenant-management',
   register(env) {
-    let storeHolder: TenantStore | undefined;
-    env.registerExtensionPoint(tenantStoreExtensionPoint, {
-      getStore() {
-        if (!storeHolder) {
-          throw new Error('TenantStore is not initialized yet');
-        }
-        return storeHolder;
-      },
-    });
     env.registerInit({
       deps: {
         config: coreServices.rootConfig,
@@ -29,8 +20,17 @@ export const tenantPlugin = createBackendPlugin({
         httpRouter: coreServices.httpRouter,
         httpAuth: coreServices.httpAuth,
         userInfo: coreServices.userInfo,
+        tenantStoreApi: tenantStoreServiceRef,
       },
-      async init({ config, logger, database, httpRouter, httpAuth, userInfo }) {
+      async init({
+        config,
+        logger,
+        database,
+        httpRouter,
+        httpAuth,
+        userInfo,
+        tenantStoreApi,
+      }) {
         // ── Config ─────────────────────────────────────────────────────────
         const githubOrg = config.getString('tenantManagement.githubOrg');
         const repoName = config.getString('tenantManagement.repoName');
@@ -75,7 +75,7 @@ export const tenantPlugin = createBackendPlugin({
         // ── Initialize store ───────────────────────────────────────────────
         const store = new TenantStore(database, logger);
         await store.init();
-        storeHolder = store;
+        tenantStoreApi.setStore(store);
 
         // ── Start sync ─────────────────────────────────────────────────────
         const hasTokenSource = !!staticGithubToken || (!!appId && !!privateKey && !!installationId);

@@ -4,7 +4,7 @@ import {
   EntityProviderConnection,
 } from '@backstage/plugin-catalog-node';
 import { buildTenantCatalogEntities } from './catalogEntities';
-import { TenantStoreExtension } from './tenantStoreExtension';
+import { TenantStoreService } from './tenantStoreService';
 
 /**
  * Pushes tenant User/Group/System entities into the catalog from the DB.
@@ -15,7 +15,7 @@ export class TenantCatalogEntityProvider implements EntityProvider {
   private connection: EntityProviderConnection | undefined;
 
   constructor(
-    private readonly storeApi: TenantStoreExtension,
+    private readonly storeApi: TenantStoreService,
     private readonly logger: LoggerService,
   ) {}
 
@@ -35,7 +35,7 @@ export class TenantCatalogEntityProvider implements EntityProvider {
     let store;
     try {
       store = this.storeApi.getStore();
-    } catch (err) {
+    } catch {
       this.logger.warn(
         `${this.getProviderName()}: tenant store not ready yet, skipping refresh`,
       );
@@ -56,4 +56,3 @@ export class TenantCatalogEntityProvider implements EntityProvider {
     await this.connection.applyMutation({ type: 'full', entities });
   }
 }
-
