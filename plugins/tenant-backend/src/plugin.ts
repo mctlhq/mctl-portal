@@ -7,10 +7,20 @@ import { TenantStore } from './tenantStore';
 import { TenantSync } from './tenantSync';
 import { createRouter } from './router';
 import { getGithubAppInstallationToken } from './githubAppToken';
+import { tenantStoreExtensionPoint } from './tenantStoreExtension';
 
 export const tenantPlugin = createBackendPlugin({
   pluginId: 'tenant-management',
   register(env) {
+    let storeHolder: TenantStore | undefined;
+    env.registerExtensionPoint(tenantStoreExtensionPoint, {
+      getStore() {
+        if (!storeHolder) {
+          throw new Error('TenantStore is not initialized yet');
+        }
+        return storeHolder;
+      },
+    });
     env.registerInit({
       deps: {
         config: coreServices.rootConfig,
@@ -65,6 +75,7 @@ export const tenantPlugin = createBackendPlugin({
         // ── Initialize store ───────────────────────────────────────────────
         const store = new TenantStore(database, logger);
         await store.init();
+        storeHolder = store;
 
         // ── Start sync ─────────────────────────────────────────────────────
         const hasTokenSource = !!staticGithubToken || (!!appId && !!privateKey && !!installationId);
@@ -123,9 +134,7 @@ export const tenantPlugin = createBackendPlugin({
           getGithubToken: getToken,
         });
         httpRouter.use(router);
-        // The catalog's UrlReader cannot send Backstage credentials, so this must
-        // bypass the auth middleware; the handler enforces the landing token
-        // (Bearer header or ?token= query parameter) itself.
+        // Bearer-only operator dump; query-string tokens are rejected in the handler.
         httpRouter.addAuthPolicy({
           path: '/backstage/catalog.yaml',
           allow: 'unauthenticated',

@@ -89,6 +89,8 @@ export interface K8sClientOptions {
   kubeApiUrl?: string;
   kubeToken?: string;
   skipTLSVerify?: boolean;
+  /** PEM CA file used when skipTLSVerify is false (token mode). */
+  caFile?: string;
   cacheTtlMs?: number;
 }
 
@@ -109,11 +111,17 @@ export class KubernetesUsageClient {
     if (opts.kubeConfigType === 'inCluster') {
       kc.loadFromCluster();
     } else if (opts.kubeConfigType === 'token' && opts.kubeApiUrl && opts.kubeToken) {
+      const skipTLSVerify = opts.skipTLSVerify ?? false;
+      const caFile =
+        skipTLSVerify
+          ? undefined
+          : opts.caFile ?? '/var/run/secrets/kubernetes.io/serviceaccount/ca.crt';
       kc.loadFromOptions({
         clusters: [{
           name: 'cluster',
           server: opts.kubeApiUrl,
-          skipTLSVerify: opts.skipTLSVerify ?? false,
+          skipTLSVerify,
+          ...(caFile ? { caFile } : {}),
         }],
         users: [{ name: 'backstage', token: opts.kubeToken }],
         contexts: [{ name: 'cluster', cluster: 'cluster', user: 'backstage' }],
