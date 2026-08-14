@@ -5,6 +5,7 @@ import { ArgoWorkflowsClient } from '@internal/plugin-argo-workflows-backend';
 import { TenantStore } from './tenantStore';
 import { CreateTenantRequest, InviteMemberRequest, UpdateMemberRoleRequest } from './types';
 import { dump as yamlDump } from 'js-yaml';
+import { buildTenantCatalogEntities } from './catalogEntities';
 
 export interface RouterOptions {
   logger: LoggerService;
@@ -36,7 +37,13 @@ export interface RouterOptions {
 }
 
 type AuthResult =
-  | { authorized: true; isAdmin: boolean; callerInfo: string; userId: string | undefined }
+  | {
+      authorized: true;
+      isAdmin: boolean;
+      isLanding: boolean;
+      callerInfo: string;
+      userId: string | undefined;
+    }
   | { authorized: false; reason: string };
 
 /** Extract GitHub username from ownershipEntityRefs (user:default/{username}) */
@@ -96,7 +103,10 @@ export function staticTokenEquals(
  *   2. Backstage user credentials (browser sessions)
  *   3. Backstage service credentials (plugin-to-plugin)
  *
- * isAdmin is only true when the user has `owner` role in the `admins` tenant (verified in DB).
+ * isAdmin is only true when the user has `owner` role in the `admins` tenant (verified in DB)
+ * or when the caller is a Backstage service credential. The landing-page token is NOT admin:
+ * it may create a tenant and check a name, nothing else.
+ *
  * Group membership in `group:default/admins` alone is not sufficient — a developer/viewer
  * member of the admins team must NOT receive admin privileges.
  */
@@ -116,12 +126,24 @@ async function resolveAuth(
       // Try JWT verification first (preferred)
       const jwtPayload = verifyLandingJwt(bearerValue, landingPageToken);
       if (jwtPayload) {
-        return { authorized: true, isAdmin: true, callerInfo: 'landing-page-jwt', userId: undefined };
+        return {
+          authorized: true,
+          isAdmin: false,
+          isLanding: true,
+          callerInfo: 'landing-page-jwt',
+          userId: undefined,
+        };
       }
 
       // Fallback: static token comparison (backward compatibility)
       if (staticTokenEquals(bearerValue, landingPageToken)) {
-        return { authorized: true, isAdmin: true, callerInfo: 'landing-page', userId: undefined };
+        return {
+          authorized: true,
+          isAdmin: false,
+          isLanding: true,
+          callerInfo: 'landing-page',
+          userId: undefined,
+        };
       }
     }
   }
@@ -143,6 +165,7 @@ async function resolveAuth(
     return {
       authorized: true,
       isAdmin,
+      isLanding: false,
       callerInfo: ownershipEntityRefs[0] ?? 'user',
       userId,
     };
@@ -153,7 +176,13 @@ async function resolveAuth(
   // ── Tier 3: Backstage service credentials (plugin-to-plugin) ──────────────
   try {
     await httpAuth.credentials(req, { allow: ['service'] });
-    return { authorized: true, isAdmin: true, callerInfo: 'service', userId: undefined };
+    return {
+      authorized: true,
+      isAdmin: true,
+      isLanding: false,
+      callerInfo: 'service',
+      userId: undefined,
+    };
   } catch {
     return { authorized: false, reason: 'No valid credentials' };
   }
@@ -213,6 +242,10 @@ export function createRouter(opts: RouterOptions): Router {
       res.status(401).json({ error: 'Authentication required' });
       return;
     }
+    if (auth.isLanding) {
+      res.status(403).json({ error: 'Landing token cannot look up users' });
+      return;
+    }
     const { username } = req.query as { username?: string };
     if (!username || typeof username !== 'string' || !username.trim()) {
       res.status(400).json({ error: 'username query parameter is required' });
@@ -240,6 +273,10 @@ export function createRouter(opts: RouterOptions): Router {
       res.status(401).json({ error: 'Authentication required' });
       return;
     }
+    if (auth.isLanding) {
+      res.status(403).json({ error: 'Landing token cannot list tenants' });
+      return;
+    }
     try {
       const tenants = await store.listAll();
       res.json({ tenants });
@@ -265,6 +302,11 @@ export function createRouter(opts: RouterOptions): Router {
         res.status(404).json({ error: `Tenant '${name}' not found` });
         return;
       }
+      // Landing page only needs existence for name-availability checks.
+      if (auth.isLanding) {
+        res.json({ tenant: { name: tenant.name } });
+        return;
+      }
       res.json({ tenant });
     } catch (err: any) {
       logger.error(`[tenant-backend] GET /tenants/${name} error: ${err}`);
@@ -274,7 +316,7 @@ export function createRouter(opts: RouterOptions): Router {
 
   // ── POST /tenants ─────────────────────────────────────────────────────────
   // Creates a new tenant via wft-create-tenant Argo WorkflowTemplate.
-  // Requires: admin user, service token, or landing-page static token.
+  // Requires: admin user, service token, or landing-page token (JWT/static).
   router.post('/tenants', async (req: Request, res: Response) => {
     const auth = await resolveAuth(req, httpAuth, userInfo, landingPageToken, store);
 
@@ -283,7 +325,7 @@ export function createRouter(opts: RouterOptions): Router {
       return;
     }
 
-    if (!auth.isAdmin) {
+    if (!auth.isAdmin && !auth.isLanding) {
       res.status(403).json({ error: 'Only admin users can create tenants' });
       return;
     }
@@ -492,8 +534,13 @@ export function createRouter(opts: RouterOptions): Router {
       return;
     }
     try {
-      // Check access: admin or member of this tenant
-      if (!auth.isAdmin && auth.userId) {
+      // Check access: admin or member of this tenant. Landing tokens have
+      // neither, so they must not fall through to the member list.
+      if (!auth.isAdmin) {
+        if (!auth.userId) {
+          res.status(403).json({ error: 'Access denied' });
+          return;
+        }
         const membership = await store.getMemberByTenant(name, auth.userId);
         if (!membership) {
           res.status(403).json({ error: 'Access denied' });
@@ -663,11 +710,9 @@ export function createRouter(opts: RouterOptions): Router {
   });
 
   // ── GET /backstage/catalog.yaml ────────────────────────────────────────────
-  // Returns all tenant User and Group entities as Backstage catalog YAML.
-  // The output contains PII (contact emails, member lists), so it requires the
-  // static landing token even though it is registered as a catalog location on
-  // a public origin. The catalog's UrlReader cannot send headers, so the token
-  // is also accepted as a `?token=` query parameter (see app-config locations).
+  // Optional Bearer-only dump for operators. The catalog itself is fed by
+  // TenantCatalogEntityProvider (no URL, no query token). Query-string tokens
+  // are rejected so a leaked location URL cannot fetch PII.
   router.get('/backstage/catalog.yaml', async (req: Request, res: Response) => {
     if (!landingPageToken) {
       res
@@ -676,11 +721,7 @@ export function createRouter(opts: RouterOptions): Router {
       return;
     }
     const authHeader = req.headers['authorization'];
-    const provided = authHeader?.startsWith('Bearer ')
-      ? authHeader.slice(7)
-      : typeof req.query.token === 'string'
-        ? req.query.token
-        : undefined;
+    const provided = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : undefined;
     if (!staticTokenEquals(provided, landingPageToken)) {
       res.status(401).send('# unauthorized');
       return;
@@ -690,141 +731,9 @@ export function createRouter(opts: RouterOptions): Router {
         store.listAll(),
         store.listAllMembers(),
       ]);
-
-      const docs: object[] = [];
-
-      // Group entities: one main group per tenant + viewer marker groups
-      for (const tenant of tenants) {
-        const tenantMembers = allMembers.filter(m => m.tenantName === tenant.name);
-        const viewers = tenantMembers.filter(m => m.role === 'viewer').map(m => m.userId);
-
-        // Main team group — all members (owner, developer, viewer)
-        docs.push({
-          apiVersion: 'backstage.io/v1alpha1',
-          kind: 'Group',
-          metadata: {
-            name: tenant.name,
-            namespace: 'default',
-            title: tenant.displayName,
-            ...(tenant.description ? { description: tenant.description } : {}),
-            annotations: {
-              'mctl.me/tenant-name': tenant.name,
-            },
-          },
-          spec: {
-            type: 'team',
-            owner: `group:default/${tenant.name}`,
-            profile: {
-              displayName: tenant.displayName,
-              ...(tenant.contactEmail ? { email: tenant.contactEmail } : {}),
-            },
-            children: [],
-            members: tenantMembers.map(m => m.userId),
-          },
-        });
-
-        // Owner marker group for admins tenant — permission policy checks this group
-        // (not the main admins group) to avoid granting full ALLOW to non-owner admins members.
-        if (tenant.name === 'admins') {
-          const owners = tenantMembers.filter(m => m.role === 'owner').map(m => m.userId);
-          if (owners.length > 0) {
-            docs.push({
-              apiVersion: 'backstage.io/v1alpha1',
-              kind: 'Group',
-              metadata: {
-                name: 'admins-owners',
-                namespace: 'default',
-                title: 'Platform Admins (Owners)',
-                annotations: {
-                  'mctl.me/tenant-name': 'admins',
-                  'mctl.me/role-marker': 'owner',
-                },
-              },
-              spec: {
-                type: 'virtual',
-                owner: 'group:default/admins',
-                profile: { displayName: 'Platform Admins (Owners)' },
-                children: [],
-                members: owners,
-              },
-            });
-          }
-        }
-
-        // Viewer marker group — used by permission policy to restrict scaffolder access
-        if (viewers.length > 0) {
-          docs.push({
-            apiVersion: 'backstage.io/v1alpha1',
-            kind: 'Group',
-            metadata: {
-              name: `viewer-${tenant.name}`,
-              namespace: 'default',
-              title: `${tenant.displayName} (Viewers)`,
-              annotations: {
-                'mctl.me/tenant-name': tenant.name,
-                'mctl.me/role-marker': 'viewer',
-              },
-            },
-            spec: {
-              type: 'virtual',
-              owner: `group:default/${tenant.name}`,
-              profile: { displayName: `${tenant.displayName} Viewers` },
-              children: [],
-              members: viewers,
-            },
-          });
-        }
-      }
-
-      // System entities: one per tenant (auto-managed)
-      for (const tenant of tenants) {
-        docs.push({
-          apiVersion: 'backstage.io/v1alpha1',
-          kind: 'System',
-          metadata: {
-            name: `team-${tenant.name}`,
-            namespace: 'default',
-            description: `${tenant.displayName} workloads`,
-            annotations: {
-              'mctl.me/tenant-name': tenant.name,
-            },
-          },
-          spec: {
-            owner: `group:default/${tenant.name}`,
-          },
-        });
-      }
-
-      // User entities (one per unique invited user).
-      // Primary tenant = first alphabetically (listAllMembers orders by tenant_name).
-      // Viewers get memberOf: [tenantName, viewer-tenantName] for permission policy detection.
-      const userMap = new Map<string, typeof allMembers[0]>();
-      for (const m of allMembers) {
-        if (!userMap.has(m.userId)) userMap.set(m.userId, m);
-      }
-      for (const [userId, member] of userMap.entries()) {
-        const memberOf = [member.tenantName];
-        if (member.role === 'viewer') memberOf.push(`viewer-${member.tenantName}`);
-        docs.push({
-          apiVersion: 'backstage.io/v1alpha1',
-          kind: 'User',
-          metadata: {
-            name: userId,
-            namespace: 'default',
-            annotations: {
-              'github.com/user-login': userId,
-              'mctl.me/tenant-role': member.role,
-            },
-          },
-          spec: {
-            profile: { displayName: userId },
-            memberOf,
-            owner: `group:default/${member.tenantName}`,
-          },
-        });
-      }
-
-      const yamlContent = docs.map(d => yamlDump(d)).join('---\n');
+      const yamlContent = buildTenantCatalogEntities(tenants, allMembers)
+        .map(d => yamlDump(d))
+        .join('---\n');
       res.setHeader('Content-Type', 'text/yaml; charset=utf-8');
       res.send(yamlContent);
     } catch (err: any) {

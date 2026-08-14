@@ -4,8 +4,7 @@ import { AddressInfo } from 'net';
 import { createRouter, staticTokenEquals, RouterOptions } from './router';
 
 // /backstage/catalog.yaml serves PII (contact emails, member lists) and is
-// gated on the landing token via this comparison; it is also the fallback
-// static-token path in resolveAuth. Guard both directions.
+// gated on a Bearer landing token. Query-string tokens must not work.
 describe('staticTokenEquals', () => {
   const token = 'k'.repeat(48);
 
@@ -108,17 +107,13 @@ describe('GET /backstage/catalog.yaml', () => {
     expect(byHeader.status).toBe(401);
   });
 
-  it('serves catalog YAML for the correct query token', async () => {
+  it('rejects the correct token in the query string', async () => {
     const base = await startApp(token);
     const res = await fetch(
       `${base}/backstage/catalog.yaml?token=${encodeURIComponent(token)}`,
     );
-    expect(res.status).toBe(200);
-    expect(res.headers.get('content-type')).toContain('text/yaml');
-    const body = await res.text();
-    expect(body).toContain('kind: Group');
-    expect(body).toContain('name: labs');
-    expect(body).toContain('alice');
+    expect(res.status).toBe(401);
+    expect(await res.text()).not.toContain('owner@example.com');
   });
 
   it('serves catalog YAML for the correct bearer token', async () => {
@@ -128,5 +123,96 @@ describe('GET /backstage/catalog.yaml', () => {
     });
     expect(res.status).toBe(200);
     expect(await res.text()).toContain('owner@example.com');
+  });
+});
+
+describe('landing-page token is not platform admin', () => {
+  const token = 'landing-secret-token';
+  let server: Server | undefined;
+  const submitWorkflow = jest.fn().mockResolvedValue('create-tenant-abc');
+
+  const noopLogger = {
+    info: jest.fn(),
+    warn: jest.fn(),
+    error: jest.fn(),
+    debug: jest.fn(),
+    child: jest.fn(),
+  };
+  noopLogger.child.mockReturnValue(noopLogger);
+
+  function startApp(): Promise<string> {
+    const options = {
+      logger: noopLogger,
+      httpAuth: { credentials: jest.fn().mockRejectedValue(new Error('no creds')) },
+      userInfo: { getUserInfo: jest.fn() },
+      store: {
+        listAll: jest.fn().mockResolvedValue([
+          { name: 'labs', displayName: 'Labs', contactEmail: 'owner@example.com' },
+        ]),
+        findByName: jest.fn().mockImplementation(async (name: string) =>
+          name === 'labs'
+            ? { name: 'labs', displayName: 'Labs', contactEmail: 'owner@example.com' }
+            : undefined,
+        ),
+        upsert: jest.fn().mockResolvedValue(undefined),
+        addMember: jest.fn().mockResolvedValue(undefined),
+        listAllMembers: jest.fn().mockResolvedValue([]),
+        listMembers: jest.fn().mockResolvedValue([{ userId: 'alice', role: 'owner' }]),
+        getMemberByTenant: jest.fn(),
+      },
+      argoClient: { submitWorkflow },
+      argoNamespace: 'argo-workflows',
+      getGithubToken: jest.fn(),
+      landingPageToken: token,
+    } as unknown as RouterOptions;
+    const app = express();
+    app.use(createRouter(options));
+    return new Promise(resolve => {
+      server = app.listen(0, () => {
+        resolve(`http://127.0.0.1:${(server!.address() as AddressInfo).port}`);
+      });
+    });
+  }
+
+  afterEach(done => {
+    submitWorkflow.mockClear();
+    if (server) {
+      server.close(() => done());
+      server = undefined;
+    } else {
+      done();
+    }
+  });
+
+  it('allows POST /tenants and GET /tenants/:name without PII', async () => {
+    const base = await startApp();
+    const created = await fetch(`${base}/tenants`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${token}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ tenantName: 'acme', displayName: 'Acme' }),
+    });
+    expect(created.status).toBe(202);
+    expect(submitWorkflow).toHaveBeenCalled();
+
+    const check = await fetch(`${base}/tenants/labs`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(check.status).toBe(200);
+    const body = await check.json();
+    expect(body.tenant).toEqual({ name: 'labs' });
+    expect(JSON.stringify(body)).not.toContain('owner@example.com');
+  });
+
+  it('cannot list tenants, members, or delete', async () => {
+    const base = await startApp();
+    const headers = { authorization: `Bearer ${token}` };
+    expect((await fetch(`${base}/tenants`, { headers })).status).toBe(403);
+    expect((await fetch(`${base}/tenants/labs/members`, { headers })).status).toBe(403);
+    expect(
+      (await fetch(`${base}/tenants/labs`, { method: 'DELETE', headers })).status,
+    ).toBe(403);
   });
 });

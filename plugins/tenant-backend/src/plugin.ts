@@ -2,11 +2,13 @@ import {
   createBackendPlugin,
   coreServices,
 } from '@backstage/backend-plugin-api';
+import { catalogProcessingExtensionPoint } from '@backstage/plugin-catalog-node';
 import { ArgoWorkflowsClient } from '@internal/plugin-argo-workflows-backend';
 import { TenantStore } from './tenantStore';
 import { TenantSync } from './tenantSync';
 import { createRouter } from './router';
 import { getGithubAppInstallationToken } from './githubAppToken';
+import { TenantCatalogEntityProvider } from './tenantCatalogProvider';
 
 export const tenantPlugin = createBackendPlugin({
   pluginId: 'tenant-management',
@@ -19,8 +21,10 @@ export const tenantPlugin = createBackendPlugin({
         httpRouter: coreServices.httpRouter,
         httpAuth: coreServices.httpAuth,
         userInfo: coreServices.userInfo,
+        catalogProcessing: catalogProcessingExtensionPoint,
+        scheduler: coreServices.scheduler,
       },
-      async init({ config, logger, database, httpRouter, httpAuth, userInfo }) {
+      async init({ config, logger, database, httpRouter, httpAuth, userInfo, catalogProcessing, scheduler }) {
         // ── Config ─────────────────────────────────────────────────────────
         const githubOrg = config.getString('tenantManagement.githubOrg');
         const repoName = config.getString('tenantManagement.repoName');
@@ -123,9 +127,7 @@ export const tenantPlugin = createBackendPlugin({
           getGithubToken: getToken,
         });
         httpRouter.use(router);
-        // The catalog's UrlReader cannot send Backstage credentials, so this must
-        // bypass the auth middleware; the handler enforces the landing token
-        // (Bearer header or ?token= query parameter) itself.
+        // Bearer-only operator dump; query-string tokens are rejected in the handler.
         httpRouter.addAuthPolicy({
           path: '/backstage/catalog.yaml',
           allow: 'unauthenticated',
@@ -150,6 +152,18 @@ export const tenantPlugin = createBackendPlugin({
           `[TenantPlugin] Initialized. Sync interval: ${syncIntervalMinutes} min. ` +
             `Tenants path: ${githubOrg}/${repoName}/${tenantsPath}`,
         );
+
+        const catalogProvider = new TenantCatalogEntityProvider(store, logger);
+        catalogProcessing.addEntityProvider(catalogProvider);
+        const catalogRunner = scheduler.createScheduledTaskRunner({
+          frequency: { minutes: 1 },
+          timeout: { minutes: 2 },
+        });
+        await catalogRunner.run({
+          id: catalogProvider.getProviderName(),
+          fn: async () => catalogProvider.refresh(),
+        });
+        logger.info('[TenantPlugin] Tenant catalog entity provider registered');
       },
     });
   },

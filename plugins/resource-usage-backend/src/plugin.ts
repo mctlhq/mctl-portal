@@ -24,6 +24,7 @@ export const resourceUsagePlugin = createBackendPlugin({
         const kubeApiUrl = config.getOptionalString('resourceUsage.kubeApiUrl');
         const kubeToken = config.getOptionalString('resourceUsage.kubeToken');
         const skipTLSVerify = config.getOptionalBoolean('resourceUsage.skipTLSVerify') ?? false;
+        const caFile = config.getOptionalString('resourceUsage.caFile');
 
         // ── K8s client ─────────────────────────────────────────────────────────
         const k8sClient = new KubernetesUsageClient({
@@ -32,6 +33,7 @@ export const resourceUsagePlugin = createBackendPlugin({
           kubeApiUrl,
           kubeToken,
           skipTLSVerify,
+          caFile,
           cacheTtlMs: 30_000, // 30s cache to avoid hammering K8s API
         });
 
