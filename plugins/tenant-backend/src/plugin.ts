@@ -1,12 +1,9 @@
 import {
   createBackendPlugin,
   coreServices,
-  ServiceRef,
+  BackendModuleRegistrationPoints,
 } from '@backstage/backend-plugin-api';
-import {
-  catalogProcessingExtensionPoint,
-  CatalogProcessingExtensionPoint,
-} from '@backstage/plugin-catalog-node';
+import { catalogProcessingExtensionPoint } from '@backstage/plugin-catalog-node';
 import { ArgoWorkflowsClient } from '@internal/plugin-argo-workflows-backend';
 import { TenantStore } from './tenantStore';
 import { TenantSync } from './tenantSync';
@@ -14,17 +11,16 @@ import { createRouter } from './router';
 import { getGithubAppInstallationToken } from './githubAppToken';
 import { TenantCatalogEntityProvider } from './tenantCatalogProvider';
 
-// createBackendPlugin's registerInit types only allow ServiceRef, but the
-// runtime allows a plugin (no moduleId) to consume another plugin's EP.
-// A catalog *module* must not depend on tenant-management.store — that is
-// the 4.11.1 crash: "Extension points can only be used within their plugin's scope."
-const catalogProcessingRef =
-  catalogProcessingExtensionPoint as unknown as ServiceRef<CatalogProcessingExtensionPoint>;
-
 export const tenantPlugin = createBackendPlugin({
   pluginId: 'tenant-management',
   register(env) {
-    env.registerInit({
+    // Plugin registerInit types only allow ServiceRef, but runtime allows a
+    // plugin (no moduleId) to consume another plugin's EP. A catalog *module*
+    // must not depend on tenant-management.store — that is the 4.11.1 crash:
+    // "Extension points can only be used within their plugin's scope."
+    const registerInit =
+      env.registerInit as BackendModuleRegistrationPoints['registerInit'];
+    registerInit({
       deps: {
         config: coreServices.rootConfig,
         logger: coreServices.logger,
@@ -33,7 +29,7 @@ export const tenantPlugin = createBackendPlugin({
         httpAuth: coreServices.httpAuth,
         userInfo: coreServices.userInfo,
         scheduler: coreServices.scheduler,
-        catalogProcessing: catalogProcessingRef,
+        catalogProcessing: catalogProcessingExtensionPoint,
       },
       async init({
         config,
