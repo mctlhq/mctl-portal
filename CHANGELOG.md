@@ -1,5 +1,13 @@
 # Changelog
 
+## [4.11.0](https://github.com/mctlhq/mctl-portal/compare/4.10.0...4.11.0) (2026-08-14)
+
+
+### Features
+
+* **backend:** let mctl-api authenticate via external access ([58d3a28](https://github.com/mctlhq/mctl-portal/commit/58d3a28230e2e9256d241d17433d6f1e97331d97))
+* **backend:** let mctl-api authenticate via external access ([207b2a9](https://github.com/mctlhq/mctl-portal/commit/207b2a973d7f50a1677392b96305059d94738fe0))
+
 ## [4.10.0](https://github.com/mctlhq/mctl-portal/compare/4.9.0...4.10.0) (2026-08-01)
 
 
