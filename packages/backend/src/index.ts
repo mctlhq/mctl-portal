@@ -13,6 +13,7 @@ import {
   scaffolderFiltersModule,
   githubDiscoveryProcessorModule,
 } from '@internal/plugin-github-app-connect-backend';
+import { tenantCatalogModule } from '@internal/plugin-tenant-backend';
 
 const backend = createBackend();
 
@@ -87,6 +88,7 @@ backend.add(import('@internal/plugin-resource-usage-backend'));
 
 // tenant management — syncs tenant YAMLs from Git, serves REST API, creates tenants via Argo
 backend.add(import('@internal/plugin-tenant-backend'));
+backend.add(tenantCatalogModule);
 
 // argo workflows — submit WorkflowTemplates from scaffolder (replaces GitHub Actions dispatch)
 backend.add(import('@internal/plugin-argo-workflows-backend'));

@@ -2,17 +2,25 @@ import {
   createBackendPlugin,
   coreServices,
 } from '@backstage/backend-plugin-api';
-import { catalogProcessingExtensionPoint } from '@backstage/plugin-catalog-node';
 import { ArgoWorkflowsClient } from '@internal/plugin-argo-workflows-backend';
 import { TenantStore } from './tenantStore';
 import { TenantSync } from './tenantSync';
 import { createRouter } from './router';
 import { getGithubAppInstallationToken } from './githubAppToken';
-import { TenantCatalogEntityProvider } from './tenantCatalogProvider';
+import { tenantStoreExtensionPoint } from './tenantStoreExtension';
 
 export const tenantPlugin = createBackendPlugin({
   pluginId: 'tenant-management',
   register(env) {
+    let storeHolder: TenantStore | undefined;
+    env.registerExtensionPoint(tenantStoreExtensionPoint, {
+      getStore() {
+        if (!storeHolder) {
+          throw new Error('TenantStore is not initialized yet');
+        }
+        return storeHolder;
+      },
+    });
     env.registerInit({
       deps: {
         config: coreServices.rootConfig,
@@ -21,10 +29,8 @@ export const tenantPlugin = createBackendPlugin({
         httpRouter: coreServices.httpRouter,
         httpAuth: coreServices.httpAuth,
         userInfo: coreServices.userInfo,
-        catalogProcessing: catalogProcessingExtensionPoint,
-        scheduler: coreServices.scheduler,
       },
-      async init({ config, logger, database, httpRouter, httpAuth, userInfo, catalogProcessing, scheduler }) {
+      async init({ config, logger, database, httpRouter, httpAuth, userInfo }) {
         // ── Config ─────────────────────────────────────────────────────────
         const githubOrg = config.getString('tenantManagement.githubOrg');
         const repoName = config.getString('tenantManagement.repoName');
@@ -69,6 +75,7 @@ export const tenantPlugin = createBackendPlugin({
         // ── Initialize store ───────────────────────────────────────────────
         const store = new TenantStore(database, logger);
         await store.init();
+        storeHolder = store;
 
         // ── Start sync ─────────────────────────────────────────────────────
         const hasTokenSource = !!staticGithubToken || (!!appId && !!privateKey && !!installationId);
@@ -152,18 +159,6 @@ export const tenantPlugin = createBackendPlugin({
           `[TenantPlugin] Initialized. Sync interval: ${syncIntervalMinutes} min. ` +
             `Tenants path: ${githubOrg}/${repoName}/${tenantsPath}`,
         );
-
-        const catalogProvider = new TenantCatalogEntityProvider(store, logger);
-        catalogProcessing.addEntityProvider(catalogProvider);
-        const catalogRunner = scheduler.createScheduledTaskRunner({
-          frequency: { minutes: 1 },
-          timeout: { minutes: 2 },
-        });
-        await catalogRunner.run({
-          id: catalogProvider.getProviderName(),
-          fn: async () => catalogProvider.refresh(),
-        });
-        logger.info('[TenantPlugin] Tenant catalog entity provider registered');
       },
     });
   },
