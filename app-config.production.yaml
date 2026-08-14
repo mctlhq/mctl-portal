@@ -10,6 +10,26 @@ organization:
 backend:
   baseUrl: ${BACKEND_BASE_URL}
   listen: ':7007'
+  # mctl-api is not a Backstage backend, so it cannot mint service tokens of
+  # its own. It authenticates with this shared static token, sent as a Bearer.
+  # Without an entry here the backend rejects it as "Illegal token" — which is
+  # what has kept custom domains unusable since the /domains* auth policy was
+  # tightened. Restricted to custom-domains, the only plugin needing it today;
+  # mctl-api's other calls still ride the plugins' own unauthenticated policies.
+  # Its tenant notification is deliberately absent: that one posts to
+  # /api/plugin-tenant/..., but tenant-backend registers as 'tenant-management',
+  # so the path 404s regardless of auth — a separate bug, long hidden because
+  # the caller only logs a warning.
+  # Interim: the eventual shape is type: jwks against mctl-api's in-cluster
+  # ServiceAccount identity, which drops the shared secret entirely.
+  auth:
+    externalAccess:
+      - type: static
+        options:
+          token: ${BACKSTAGE_TOKEN}
+          subject: mctl-api
+        accessRestrictions:
+          - plugin: custom-domains
   database:
     client: pg
     connection:
