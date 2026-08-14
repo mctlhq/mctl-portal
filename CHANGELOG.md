@@ -1,5 +1,14 @@
 # Changelog
 
+## [4.11.1](https://github.com/mctlhq/mctl-portal/compare/4.11.0...4.11.1) (2026-08-14)
+
+
+### Bug Fixes
+
+* **portal:** register tenant catalog as a catalog module ([9314fd5](https://github.com/mctlhq/mctl-portal/commit/9314fd5dcda636d091ea4ffc2347a20cdbb9fce5))
+* **portal:** scope landing token and verify k8s TLS ([b20efdb](https://github.com/mctlhq/mctl-portal/commit/b20efdbd7112be1e7c1537ffaff765fd84aaf32a))
+* **portal:** scope landing token and verify k8s TLS ([67522e5](https://github.com/mctlhq/mctl-portal/commit/67522e5407ea08f0cd66b190ebf9e3303bade1d1))
+
 ## [4.11.0](https://github.com/mctlhq/mctl-portal/compare/4.10.0...4.11.0) (2026-08-14)
 
 
