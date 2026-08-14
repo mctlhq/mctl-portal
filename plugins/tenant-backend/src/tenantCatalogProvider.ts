@@ -4,18 +4,20 @@ import {
   EntityProviderConnection,
 } from '@backstage/plugin-catalog-node';
 import { buildTenantCatalogEntities } from './catalogEntities';
-import { TenantStoreExtension } from './tenantStoreExtension';
+import { TenantStore } from './tenantStore';
 
 /**
  * Pushes tenant User/Group/System entities into the catalog from the DB.
  * Replaces the HTTP catalog.yaml location that put BACKSTAGE_LANDING_TOKEN
  * in the query string because UrlReader cannot send headers.
+ *
+ * Registered from the tenant-management plugin (not a catalog module).
  */
 export class TenantCatalogEntityProvider implements EntityProvider {
   private connection: EntityProviderConnection | undefined;
 
   constructor(
-    private readonly storeApi: TenantStoreExtension,
+    private readonly store: TenantStore,
     private readonly logger: LoggerService,
   ) {}
 
@@ -32,18 +34,9 @@ export class TenantCatalogEntityProvider implements EntityProvider {
       this.logger.warn(`${this.getProviderName()}: no connection, skipping refresh`);
       return;
     }
-    let store;
-    try {
-      store = this.storeApi.getStore();
-    } catch (err) {
-      this.logger.warn(
-        `${this.getProviderName()}: tenant store not ready yet, skipping refresh`,
-      );
-      return;
-    }
     const [tenants, allMembers] = await Promise.all([
-      store.listAll(),
-      store.listAllMembers(),
+      this.store.listAll(),
+      this.store.listAllMembers(),
     ]);
     const entities = buildTenantCatalogEntities(tenants, allMembers).map(entity => ({
       entity,
@@ -56,4 +49,3 @@ export class TenantCatalogEntityProvider implements EntityProvider {
     await this.connection.applyMutation({ type: 'full', entities });
   }
 }
-

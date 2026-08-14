@@ -1,26 +1,29 @@
 import {
   createBackendPlugin,
   coreServices,
+  ServiceRef,
 } from '@backstage/backend-plugin-api';
+import {
+  catalogProcessingExtensionPoint,
+  CatalogProcessingExtensionPoint,
+} from '@backstage/plugin-catalog-node';
 import { ArgoWorkflowsClient } from '@internal/plugin-argo-workflows-backend';
 import { TenantStore } from './tenantStore';
 import { TenantSync } from './tenantSync';
 import { createRouter } from './router';
 import { getGithubAppInstallationToken } from './githubAppToken';
-import { tenantStoreExtensionPoint } from './tenantStoreExtension';
+import { TenantCatalogEntityProvider } from './tenantCatalogProvider';
+
+// createBackendPlugin's registerInit types only allow ServiceRef, but the
+// runtime allows a plugin (no moduleId) to consume another plugin's EP.
+// A catalog *module* must not depend on tenant-management.store — that is
+// the 4.11.1 crash: "Extension points can only be used within their plugin's scope."
+const catalogProcessingRef =
+  catalogProcessingExtensionPoint as unknown as ServiceRef<CatalogProcessingExtensionPoint>;
 
 export const tenantPlugin = createBackendPlugin({
   pluginId: 'tenant-management',
   register(env) {
-    let storeHolder: TenantStore | undefined;
-    env.registerExtensionPoint(tenantStoreExtensionPoint, {
-      getStore() {
-        if (!storeHolder) {
-          throw new Error('TenantStore is not initialized yet');
-        }
-        return storeHolder;
-      },
-    });
     env.registerInit({
       deps: {
         config: coreServices.rootConfig,
@@ -29,8 +32,19 @@ export const tenantPlugin = createBackendPlugin({
         httpRouter: coreServices.httpRouter,
         httpAuth: coreServices.httpAuth,
         userInfo: coreServices.userInfo,
+        scheduler: coreServices.scheduler,
+        catalogProcessing: catalogProcessingRef,
       },
-      async init({ config, logger, database, httpRouter, httpAuth, userInfo }) {
+      async init({
+        config,
+        logger,
+        database,
+        httpRouter,
+        httpAuth,
+        userInfo,
+        scheduler,
+        catalogProcessing,
+      }) {
         // ── Config ─────────────────────────────────────────────────────────
         const githubOrg = config.getString('tenantManagement.githubOrg');
         const repoName = config.getString('tenantManagement.repoName');
@@ -75,7 +89,20 @@ export const tenantPlugin = createBackendPlugin({
         // ── Initialize store ───────────────────────────────────────────────
         const store = new TenantStore(database, logger);
         await store.init();
-        storeHolder = store;
+
+        // In-process User/Group/System entities. Must live in this plugin's
+        // registerInit (same owner as TenantStore), not a catalog module.
+        const catalogProvider = new TenantCatalogEntityProvider(store, logger);
+        catalogProcessing.addEntityProvider(catalogProvider);
+        const catalogRunner = scheduler.createScheduledTaskRunner({
+          frequency: { minutes: 1 },
+          timeout: { minutes: 2 },
+        });
+        await catalogRunner.run({
+          id: catalogProvider.getProviderName(),
+          fn: async () => catalogProvider.refresh(),
+        });
+        logger.info('[TenantCatalog] entity provider registered');
 
         // ── Start sync ─────────────────────────────────────────────────────
         const hasTokenSource = !!staticGithubToken || (!!appId && !!privateKey && !!installationId);
