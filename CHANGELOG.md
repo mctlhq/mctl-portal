@@ -1,5 +1,19 @@
 # Changelog
 
+## [4.12.0](https://github.com/mctlhq/mctl-portal/compare/4.11.2...4.12.0) (2026-08-15)
+
+
+### Features
+
+* **portal:** load the portal favicon from the design CDN ([7ecb521](https://github.com/mctlhq/mctl-portal/commit/7ecb52151001c173446670b756c6234d8e7ece5c))
+* **portal:** load the portal favicon from the design CDN ([10f21f5](https://github.com/mctlhq/mctl-portal/commit/10f21f57366a50226fe73f75f4963330c6e103f0))
+
+
+### Bug Fixes
+
+* cache-bust the CDN portal favicon ([6dea9b0](https://github.com/mctlhq/mctl-portal/commit/6dea9b05235917d5e5c914311c873eacd4b4a6ac))
+* drop production http connect-src from the favicon CSP ([269350b](https://github.com/mctlhq/mctl-portal/commit/269350bc5279e364873f5bf2dedc57c0d4dff38e))
+
 ## [4.11.2](https://github.com/mctlhq/mctl-portal/compare/4.11.1...4.11.2) (2026-08-14)
 
 
