@@ -1,5 +1,17 @@
 # Changelog
 
+## [4.13.0](https://github.com/mctlhq/mctl-portal/compare/4.12.0...4.13.0) (2026-08-15)
+
+
+### Features
+
+* **portal:** switch Backstage theme to editorial-warm terracotta ([2aa780b](https://github.com/mctlhq/mctl-portal/commit/2aa780b018072aa8bea96c5533ecb5fa8f257410))
+
+
+### Bug Fixes
+
+* **portal:** darken banner.link for WCAG AA on terracotta banners ([d6dcb67](https://github.com/mctlhq/mctl-portal/commit/d6dcb67cf8530e01f7b67016125036fe88a87040))
+
 ## [4.12.0](https://github.com/mctlhq/mctl-portal/compare/4.11.2...4.12.0) (2026-08-15)
 
 
