@@ -21,6 +21,19 @@ Only the latest release is supported with security updates.
 This policy applies to all repositories in the mctlhq organization:
 - mctl-api
 - mctl-web
+- mctl-docs
 - mctl-gitops
 - mctl-portal
 - mctl-agent
+
+## Content-Security-Policy (residual)
+
+Live `app.mctl.ai` CSP comes from Backstage/Helmet defaults. It does **not**
+allow `script-src 'unsafe-inline'`.
+
+Backstage still requires two directives that we do not tighten:
+
+- `style-src 'unsafe-inline'` — Material UI / JSS emit inline styles. Removing it blanks the UI.
+- `script-src 'unsafe-eval'` — webpack runtime. Removing it breaks the SPA.
+
+Do not add `'unsafe-inline'` to `script-src`.
