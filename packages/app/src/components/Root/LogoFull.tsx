@@ -2,17 +2,17 @@ import { makeStyles } from '@material-ui/core';
 
 const useStyles = makeStyles({
   root: {
-    fontFamily: '"JetBrains Mono", monospace',
+    fontFamily: '"Onest", system-ui, -apple-system, sans-serif',
     fontSize: '1.5rem',
     fontWeight: 800,
-    color: '#fff',
+    color: '#e6e7e9',
     letterSpacing: '2px',
     display: 'flex',
     alignItems: 'center',
     textDecoration: 'none',
   },
   m: {
-    color: '#00f5ff',
+    color: '#e25a3c',
     marginRight: '2px',
   },
 });

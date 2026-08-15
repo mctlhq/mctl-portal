@@ -6,7 +6,7 @@ const useStyles = makeStyles({
     height: 28,
   },
   path: {
-    fill: '#00f5ff',
+    fill: '#e25a3c',
   },
 });
 
