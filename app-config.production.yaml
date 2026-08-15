@@ -11,7 +11,6 @@ backend:
   baseUrl: ${BACKEND_BASE_URL}
   listen: ':7007'
   csp:
-    connect-src: ["'self'", 'http:', 'https:']
     img-src: ["'self'", 'data:', 'https://ui.mctl.ai']
   # mctl-api is not a Backstage backend, so it cannot mint service tokens of
   # its own. It authenticates with this shared static token, sent as a Bearer.
