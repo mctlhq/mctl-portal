@@ -12,6 +12,8 @@ const ink3 = '#15181d';
 const fg = '#e6e7e9';
 const terracotta = '#e25a3c';
 const terracottaHighlight = '#ff8a6a';
+// terracotta-soft-dark: WCAG AA on info (`terracotta`) and error (`bad`) banner bgs.
+const terracottaSoftDark = '#241512';
 const terracottaGlowStrong = 'rgba(226, 90, 60, 0.5)';
 const terracottaGlowSoft = 'rgba(226, 90, 60, 0.1)';
 const terracottaLine = 'rgba(226, 90, 60, 0.2)';
@@ -60,7 +62,7 @@ const themeOptions = {
       info: terracotta,
       error: bad,
       text: ink,
-      link: terracottaHighlight,
+      link: terracottaSoftDark,
     },
     errorBackground: bad,
     warningBackground: warn,
