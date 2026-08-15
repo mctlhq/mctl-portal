@@ -36,4 +36,6 @@ Backstage still requires two directives that we do not tighten:
 - `style-src 'unsafe-inline'` — Material UI / JSS emit inline styles. Removing it blanks the UI.
 - `script-src 'unsafe-eval'` — webpack runtime. Removing it breaks the SPA.
 
+Brand favicons load from `https://ui.mctl.ai/brand/` (allow-listed on `img-src`).
+
 Do not add `'unsafe-inline'` to `script-src`.

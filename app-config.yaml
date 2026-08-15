@@ -21,6 +21,9 @@ backend:
     # host: 127.0.0.1
   csp:
     connect-src: ["'self'", 'http:', 'https:']
+    # kebab-case is Backstage's documented schema (demo app-config and
+    # readHelmetOptions kebabCase()). camelCase is also accepted.
+    img-src: ["'self'", 'data:', 'https://ui.mctl.ai']
     # Content-Security-Policy directives follow the Helmet format: https://helmetjs.github.io/#reference
     # Default Helmet Content-Security-Policy values can be removed by setting the key to false
     # Residual (do not "fix" without a Backstage UI smoke test): Helmet keeps
