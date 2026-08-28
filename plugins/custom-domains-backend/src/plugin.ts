@@ -25,14 +25,24 @@ export const customDomainsPlugin = createBackendPlugin({
         logger: coreServices.logger,
         httpRouter: coreServices.httpRouter,
         database: coreServices.database,
+        httpAuth: coreServices.httpAuth,
+        userInfo: coreServices.userInfo,
       },
-      async init({ logger, httpRouter, database }) {
+      async init({ logger, httpRouter, database, httpAuth, userInfo }) {
         const knex = await database.getClient();
+        const isPostgres = knex.client.config.client === 'pg';
         const store = new CustomDomainStore(knex);
         await store.initialize();
         logger.info('custom_domains table initialized');
 
-        const router = createRouter({ logger, store });
+        const router = createRouter({
+          logger,
+          store,
+          httpAuth,
+          userInfo,
+          db: knex,
+          isPostgres,
+        });
         httpRouter.use(router);
         registerAuthPolicies(httpRouter);
 
