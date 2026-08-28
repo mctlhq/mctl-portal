@@ -76,16 +76,27 @@ export async function authorizeForTeam(
  * Tier accepted in addition to tenant membership/admin for the Argo
  * ingress-update workflow (wft-add-custom-domain.yaml), which calls
  * GET /domains and POST /domains/:id/activate without a Backstage user
- * session. The workflow authenticates with a Backstage external-access
- * static token (backend.auth.externalAccess, restricted to the
- * custom-domains plugin) or a genuine service-to-service credential; both
- * resolve here as a 'service' credential via httpAuth, so no separate
- * token-comparison logic is needed in this plugin.
+ * session. The workflow authenticates with the Backstage external-access
+ * static token (backend.auth.externalAccess, subject mctl-api, restricted
+ * to the custom-domains plugin).
+ *
+ * The subject allowlist below is load-bearing: accessRestrictions only
+ * scope the *external* static token, so a bare `allow: ['service']` check
+ * would also admit every other backend plugin's plugin-to-plugin
+ * credential (subject `plugin:<id>`) and silently bypass authorizeForTeam.
+ * Only the workflow's external identity may take this tier. Both the
+ * `external:`-prefixed form (current Backstage principal shape for
+ * external access) and the bare configured subject are accepted so a
+ * framework change in prefixing degrades to the same identity, never to
+ * plugin-to-plugin access.
  */
+const WORKFLOW_CALLER_SUBJECTS = new Set(['external:mctl-api', 'mctl-api']);
+
 export async function isWorkflowCaller(req: Request, httpAuth: HttpAuthService): Promise<boolean> {
   try {
-    await httpAuth.credentials(req, { allow: ['service'] });
-    return true;
+    const credentials = await httpAuth.credentials(req, { allow: ['service'] });
+    const principal = credentials.principal as { subject?: string };
+    return WORKFLOW_CALLER_SUBJECTS.has(principal?.subject ?? '');
   } catch {
     return false;
   }

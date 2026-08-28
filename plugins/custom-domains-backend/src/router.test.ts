@@ -89,9 +89,30 @@ describe('resolveCallerId', () => {
 });
 
 describe('isWorkflowCaller', () => {
-  it('accepts a Backstage service credential', async () => {
-    const httpAuth = { credentials: jest.fn().mockResolvedValue({ principal: 'service' }) } as any;
+  it('accepts the workflow external-access identity', async () => {
+    const httpAuth = {
+      credentials: jest.fn().mockResolvedValue({ principal: { type: 'service', subject: 'external:mctl-api' } }),
+    } as any;
     expect(await isWorkflowCaller({} as any, httpAuth)).toBe(true);
+  });
+
+  it('accepts the bare configured subject form', async () => {
+    const httpAuth = {
+      credentials: jest.fn().mockResolvedValue({ principal: { type: 'service', subject: 'mctl-api' } }),
+    } as any;
+    expect(await isWorkflowCaller({} as any, httpAuth)).toBe(true);
+  });
+
+  it('rejects other backend plugins\' plugin-to-plugin credentials', async () => {
+    const httpAuth = {
+      credentials: jest.fn().mockResolvedValue({ principal: { type: 'service', subject: 'plugin:vault-secrets' } }),
+    } as any;
+    expect(await isWorkflowCaller({} as any, httpAuth)).toBe(false);
+  });
+
+  it('rejects a service credential with no subject', async () => {
+    const httpAuth = { credentials: jest.fn().mockResolvedValue({ principal: 'service' }) } as any;
+    expect(await isWorkflowCaller({} as any, httpAuth)).toBe(false);
   });
 
   it('rejects when no service credential is present', async () => {
@@ -120,7 +141,11 @@ describe('createRouter tenant ownership gating', () => {
     return {
       credentials: jest.fn(async (_req: unknown, opts: { allow: string[] }) => {
         if (as !== 'none' && opts.allow.includes(as)) {
-          return { principal: as };
+          // Service credentials carry the workflow's external-access
+          // subject, matching what isWorkflowCaller's allowlist expects.
+          return as === 'service'
+            ? { principal: { type: 'service', subject: 'external:mctl-api' } }
+            : { principal: as };
         }
         throw new Error('no matching credential');
       }),
