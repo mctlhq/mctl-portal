@@ -75,7 +75,7 @@ const GitTagPickerComponent = (props: FieldExtensionComponentProps<string>) => {
     setLoading(true);
     try {
       const base = await discoveryApi.getBaseUrl('github-app-connect');
-      const resp = await fetch(
+      const resp = await fetchApi.fetch(
         `${base}/repo-tags?repo=${encodeURIComponent(sourceRepo)}`,
       );
       if (resp.ok) {
@@ -87,7 +87,7 @@ const GitTagPickerComponent = (props: FieldExtensionComponentProps<string>) => {
     } finally {
       setLoading(false);
     }
-  }, [sourceRepo, discoveryApi]);
+  }, [sourceRepo, discoveryApi, fetchApi]);
 
   useEffect(() => { fetchEntity(); }, [fetchEntity]);
   useEffect(() => { fetchTags(); }, [fetchTags]);

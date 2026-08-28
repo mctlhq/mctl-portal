@@ -3,7 +3,13 @@ import express from 'express';
 import { Logger } from 'winston';
 import crypto from 'crypto';
 import fetch from 'node-fetch';
+import type { Knex } from 'knex';
+import type {
+  HttpAuthService,
+  UserInfoService,
+} from '@backstage/backend-plugin-api';
 import type { NotificationService } from '@backstage/plugin-notifications-node';
+import { getTenantMember, isAdminUser } from '../../tenant-backend/src/membershipLookup';
 import { RepoConnectionStore } from './store';
 
 export interface RouterOptions {
@@ -17,6 +23,119 @@ export interface RouterOptions {
   catalogClient?: { getEntities: (request: any) => Promise<any> };
   scaffolderClient?: { createTask: (request: any) => Promise<any> };
   notifications?: NotificationService;
+  httpAuth: HttpAuthService;
+  userInfo: UserInfoService;
+  db: Knex;
+  isPostgres: boolean;
+}
+
+// Result of a caller-vs-team access check. Mirrors the shape of
+// vault-secrets-backend's TenantAuthResult, but is implemented locally in
+// this plugin (composing getTenantMember/isAdminUser directly) rather than
+// importing vault-secrets-backend's requireTenantRole/checkTenantRole.
+type CallerAuthResult =
+  | { ok: true; userId: string; role: string; viaAdminBypass: boolean }
+  | { ok: false; status: number; error: string };
+
+// Resolves the calling Backstage user's GitHub login from the request's
+// credentials, or undefined if there is no valid user identity attached.
+async function resolveCallerUserId(
+  req: Request,
+  httpAuth: HttpAuthService,
+  userInfo: UserInfoService,
+): Promise<string | undefined> {
+  try {
+    const credentials = await httpAuth.credentials(req, { allow: ['user'] });
+    const { ownershipEntityRefs } = await userInfo.getUserInfo(credentials);
+    return extractUserId(ownershipEntityRefs);
+  } catch {
+    return undefined;
+  }
+}
+
+function extractUserId(ownershipEntityRefs: string[]): string | undefined {
+  const ref = ownershipEntityRefs.find(r => r.startsWith('user:default/'));
+  return ref?.split('/').pop();
+}
+
+// Admin-bypass-then-membership check, given an already-resolved userId.
+// Platform admins (owner role in the 'admins' tenant) bypass per-team
+// membership, mirroring tenant-backend's isAdmin pattern in resolveAuth()
+// and vault-secrets-backend's checkTenantRole.
+export async function checkTeamAccess(
+  db: Knex,
+  isPostgres: boolean,
+  team: string,
+  userId: string,
+): Promise<CallerAuthResult> {
+  if (await isAdminUser(db, isPostgres, userId)) {
+    return { ok: true, userId, role: 'owner', viaAdminBypass: true };
+  }
+  const member = await getTenantMember(db, isPostgres, team, userId.toLowerCase());
+  if (!member) {
+    return { ok: false, status: 403, error: `Access denied: not a member of team '${team}'` };
+  }
+  return { ok: true, userId, role: member.role, viaAdminBypass: false };
+}
+
+// Full request-level check for team-scoped routes: resolves the caller from
+// the request, then applies checkTeamAccess with minimumRole 'viewer' (any
+// team member, or a platform admin).
+async function requireTeamAccess(
+  req: Request,
+  httpAuth: HttpAuthService,
+  userInfo: UserInfoService,
+  db: Knex,
+  isPostgres: boolean,
+  team: string,
+): Promise<CallerAuthResult> {
+  const userId = await resolveCallerUserId(req, httpAuth, userInfo);
+  if (!userId) {
+    return { ok: false, status: 401, error: 'Authentication required' };
+  }
+  return checkTeamAccess(db, isPostgres, team, userId);
+}
+
+// For routes with no team to scope against (/repo-tags): any authenticated
+// Backstage user is allowed, no membership check.
+async function requireAuthenticatedUser(
+  req: Request,
+  httpAuth: HttpAuthService,
+  userInfo: UserInfoService,
+): Promise<{ ok: true; userId: string } | { ok: false; status: number; error: string }> {
+  const userId = await resolveCallerUserId(req, httpAuth, userInfo);
+  if (!userId) {
+    return { ok: false, status: 401, error: 'Authentication required' };
+  }
+  return { ok: true, userId };
+}
+
+/**
+ * Audit trail for the admin-bypass path only: a platform admin reading
+ * another team's repo connections, install status, or service config leaves
+ * a trace, mirroring vault-secrets-backend's auditSecretRead. This plugin
+ * never returns secret values (only repo names, connection status, env-var
+ * names, and secret *key* names), so no redaction beyond what the routes
+ * already return is needed.
+ */
+export function auditAdminBypass(
+  logger: Logger,
+  route: string,
+  team: string,
+  auth: { userId: string; viaAdminBypass: boolean },
+  service?: string,
+): void {
+  if (!auth.viaAdminBypass) {
+    return;
+  }
+  logger.info('github-app-connect admin bypass', {
+    audit: 'admin_bypass',
+    route,
+    team,
+    ...(service ? { service } : {}),
+    user: auth.userId,
+    via_admin_bypass: true,
+  });
 }
 
 // State tokens: encrypted JSON with nonce + expiry
@@ -158,7 +277,7 @@ async function findInstallation(
 }
 
 export function createRouter(options: RouterOptions): Router {
-  const { logger, store, appSlug, appId, privateKey, baseUrl, webhookSecret, catalogClient, scaffolderClient, notifications } = options;
+  const { logger, store, appSlug, appId, privateKey, baseUrl, webhookSecret, catalogClient, scaffolderClient, notifications, httpAuth, userInfo, db, isPostgres } = options;
   // Derive the state key from the full private key (full entropy) rather than
   // a low-entropy PEM-header prefix. 64 hex chars keeps the existing shape.
   //
@@ -176,12 +295,19 @@ export function createRouter(options: RouterOptions): Router {
   const router = Router();
 
   // GET /install-url — returns GitHub App install URL with encrypted state
-  router.get('/install-url', (req: Request, res: Response) => {
+  router.get('/install-url', async (req: Request, res: Response) => {
     const { team, service, repo } = req.query;
     if (!team || !service || !repo) {
       res.status(400).json({ error: 'Missing required params: team, service, repo' });
       return;
     }
+
+    const auth = await requireTeamAccess(req, httpAuth, userInfo, db, isPostgres, team as string);
+    if (!auth.ok) {
+      res.status(auth.status).json({ error: auth.error });
+      return;
+    }
+    auditAdminBypass(logger, '/install-url', team as string, auth, service as string);
 
     const state = encryptState(
       { team, service, repo, nonce: crypto.randomBytes(8).toString('hex') },
@@ -374,6 +500,13 @@ export function createRouter(options: RouterOptions): Router {
       return;
     }
 
+    const auth = await requireTeamAccess(req, httpAuth, userInfo, db, isPostgres, team as string);
+    if (!auth.ok) {
+      res.status(auth.status).json({ error: auth.error });
+      return;
+    }
+    auditAdminBypass(logger, '/repo-access', team as string, auth, service as string);
+
     // Check if we have a stored connection (exact match or any match by repo)
     let connection = await store.find(
       team as string,
@@ -489,6 +622,13 @@ export function createRouter(options: RouterOptions): Router {
       return;
     }
 
+    const auth = await requireTeamAccess(req, httpAuth, userInfo, db, isPostgres, teamId);
+    if (!auth.ok) {
+      res.status(auth.status).json({ error: auth.error });
+      return;
+    }
+    auditAdminBypass(logger, '/install-status', teamId, auth, serviceId);
+
     const connection = await store.find(teamId, serviceId, repoName);
     if (connection) {
       res.json({ status: 'connected', connection });
@@ -502,10 +642,31 @@ export function createRouter(options: RouterOptions): Router {
   router.get('/repos', async (req: Request, res: Response) => {
     try {
       const team = req.query.team as string | undefined;
+
+      const userId = await resolveCallerUserId(req, httpAuth, userInfo);
+      if (!userId) {
+        res.status(401).json({ error: 'Authentication required' });
+        return;
+      }
+
       let installationIds: number[];
       if (team) {
+        const auth = await checkTeamAccess(db, isPostgres, team, userId);
+        if (!auth.ok) {
+          res.status(auth.status).json({ error: auth.error });
+          return;
+        }
+        auditAdminBypass(logger, '/repos', team, auth);
         installationIds = await store.findInstallationsByTeam(team);
       } else {
+        // Omitting team used to fall back to all installations across every
+        // team. That is a cross-tenant leak once anonymous access is
+        // removed, so it is now restricted to platform admins.
+        if (!(await isAdminUser(db, isPostgres, userId))) {
+          res.status(400).json({ error: 'Missing required param: team' });
+          return;
+        }
+        auditAdminBypass(logger, '/repos', '_all', { userId, viaAdminBypass: true });
         installationIds = await store.findAllInstallations();
       }
 
@@ -538,6 +699,12 @@ export function createRouter(options: RouterOptions): Router {
       res.status(400).json({ error: 'Missing required param: user' });
       return;
     }
+    const auth = await requireTeamAccess(req, httpAuth, userInfo, db, isPostgres, team);
+    if (!auth.ok) {
+      res.status(auth.status).json({ error: auth.error });
+      return;
+    }
+    auditAdminBypass(logger, '/repos/sync', team, auth);
     try {
       const installMap = new Map<number, { account_type: string; login: string }>();
 
@@ -639,6 +806,12 @@ export function createRouter(options: RouterOptions): Router {
       return;
     }
 
+    const auth = await requireAuthenticatedUser(req, httpAuth, userInfo);
+    if (!auth.ok) {
+      res.status(auth.status).json({ error: auth.error });
+      return;
+    }
+
     try {
       const [owner] = repoFullName.split('/');
       // Try owner's installation first, then fall back to all installations
@@ -705,6 +878,13 @@ export function createRouter(options: RouterOptions): Router {
       res.status(400).json({ error: 'Missing required params: team, service' });
       return;
     }
+
+    const auth = await requireTeamAccess(req, httpAuth, userInfo, db, isPostgres, team as string);
+    if (!auth.ok) {
+      res.status(auth.status).json({ error: auth.error });
+      return;
+    }
+    auditAdminBypass(logger, '/service-config', team as string, auth, service as string);
 
     try {
       const owner = 'mctlhq';

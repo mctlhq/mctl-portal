@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { scaffolderPlugin } from '@backstage/plugin-scaffolder';
 import { createScaffolderFieldExtension } from '@backstage/plugin-scaffolder-react';
-import { useApi, discoveryApiRef, identityApiRef } from '@backstage/core-plugin-api';
+import { useApi, discoveryApiRef, identityApiRef, fetchApiRef } from '@backstage/core-plugin-api';
 import TextField from '@material-ui/core/TextField';
 import Button from '@material-ui/core/Button';
 import Box from '@material-ui/core/Box';
@@ -55,6 +55,7 @@ const GitHubRepoPickerComponent = (
   const classes = useStyles();
   const discoveryApi = useApi(discoveryApiRef);
   const identityApi = useApi(identityApiRef);
+  const fetchApi = useApi(fetchApiRef);
 
   const [repos, setRepos] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
@@ -84,14 +85,14 @@ const GitHubRepoPickerComponent = (
     try {
       const baseUrl = await discoveryApi.getBaseUrl('github-app-connect');
       const url = `${baseUrl}/repos?team=${encodeURIComponent(teamName)}`;
-      const resp = await fetch(url);
+      const resp = await fetchApi.fetch(url);
       if (!resp.ok) return [];
       const data = (await resp.json()) as { repos: string[] };
       return data.repos || [];
     } catch {
       return [];
     }
-  }, [discoveryApi, teamName]);
+  }, [discoveryApi, fetchApi, teamName]);
 
   // Sync repos after popup closes — discovers user's installation and associates with team
   const syncAndFetch = useCallback(async (): Promise<string[]> => {
@@ -100,7 +101,7 @@ const GitHubRepoPickerComponent = (
     if (!login) return fetchRepos();
     try {
       const baseUrl = await discoveryApi.getBaseUrl('github-app-connect');
-      const resp = await fetch(
+      const resp = await fetchApi.fetch(
         `${baseUrl}/repos/sync?team=${encodeURIComponent(teamName)}&user=${encodeURIComponent(login)}`,
         { method: 'POST' },
       );
@@ -110,7 +111,7 @@ const GitHubRepoPickerComponent = (
     } catch {
       return fetchRepos();
     }
-  }, [discoveryApi, teamName, fetchRepos]);
+  }, [discoveryApi, fetchApi, teamName, fetchRepos]);
 
   // Keep reposRef in sync for use inside event listeners
   useEffect(() => {

@@ -7,6 +7,26 @@ import { createRouter } from './router';
 import { RepoConnectionStore } from './store';
 import fetch from 'node-fetch';
 
+/**
+ * Registers the plugin's HTTP auth policies. Only `/callback` (GitHub's
+ * OAuth-install redirect, gated by its own state-token/HMAC checks),
+ * `/popup-done` (static, parameter-free confirmation page), and `/webhook`
+ * (gated by X-Hub-Signature-256 HMAC) are public — GitHub cannot present a
+ * Backstage bearer token to any of the three. Every other route
+ * (`/repos`, `/repo-tags`, `/service-config`, `/repo-access`, `/install-url`,
+ * `/install-status`) falls back to Backstage's default of requiring
+ * authentication, plus the per-route team-membership check in router.ts.
+ * Exported so a unit test can assert the six removed policies are never
+ * reintroduced, mirroring custom-domains-backend's registerAuthPolicies.
+ */
+export function registerAuthPolicies(httpRouter: {
+  addAuthPolicy: (policy: { path: string; allow: 'unauthenticated' | 'user-cookie' }) => void;
+}): void {
+  httpRouter.addAuthPolicy({ path: '/callback', allow: 'unauthenticated' });
+  httpRouter.addAuthPolicy({ path: '/popup-done', allow: 'unauthenticated' });
+  httpRouter.addAuthPolicy({ path: '/webhook', allow: 'unauthenticated' });
+}
+
 export const githubAppConnectPlugin = createBackendPlugin({
   pluginId: 'github-app-connect',
   register(env) {
@@ -18,9 +38,11 @@ export const githubAppConnectPlugin = createBackendPlugin({
         database: coreServices.database,
         discovery: coreServices.discovery,
         auth: coreServices.auth,
+        httpAuth: coreServices.httpAuth,
+        userInfo: coreServices.userInfo,
         notifications: notificationService,
       },
-      async init({ config, logger, httpRouter, database, discovery, auth, notifications }) {
+      async init({ config, logger, httpRouter, database, discovery, auth, httpAuth, userInfo, notifications }) {
         const appSlug = config.getString('githubAppConnect.appSlug');
         const appId = config.getString('githubAppConnect.appId');
         const privateKey = config.getString('githubAppConnect.privateKey');
@@ -28,6 +50,7 @@ export const githubAppConnectPlugin = createBackendPlugin({
         const webhookSecret = config.getOptionalString('githubAppConnect.webhookSecret');
 
         const knex = await database.getClient();
+        const isPostgres = knex.client.config.client === 'pg';
         const store = new RepoConnectionStore(knex);
         await store.initialize();
         logger.info('repo_connections table initialized');
@@ -90,45 +113,14 @@ export const githubAppConnectPlugin = createBackendPlugin({
           catalogClient,
           scaffolderClient,
           notifications,
+          httpAuth,
+          userInfo,
+          db: knex,
+          isPostgres,
         });
 
         httpRouter.use(router);
-        httpRouter.addAuthPolicy({
-          path: '/callback',
-          allow: 'unauthenticated',
-        });
-        httpRouter.addAuthPolicy({
-          path: '/install-url',
-          allow: 'unauthenticated',
-        });
-        httpRouter.addAuthPolicy({
-          path: '/repo-access',
-          allow: 'unauthenticated',
-        });
-        httpRouter.addAuthPolicy({
-          path: '/install-status',
-          allow: 'unauthenticated',
-        });
-        httpRouter.addAuthPolicy({
-          path: '/repos',
-          allow: 'unauthenticated',
-        });
-        httpRouter.addAuthPolicy({
-          path: '/popup-done',
-          allow: 'unauthenticated',
-        });
-        httpRouter.addAuthPolicy({
-          path: '/repo-tags',
-          allow: 'unauthenticated',
-        });
-        httpRouter.addAuthPolicy({
-          path: '/service-config',
-          allow: 'unauthenticated',
-        });
-        httpRouter.addAuthPolicy({
-          path: '/webhook',
-          allow: 'unauthenticated',
-        });
+        registerAuthPolicies(httpRouter);
 
         logger.info('GitHub App Connect plugin initialized');
       },
