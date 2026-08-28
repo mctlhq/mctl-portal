@@ -1,5 +1,6 @@
 import { Request, Response, Router } from 'express';
 import express from 'express';
+import Router_ from 'express-promise-router';
 import { Logger } from 'winston';
 import crypto from 'crypto';
 import fetch from 'node-fetch';
@@ -11,6 +12,13 @@ import type {
 import type { NotificationService } from '@backstage/plugin-notifications-node';
 import { getTenantMember, isAdminUser } from '../../tenant-backend/src/membershipLookup';
 import { RepoConnectionStore } from './store';
+
+// Format guards for user-supplied identifiers that flow into GitHub API URLs
+// or GitOps repo file paths. Rejecting anything outside these shapes up
+// front prevents SSRF-by-crafted-path and path traversal via `../`.
+const REPO_FULL_NAME_RE = /^[\w.-]+\/[\w.-]+$/;
+const TEAM_OR_SERVICE_RE = /^[a-zA-Z0-9_-]+$/;
+const GITHUB_LOGIN_RE = /^[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,38})$/;
 
 export interface RouterOptions {
   logger: Logger;
@@ -292,7 +300,7 @@ export function createRouter(options: RouterOptions): Router {
   const decodeState = (token: string): Record<string, unknown> | null =>
     decryptState(token, stateSecret);
 
-  const router = Router();
+  const router = Router_();
 
   // GET /install-url — returns GitHub App install URL with encrypted state
   router.get('/install-url', async (req: Request, res: Response) => {
@@ -699,9 +707,17 @@ export function createRouter(options: RouterOptions): Router {
       res.status(400).json({ error: 'Missing required param: user' });
       return;
     }
+    if (!GITHUB_LOGIN_RE.test(user)) {
+      res.status(400).json({ error: 'Invalid user parameter' });
+      return;
+    }
     const auth = await requireTeamAccess(req, httpAuth, userInfo, db, isPostgres, team);
     if (!auth.ok) {
       res.status(auth.status).json({ error: auth.error });
+      return;
+    }
+    if (!auth.viaAdminBypass && auth.userId.toLowerCase() !== user.toLowerCase()) {
+      res.status(403).json({ error: 'user parameter must match the authenticated caller' });
       return;
     }
     auditAdminBypass(logger, '/repos/sync', team, auth);
@@ -805,6 +821,10 @@ export function createRouter(options: RouterOptions): Router {
       res.status(400).json({ error: 'Missing required param: repo (owner/name)' });
       return;
     }
+    if (!REPO_FULL_NAME_RE.test(repoFullName)) {
+      res.status(400).json({ error: 'Invalid repo parameter, expected format owner/name' });
+      return;
+    }
 
     const auth = await requireAuthenticatedUser(req, httpAuth, userInfo);
     if (!auth.ok) {
@@ -876,6 +896,10 @@ export function createRouter(options: RouterOptions): Router {
     const { team, service } = req.query;
     if (!team || !service) {
       res.status(400).json({ error: 'Missing required params: team, service' });
+      return;
+    }
+    if (!TEAM_OR_SERVICE_RE.test(team as string) || !TEAM_OR_SERVICE_RE.test(service as string)) {
+      res.status(400).json({ error: 'Invalid team or service parameter' });
       return;
     }
 
