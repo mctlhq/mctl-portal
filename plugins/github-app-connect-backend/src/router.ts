@@ -16,7 +16,14 @@ import { RepoConnectionStore } from './store';
 // Format guards for user-supplied identifiers that flow into GitHub API URLs
 // or GitOps repo file paths. Rejecting anything outside these shapes up
 // front prevents SSRF-by-crafted-path and path traversal via `../`.
-const REPO_FULL_NAME_RE = /^[\w.-]+\/[\w.-]+$/;
+//
+// Each repo segment must contain at least one non-dot character: `.` is in
+// the legitimate charset (owner/repo names may contain dots), but a
+// dot-only segment like `..` survives a plain charset check and WHATWG URL
+// normalization then collapses it against the fixed `/repos/` prefix,
+// shifting the request path — the residual traversal flagged in review
+// round 2. GitHub itself forbids `.`/`..` as owner or repo names.
+const REPO_FULL_NAME_RE = /^(?!\.+\/)[\w.-]+\/(?![\w.-]*\/)(?!\.+$)[\w.-]+$/;
 const TEAM_OR_SERVICE_RE = /^[a-zA-Z0-9_-]+$/;
 const GITHUB_LOGIN_RE = /^[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,38})$/;
 

@@ -310,6 +310,27 @@ describe('POST /repos/sync', () => {
     expect(status).toBe(200);
     expect(body).toEqual({ repos: [] });
   });
+
+  // Regression tests for the round-1 review fixes (commit 26a9a74):
+  // identity binding and login-shape validation on the `user` param.
+  it('returns 403 when a member passes someone else\'s user param (identity mismatch)', async () => {
+    const { router } = buildRouter({ 'nfc:carol': { role: 'viewer' }, 'nfc:mallory': { role: 'viewer' } });
+    const { status } = await dispatch(router, 'POST', '/repos/sync?team=nfc&user=carol', {
+      'x-test-user': 'mallory',
+    });
+    expect(status).toBe(403);
+  });
+
+  it('returns 400 for a user param that is not a GitHub login shape (org-path injection)', async () => {
+    const { router } = buildRouter({ 'nfc:carol': { role: 'viewer' } });
+    const { status } = await dispatch(
+      router,
+      'POST',
+      `/repos/sync?team=nfc&user=${encodeURIComponent('../orgs/victim-org')}`,
+      { 'x-test-user': 'carol' },
+    );
+    expect(status).toBe(400);
+  });
 });
 
 describe('GET /repo-tags', () => {
@@ -326,6 +347,37 @@ describe('GET /repo-tags', () => {
     });
     expect(status).toBe(200);
     expect(body).toEqual({ tags: ['v1.2.3'] });
+  });
+
+  // Regression tests for REPO_FULL_NAME_RE: charset injection AND the
+  // round-2 finding that dot-only segments (`..`) survive a plain charset
+  // check and let WHATWG URL normalization shift the GitHub API path.
+  it.each([
+    '../foo',
+    'foo/..',
+    'foo/.',
+    './foo',
+    '../..',
+    'mctlhq/mctl-gitops/actions/secrets?',
+    'owner/repo?x=1',
+    'owner',
+  ])('returns 400 for malformed repo param %s', async repo => {
+    const { router } = buildRouter({});
+    const { status } = await dispatch(
+      router,
+      'GET',
+      `/repo-tags?repo=${encodeURIComponent(repo)}`,
+      { 'x-test-user': 'someone' },
+    );
+    expect(status).toBe(400);
+  });
+
+  it('still accepts a dotted but legitimate repo name', async () => {
+    const { router } = buildRouter({});
+    const { status } = await dispatch(router, 'GET', `/repo-tags?repo=${encodeURIComponent('mctlhq/a.b.c')}`, {
+      'x-test-user': 'someone',
+    });
+    expect(status).toBe(200);
   });
 });
 
@@ -402,6 +454,20 @@ describe('GET /repo-access, /install-url, /service-config', () => {
       const { status } = await dispatch(router, 'GET', path, { 'x-test-user': 'carol' });
       expect(status).toBe(200);
     }
+  });
+
+  // Regression for the round-1 path-traversal fix: TEAM_OR_SERVICE_RE must
+  // reject values that would escape platform-gitops/services/<team>/<service>/
+  // in the Contents API path (`service=../team-b/other-service` class).
+  it.each([
+    ['team', `/service-config?team=${encodeURIComponent('../team-b')}&service=api`],
+    ['service', `/service-config?team=nfc&service=${encodeURIComponent('../team-b/other')}`],
+    ['service dot', `/service-config?team=nfc&service=..`],
+    ['service slash', `/service-config?team=nfc&service=${encodeURIComponent('a/b')}`],
+  ])('returns 400 for a traversal-shaped %s param even for a member', async (_label, path) => {
+    const { router } = buildRouter({ 'nfc:carol': { role: 'viewer' } });
+    const { status } = await dispatch(router, 'GET', path, { 'x-test-user': 'carol' });
+    expect(status).toBe(400);
   });
 });
 
