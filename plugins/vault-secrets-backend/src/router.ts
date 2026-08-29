@@ -77,7 +77,30 @@ export function createRouter(options: RouterOptions): Router {
 
   const trustedOrigin = deriveOrigin(backendBaseUrl);
 
+  /**
+   * Express decodes each path segment before it reaches req.params, so a
+   * request for /teams/team-a/..%2Fteam-b%2Fvictim/secrets arrives here with
+   * app === '../team-b/victim'. requireTenantRole only ever checks `team`, so
+   * that request passes RBAC as a legitimate team-a member — and then
+   * databaseVaultPath/secretsVaultPath splice the dot-segments straight into
+   * the Vault URL, where WHATWG URL normalisation collapses them and hands
+   * back another tenant's credentials. Reject anything that is not a plain
+   * kebab-case slug before either value is used for authorisation or as a
+   * path component.
+   */
+  const rejectNonSlug = (req: Request, res: Response): boolean => {
+    const { team, app } = req.params;
+    if (!SLUG_RE.test(team) || !SLUG_RE.test(app)) {
+      res.status(400).json({ error: 'Invalid team or app' });
+      return true;
+    }
+    return false;
+  };
+
   router.get('/teams/:team/:app/database', async (req: Request, res: Response) => {
+    if (rejectNonSlug(req, res)) {
+      return;
+    }
     const { team, app } = req.params;
     const auth = await requireTenantRole(req, httpAuth, userInfo, db, isPostgres, team, 'viewer');
     if (!auth.ok) {
@@ -106,6 +129,9 @@ export function createRouter(options: RouterOptions): Router {
   });
 
   router.get('/teams/:team/:app/database/reveal', async (req: Request, res: Response) => {
+    if (rejectNonSlug(req, res)) {
+      return;
+    }
     const { team, app } = req.params;
     const auth = await requireTenantRole(req, httpAuth, userInfo, db, isPostgres, team, 'developer');
     if (!auth.ok) {
@@ -134,6 +160,9 @@ export function createRouter(options: RouterOptions): Router {
   });
 
   router.get('/teams/:team/:app/secrets', async (req: Request, res: Response) => {
+    if (rejectNonSlug(req, res)) {
+      return;
+    }
     const { team, app } = req.params;
     const auth = await requireTenantRole(req, httpAuth, userInfo, db, isPostgres, team, 'viewer');
     if (!auth.ok) {
@@ -152,6 +181,9 @@ export function createRouter(options: RouterOptions): Router {
   });
 
   router.get('/teams/:team/:app/secrets/reveal', async (req: Request, res: Response) => {
+    if (rejectNonSlug(req, res)) {
+      return;
+    }
     const { team, app } = req.params;
     const auth = await requireTenantRole(req, httpAuth, userInfo, db, isPostgres, team, 'developer');
     if (!auth.ok) {

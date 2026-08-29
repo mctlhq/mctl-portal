@@ -456,6 +456,46 @@ describe('database and secrets routes (masked vs. reveal)', () => {
     expect(text).not.toContain('super-secret');
   });
 
+  // Express decodes each path segment, so `..%2Fteam-b%2Fvictim` reaches the
+  // handler as the single param value `../team-b/victim`. requireTenantRole
+  // only ever checks `team`, so a legitimate nfc member passed RBAC and the
+  // dot-segments were then spliced into the Vault URL, where WHATWG URL
+  // normalisation collapsed them onto another tenant's path. Guard: any
+  // non-slug team/app is a 400 before authorisation or any Vault call.
+  it('GET /secrets/reveal: a traversal-encoded app escapes no tenant boundary (400, no Vault call)', async () => {
+    mockVaultKV({ API_KEY: 'super-secret' });
+    const base = await startApp('developer');
+    const res = await globalThis.fetch(
+      `${base}/teams/nfc/..%2Fvictim-team%2Fvictim-app/secrets/reveal`,
+    );
+    const text = await res.text();
+    expect(res.status).toBe(400);
+    expect(text).not.toContain('super-secret');
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('GET /database: a traversal-encoded team is rejected before the role lookup', async () => {
+    mockVaultKV({ host: 'h', port: '5432', database: 'd', username: 'u', password: 'p' });
+    const base = await startApp('viewer');
+    const res = await globalThis.fetch(
+      `${base}/teams/..%2Fvictim-team/quirestack-api/database`,
+    );
+    expect(res.status).toBe(400);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('GET /database/reveal: uppercase and over-long slugs are rejected too', async () => {
+    mockVaultKV({ host: 'h', port: '5432', database: 'd', username: 'u', password: 'p' });
+    const base = await startApp('developer');
+    for (const app of ['Quirestack-API', 'a'.repeat(32), '-leading-dash']) {
+      const res = await globalThis.fetch(
+        `${base}/teams/nfc/${encodeURIComponent(app)}/database/reveal`,
+      );
+      expect(res.status).toBe(400);
+    }
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it('GET /secrets: reports an empty secretKeys array when nothing is stored (no plaintext {} confusion)', async () => {
     mockVaultKV(undefined);
     const base = await startApp('viewer');

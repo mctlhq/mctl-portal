@@ -255,7 +255,7 @@ export function EntityDatabaseCard() {
     try {
       const baseUrl = await discoveryApi.getBaseUrl('vault-secrets');
       const resp = await fetchApi.fetch(
-        `${baseUrl}/teams/${team}/${app}/database`,
+        `${baseUrl}/teams/${encodeURIComponent(team)}/${encodeURIComponent(app)}/database`,
       );
 
       if (!resp.ok) {
@@ -278,7 +278,7 @@ export function EntityDatabaseCard() {
     try {
       const baseUrl = await discoveryApi.getBaseUrl('vault-secrets');
       const resp = await fetchApi.fetch(
-        `${baseUrl}/teams/${team}/${app}/database/reveal`,
+        `${baseUrl}/teams/${encodeURIComponent(team)}/${encodeURIComponent(app)}/database/reveal`,
       );
       if (!resp.ok) {
         if (resp.status === 403) {

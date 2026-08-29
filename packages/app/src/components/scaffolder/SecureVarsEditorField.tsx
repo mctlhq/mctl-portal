@@ -103,6 +103,25 @@ const SecureVarsEditorFieldComponent = (
 
   return (
     <>
+      {/*
+        The "leave blank to keep them unchanged" promise below is enforced by
+        the deploy pipeline in mctlhq/mctl-gitops (pinned at 48d200b), not by
+        this component:
+
+        - platform-gitops/argo-workflows/cluster-templates/wft-deploy-service.yaml:157
+          gates the whole `write-secrets` step behind
+          `when: secret_env_vars != "" || telegram_bot_token != ""`, so an empty
+          submission never reaches Vault at all — it is a genuine no-op.
+        - platform-gitops/argo-workflows/cluster-templates/tpl-vault-write.yaml:74-95
+          GETs the existing KV v2 payload and merges it with the submitted keys
+          (`e.update(n)`), so a non-empty submission only adds or overwrites the
+          keys it names; omitted keys survive.
+        - wft-deploy-service.yaml:58 exposes a separate explicit `clear_secrets`
+          flag — wiping secrets is an opt-in parameter, never a side effect of
+          leaving this field blank.
+
+        If those workflow templates ever change, this copy must change with them.
+      */}
       {existingSecretKeys.length > 0 && (
         <Typography variant="caption" color="textSecondary" component="div">
           Existing keys (values hidden): {existingSecretKeys.join(', ')}. Leave
