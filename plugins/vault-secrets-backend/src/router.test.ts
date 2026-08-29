@@ -1,13 +1,18 @@
 import type { Knex } from 'knex';
+import express from 'express';
+import { Server } from 'http';
+import { AddressInfo } from 'net';
 import fetch from 'node-fetch';
 import {
   SLUG_RE,
   auditSecretRead,
   checkTenantRole,
+  createRouter,
   databaseVaultPath,
   escapeHtml,
   renderOpenClawIntakePage,
   renderOpenClawSavedPage,
+  RouterOptions,
   secretsVaultPath,
   vaultFetch,
 } from './router';
@@ -117,6 +122,52 @@ describe('checkTenantRole (admin bypass)', () => {
       status: 403,
       error: "Access denied: not a member of team 'nfc'",
     });
+  });
+
+  // meetsMinimumRole / ROLE_RANK: viewer < developer < owner. These pin the
+  // three-tier model documented in plugins/tenant-backend/src/types.ts:64
+  // and used by the /database, /database/reveal, /secrets and
+  // /secrets/reveal routes' minimumRole checks.
+  it('lets a developer-role member pass a developer minimum', async () => {
+    const db = fakeDb({ 'nfc:dave': { role: 'developer' } });
+    const result = await checkTenantRole(db, false, 'nfc', 'dave', 'developer');
+    expect(result).toEqual({
+      ok: true,
+      userId: 'dave',
+      role: 'developer',
+      viaAdminBypass: false,
+    });
+  });
+
+  it('denies a viewer-role member a developer minimum', async () => {
+    const db = fakeDb({ 'nfc:carol': { role: 'viewer' } });
+    const result = await checkTenantRole(db, false, 'nfc', 'carol', 'developer');
+    expect(result).toEqual({
+      ok: false,
+      status: 403,
+      error: "Access denied: developer role required for team 'nfc'",
+    });
+  });
+
+  it('lets an owner-role member pass every minimum, including developer', async () => {
+    const db = fakeDb({ 'nfc:erin': { role: 'owner' } });
+    const result = await checkTenantRole(db, false, 'nfc', 'erin', 'developer');
+    expect(result).toEqual({
+      ok: true,
+      userId: 'erin',
+      role: 'owner',
+      viaAdminBypass: false,
+    });
+  });
+
+  it('resolves the admin bypass to owner rank regardless of minimumRole', async () => {
+    const db = fakeDb({ 'admins:alice': { role: 'owner' } });
+    const viaViewer = await checkTenantRole(db, false, 'nfc', 'alice', 'viewer');
+    const viaDeveloper = await checkTenantRole(db, false, 'nfc', 'alice', 'developer');
+    const viaOwner = await checkTenantRole(db, false, 'nfc', 'alice', 'owner');
+    expect(viaViewer).toEqual({ ok: true, userId: 'alice', role: 'owner', viaAdminBypass: true });
+    expect(viaDeveloper).toEqual({ ok: true, userId: 'alice', role: 'owner', viaAdminBypass: true });
+    expect(viaOwner).toEqual({ ok: true, userId: 'alice', role: 'owner', viaAdminBypass: true });
   });
 });
 
@@ -243,6 +294,215 @@ describe('auditSecretRead', () => {
       viaAdminBypass: false,
     });
     expect(logger.info.mock.calls[0][1]).not.toHaveProperty('secret_keys');
+  });
+
+  // The masked base routes (/database, /secrets) log a distinct '*-meta' kind
+  // from the /reveal routes' plaintext kind, so an audit trail can tell a
+  // metadata read apart from an actual credential disclosure.
+  it.each([
+    ['database-meta', undefined],
+    ['secrets-meta', []],
+  ] as const)('records the %s kind for a masked read', (kind, secretKeys) => {
+    const logger = fakeLogger();
+    auditSecretRead(
+      logger,
+      kind,
+      'nfc',
+      'quirestack-api',
+      { userId: 'alice', role: 'viewer', viaAdminBypass: false },
+      secretKeys as string[] | undefined,
+    );
+    expect(logger.info.mock.calls[0][1]).toMatchObject({ kind });
+  });
+});
+
+// End-to-end route tests: a real express app wired with createRouter, driven
+// with the platform's own fetch (no supertest — this mirrors the pattern in
+// plugins/tenant-backend/src/router.test.ts). httpAuth/userInfo are stubbed
+// to resolve a fixed userId; tenant role comes from the fake Knex db, and
+// Vault responses come from the module-level node-fetch mock.
+describe('database and secrets routes (masked vs. reveal)', () => {
+  const noopLogger = {
+    info: jest.fn(),
+    warn: jest.fn(),
+    error: jest.fn(),
+    debug: jest.fn(),
+    child: jest.fn(),
+  };
+  noopLogger.child.mockReturnValue(noopLogger);
+
+  function fakeDb(memberships: Record<string, { role: string }>): Knex {
+    const db = jest.fn((_table: string) => {
+      const builder: any = {
+        withSchema: jest.fn().mockReturnThis(),
+        where(cond: { tenant_name: string; user_id: string }) {
+          builder._cond = cond;
+          return builder;
+        },
+        async first() {
+          const key = `${builder._cond.tenant_name}:${builder._cond.user_id}`;
+          const role = memberships[key]?.role;
+          return role
+            ? { tenant_name: builder._cond.tenant_name, user_id: builder._cond.user_id, role }
+            : undefined;
+        },
+      };
+      return builder;
+    });
+    return db as unknown as Knex;
+  }
+
+  let server: Server | undefined;
+
+  function startApp(role: string): Promise<string> {
+    const options = {
+      logger: noopLogger,
+      httpAuth: { credentials: jest.fn().mockResolvedValue({ principal: { type: 'user' } }) },
+      userInfo: {
+        getUserInfo: jest.fn().mockResolvedValue({
+          ownershipEntityRefs: ['user:default/dave'],
+        }),
+      },
+      db: fakeDb({ 'nfc:dave': { role } }),
+      isPostgres: false,
+      vaultAddr: 'https://vault.example',
+      vaultTokens: staticTokenProvider('s.tok'),
+      oidcLoginUrl: 'https://app.mctl.ai/oidc/login',
+      backendBaseUrl: 'https://app.mctl.ai',
+    } as unknown as RouterOptions;
+    const app = express();
+    app.use(createRouter(options));
+    return new Promise(resolve => {
+      server = app.listen(0, () => {
+        resolve(`http://127.0.0.1:${(server!.address() as AddressInfo).port}`);
+      });
+    });
+  }
+
+  function mockVaultKV(data: Record<string, string> | undefined) {
+    fetchMock.mockResolvedValue(
+      data === undefined
+        ? { ok: false, status: 404, json: async () => ({}) }
+        : { ok: true, status: 200, json: async () => ({ data: { data } }) },
+    );
+  }
+
+  beforeEach(() => fetchMock.mockReset());
+
+  afterEach(done => {
+    if (server) {
+      server.close(() => done());
+      server = undefined;
+    } else {
+      done();
+    }
+  });
+
+  it('GET /database: viewer gets 200 with no password field and hasPassword computed', async () => {
+    mockVaultKV({ host: 'h', port: '5432', database: 'd', username: 'u', password: 'p' });
+    const base = await startApp('viewer');
+    const res = await globalThis.fetch(`${base}/teams/nfc/quirestack-api/database`);
+    const body = await res.json();
+    expect(res.status).toBe(200);
+    expect(body).toEqual({ host: 'h', port: '5432', database: 'd', username: 'u', hasPassword: true });
+    expect(body).not.toHaveProperty('password');
+  });
+
+  it('GET /database/reveal: developer gets 200 with plaintext password', async () => {
+    mockVaultKV({ host: 'h', port: '5432', database: 'd', username: 'u', password: 'p' });
+    const base = await startApp('developer');
+    const res = await globalThis.fetch(`${base}/teams/nfc/quirestack-api/database/reveal`);
+    const body = await res.json();
+    expect(res.status).toBe(200);
+    expect(body).toEqual({ host: 'h', port: '5432', database: 'd', username: 'u', password: 'p' });
+  });
+
+  it('GET /database/reveal: viewer gets 403 with no secret value in the body', async () => {
+    mockVaultKV({ host: 'h', port: '5432', database: 'd', username: 'u', password: 'p' });
+    const base = await startApp('viewer');
+    const res = await globalThis.fetch(`${base}/teams/nfc/quirestack-api/database/reveal`);
+    const text = await res.text();
+    expect(res.status).toBe(403);
+    expect(text).not.toContain('p"');
+    expect(text).not.toContain('password');
+  });
+
+  it('GET /secrets: viewer gets 200 with secretKeys only, no plaintext', async () => {
+    mockVaultKV({ API_KEY: 'super-secret', DATABASE_PASSWORD: 'hunter2' });
+    const base = await startApp('viewer');
+    const res = await globalThis.fetch(`${base}/teams/nfc/quirestack-api/secrets`);
+    const body = await res.json();
+    expect(res.status).toBe(200);
+    expect(body).toEqual({ secretKeys: ['API_KEY', 'DATABASE_PASSWORD'] });
+    expect(JSON.stringify(body)).not.toContain('super-secret');
+    expect(JSON.stringify(body)).not.toContain('hunter2');
+  });
+
+  it('GET /secrets/reveal: developer gets 200 with plaintext secrets map', async () => {
+    mockVaultKV({ API_KEY: 'super-secret' });
+    const base = await startApp('developer');
+    const res = await globalThis.fetch(`${base}/teams/nfc/quirestack-api/secrets/reveal`);
+    const body = await res.json();
+    expect(res.status).toBe(200);
+    expect(body).toEqual({ secrets: { API_KEY: 'super-secret' } });
+  });
+
+  it('GET /secrets/reveal: viewer gets 403', async () => {
+    mockVaultKV({ API_KEY: 'super-secret' });
+    const base = await startApp('viewer');
+    const res = await globalThis.fetch(`${base}/teams/nfc/quirestack-api/secrets/reveal`);
+    const text = await res.text();
+    expect(res.status).toBe(403);
+    expect(text).not.toContain('super-secret');
+  });
+
+  // Express decodes each path segment, so `..%2Fteam-b%2Fvictim` reaches the
+  // handler as the single param value `../team-b/victim`. requireTenantRole
+  // only ever checks `team`, so a legitimate nfc member passed RBAC and the
+  // dot-segments were then spliced into the Vault URL, where WHATWG URL
+  // normalisation collapsed them onto another tenant's path. Guard: any
+  // non-slug team/app is a 400 before authorisation or any Vault call.
+  it('GET /secrets/reveal: a traversal-encoded app escapes no tenant boundary (400, no Vault call)', async () => {
+    mockVaultKV({ API_KEY: 'super-secret' });
+    const base = await startApp('developer');
+    const res = await globalThis.fetch(
+      `${base}/teams/nfc/..%2Fvictim-team%2Fvictim-app/secrets/reveal`,
+    );
+    const text = await res.text();
+    expect(res.status).toBe(400);
+    expect(text).not.toContain('super-secret');
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('GET /database: a traversal-encoded team is rejected before the role lookup', async () => {
+    mockVaultKV({ host: 'h', port: '5432', database: 'd', username: 'u', password: 'p' });
+    const base = await startApp('viewer');
+    const res = await globalThis.fetch(
+      `${base}/teams/..%2Fvictim-team/quirestack-api/database`,
+    );
+    expect(res.status).toBe(400);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('GET /database/reveal: uppercase and over-long slugs are rejected too', async () => {
+    mockVaultKV({ host: 'h', port: '5432', database: 'd', username: 'u', password: 'p' });
+    const base = await startApp('developer');
+    for (const app of ['Quirestack-API', 'a'.repeat(32), '-leading-dash']) {
+      const res = await globalThis.fetch(
+        `${base}/teams/nfc/${encodeURIComponent(app)}/database/reveal`,
+      );
+      expect(res.status).toBe(400);
+    }
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('GET /secrets: reports an empty secretKeys array when nothing is stored (no plaintext {} confusion)', async () => {
+    mockVaultKV(undefined);
+    const base = await startApp('viewer');
+    const res = await globalThis.fetch(`${base}/teams/nfc/quirestack-api/secrets`);
+    const body = await res.json();
+    expect(res.status).toBe(200);
+    expect(body).toEqual({ secretKeys: [] });
   });
 });
 

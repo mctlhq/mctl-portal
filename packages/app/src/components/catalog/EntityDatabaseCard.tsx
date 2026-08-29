@@ -76,8 +76,10 @@ type Credentials = {
   port: string;
   database: string;
   username: string;
-  password: string;
+  hasPassword: boolean;
 };
+
+const NON_SECRET_FIELDS = ['host', 'port', 'database', 'username'] as const;
 
 function MaskedField({
   label,
@@ -131,6 +133,101 @@ function MaskedField({
   );
 }
 
+function PasswordField({
+  hasPassword,
+  fetchPassword,
+}: {
+  hasPassword: boolean;
+  fetchPassword: () => Promise<{ ok: true; password: string } | { ok: false; error: string }>;
+}) {
+  const classes = useStyles();
+  const [revealed, setRevealed] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [password, setPassword] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const handleHide = () => {
+    setRevealed(false);
+    // Clear the plaintext from state, not just the display, so it doesn't
+    // linger in memory after hiding.
+    setPassword(null);
+    setError(null);
+  };
+
+  const handleReveal = async () => {
+    if (!hasPassword) {
+      return;
+    }
+    setLoading(true);
+    setError(null);
+    try {
+      const result = await fetchPassword();
+      if (result.ok) {
+        setPassword(result.password);
+        setRevealed(true);
+      } else {
+        setError(result.error);
+      }
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleCopy = () => {
+    if (!password) return;
+    navigator.clipboard.writeText(password).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    });
+  };
+
+  const displayValue = revealed && password !== null ? password : '••••••••';
+
+  return (
+    <TableRow>
+      <TableCell className={classes.fieldLabel}>{FIELD_LABELS.password}</TableCell>
+      <TableCell>
+        <Box display="flex" alignItems="center" justifyContent="space-between">
+          <span className={revealed ? classes.revealedValue : classes.maskedValue}>
+            {loading ? '…' : displayValue}
+          </span>
+          <span className={classes.actions}>
+            <Tooltip title={revealed ? 'Hide' : 'Reveal'}>
+              <IconButton
+                size="small"
+                disabled={loading || !hasPassword}
+                onClick={revealed ? handleHide : handleReveal}
+              >
+                {revealed ? (
+                  <VisibilityOffIcon fontSize="small" />
+                ) : (
+                  <VisibilityIcon fontSize="small" />
+                )}
+              </IconButton>
+            </Tooltip>
+            <Tooltip title={copied ? 'Copied!' : 'Copy'}>
+              <IconButton
+                size="small"
+                disabled={!revealed || password === null}
+                onClick={handleCopy}
+                className={copied ? classes.copied : undefined}
+              >
+                <FileCopyIcon fontSize="small" />
+              </IconButton>
+            </Tooltip>
+          </span>
+        </Box>
+        {error && (
+          <Typography variant="body2" color="error" style={{ marginTop: 4 }}>
+            {error}
+          </Typography>
+        )}
+      </TableCell>
+    </TableRow>
+  );
+}
+
 export function EntityDatabaseCard() {
   const classes = useStyles();
   const { entity } = useEntity();
@@ -158,7 +255,7 @@ export function EntityDatabaseCard() {
     try {
       const baseUrl = await discoveryApi.getBaseUrl('vault-secrets');
       const resp = await fetchApi.fetch(
-        `${baseUrl}/teams/${team}/${app}/database`,
+        `${baseUrl}/teams/${encodeURIComponent(team)}/${encodeURIComponent(app)}/database`,
       );
 
       if (!resp.ok) {
@@ -172,6 +269,28 @@ export function EntityDatabaseCard() {
       setError(e.message ?? 'Unknown error');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const fetchPassword = async (): Promise<
+    { ok: true; password: string } | { ok: false; error: string }
+  > => {
+    try {
+      const baseUrl = await discoveryApi.getBaseUrl('vault-secrets');
+      const resp = await fetchApi.fetch(
+        `${baseUrl}/teams/${encodeURIComponent(team)}/${encodeURIComponent(app)}/database/reveal`,
+      );
+      if (!resp.ok) {
+        if (resp.status === 403) {
+          return { ok: false, error: 'Developer or owner role required to reveal this value' };
+        }
+        const body = await resp.json().catch(() => ({})) as any;
+        return { ok: false, error: body.error ?? `HTTP ${resp.status}` };
+      }
+      const body = await resp.json() as { password: string };
+      return { ok: true, password: body.password };
+    } catch (e: any) {
+      return { ok: false, error: e.message ?? 'Unknown error' };
     }
   };
 
@@ -214,15 +333,17 @@ export function EntityDatabaseCard() {
         {creds && (
           <Table size="small">
             <TableBody>
-              {(Object.keys(FIELD_LABELS) as Array<keyof Credentials>).map(
-                field => (
-                  <MaskedField
-                    key={field}
-                    label={FIELD_LABELS[field]}
-                    value={creds[field]}
-                  />
-                ),
-              )}
+              {NON_SECRET_FIELDS.map(field => (
+                <MaskedField
+                  key={field}
+                  label={FIELD_LABELS[field]}
+                  value={creds[field]}
+                />
+              ))}
+              <PasswordField
+                hasPassword={creds.hasPassword}
+                fetchPassword={fetchPassword}
+              />
             </TableBody>
           </Table>
         )}
