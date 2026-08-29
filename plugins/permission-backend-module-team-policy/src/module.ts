@@ -48,6 +48,40 @@ function isViewerRole(ownershipEntityRefs: string[]): boolean {
  * the kubernetes permissions needed by the EntityPage Kubernetes tab. Add a
  * new entry here only after confirming (e.g. via the DENY warn logs below)
  * that a real, in-use portal feature needs it.
+ *
+ * Why this set is complete, verified against the versions in yarn.lock:
+ *
+ * - Nothing in this repository defines a permission of its own. There is no
+ *   createPermission/definePermission call and no permissions.authorize()
+ *   caller anywhere under plugins/ or packages/, so the entire surface this
+ *   policy can ever see comes from installed upstream plugins.
+ * - Upstream Backstage declares permissions in exactly five packages:
+ *   catalog-common, scaffolder-common, kubernetes-common, devtools-common
+ *   and example-todo-list-common. Only the first three are registered in
+ *   packages/backend/src/index.ts.
+ * - Search and notifications are NOT missing from this list — they have no
+ *   permissions at all. plugin-search-common and plugin-notifications-common
+ *   contain zero createPermission calls. plugin-search-backend authorizes
+ *   per document type using each collator's declared visibilityPermission
+ *   (see AuthorizedSearchEngine, `this.types[type]?.visibilityPermission`),
+ *   which for the catalog and techdocs collators is catalog.entity.read — a
+ *   catalog-entity RESOURCE permission, so it takes the conditional branch
+ *   above and never reaches this set. Notifications are scoped by recipient
+ *   and never enter the permission framework.
+ * - plugin-scaffolder-backend enforces seven permissions: the six listed
+ *   below plus scaffolder.template.management, which is an admin operation
+ *   and is intentionally denied for members. (scaffolder.template.dry-run
+ *   exists upstream but is not enforced by the installed version, so the
+ *   template editor in the /create context menu produces no DENY.)
+ * - catalog.entity.create, catalog.entity.validate and all four
+ *   catalog.location.* are BASIC permissions upstream (no resourceType), so
+ *   they land here and are denied. That is intended and breaks no template:
+ *   the templates under platform-gitops/backstage/templates/ use only
+ *   catalog:fetch, http:backstage:request and the mctl:* actions — none uses
+ *   catalog:register or catalog:write, so no run can stop half-completed.
+ *
+ * Re-run those checks before concluding that a newly denied permission is a
+ * regression rather than the intended tightening.
  */
 const ALLOWED_NON_CATALOG_PERMISSIONS: ReadonlySet<string> = new Set([
   'scaffolder.action.execute',
