@@ -1,5 +1,20 @@
 # Changelog
 
+## [4.14.0](https://github.com/mctlhq/mctl-portal/compare/4.13.0...4.14.0) (2026-08-28)
+
+
+### Features
+
+* **agents:** issue-79-remove-unauthenticated-access-from-githu ([d157127](https://github.com/mctlhq/mctl-portal/commit/d1571275eb24fcdd3ebc338aa7b5977ffd79d811))
+
+
+### Bug Fixes
+
+* **agents:** address P1/P2 codex findings on issue-79-remove-unauthenticated-access-from-githu ([26a9a74](https://github.com/mctlhq/mctl-portal/commit/26a9a74a14c61f7efdda3596ecc025171ff4e9bc))
+* **agents:** issue-80-enforce-tenant-ownership-in-custom-domai ([c6f89bb](https://github.com/mctlhq/mctl-portal/commit/c6f89bbfcc057a08986b6cfc1810d64516ddcea1))
+* **custom-domains:** restrict workflow tier to the external-access subject ([7ffae8b](https://github.com/mctlhq/mctl-portal/commit/7ffae8b7e11fd616c72bacf1879e9a44500c5887))
+* **github-app-connect:** reject dot-only repo segments; regression tests for validation branches ([d0de939](https://github.com/mctlhq/mctl-portal/commit/d0de939a2cb04e7ccdf199c188f8806e8f75530f))
+
 ## [4.13.0](https://github.com/mctlhq/mctl-portal/compare/4.12.0...4.13.0) (2026-08-15)
 
 
