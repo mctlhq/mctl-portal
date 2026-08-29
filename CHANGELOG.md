@@ -1,5 +1,14 @@
 # Changelog
 
+## [4.14.3](https://github.com/mctlhq/mctl-portal/compare/4.14.2...4.14.3) (2026-08-29)
+
+
+### Bug Fixes
+
+* **agents:** issue-83-oidc-login-returnto-allowlist-mctl-ai-on ([4727aa9](https://github.com/mctlhq/mctl-portal/commit/4727aa994315e7e800440fba90d38d8b8badbf3a))
+* **oidc:** drop retired mctl.me from codex returnTo trust; test control-char rejection ([c1037c1](https://github.com/mctlhq/mctl-portal/commit/c1037c1e00c55e55a0fce100f74d6839705895b7))
+* **oidc:** reject control characters in returnTo; correct the mctl.me note ([a2cf0f0](https://github.com/mctlhq/mctl-portal/commit/a2cf0f0e5eedc78f9517cc67c5124bd8c2d31abe))
+
 ## [4.14.2](https://github.com/mctlhq/mctl-portal/compare/4.14.1...4.14.2) (2026-08-29)
 
 
