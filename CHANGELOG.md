@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.14.1](https://github.com/mctlhq/mctl-portal/compare/4.14.0...4.14.1) (2026-08-29)
+
+
+### Bug Fixes
+
+* **docker:** install corepack explicitly — node:26 image no longer bundles it ([e07861a](https://github.com/mctlhq/mctl-portal/commit/e07861ab8f1f137d0f88ed169053b5177a4cba92))
+
 ## [4.14.0](https://github.com/mctlhq/mctl-portal/compare/4.13.0...4.14.0) (2026-08-28)
 
 
