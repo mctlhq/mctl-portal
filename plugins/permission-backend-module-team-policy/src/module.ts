@@ -1,6 +1,7 @@
 import {
   createBackendModule,
   coreServices,
+  LoggerService,
 } from '@backstage/backend-plugin-api';
 import {
   PolicyDecision,
@@ -35,14 +36,81 @@ function isViewerRole(ownershipEntityRefs: string[]): boolean {
   return ownershipEntityRefs.some(ref => ref.startsWith('group:default/viewer-'));
 }
 
-class TeamBasedPermissionPolicy implements PermissionPolicy {
+/**
+ * Non-catalog permission names explicitly allowed for logged-in, non-admin
+ * members. Anything not listed here (and not a catalog-entity resource
+ * permission handled above) is denied by default — see module.test.ts and
+ * the issue-81 proposal (platform-gitops/agents-state/mctl-portal/proposals/
+ * issue-81-team-policy-deny-requests-without-a-user/) for the reasoning.
+ *
+ * Seeded with exactly the permissions the portal's own frontend exercises
+ * today: the scaffolder actions needed to browse/run/cancel templates, and
+ * the kubernetes permissions needed by the EntityPage Kubernetes tab. Add a
+ * new entry here only after confirming (e.g. via the DENY warn logs below)
+ * that a real, in-use portal feature needs it.
+ *
+ * Why this set is complete, verified against the versions in yarn.lock:
+ *
+ * - Nothing in this repository defines a permission of its own. There is no
+ *   createPermission/definePermission call and no permissions.authorize()
+ *   caller anywhere under plugins/ or packages/, so the entire surface this
+ *   policy can ever see comes from installed upstream plugins.
+ * - Upstream Backstage declares permissions in exactly five packages:
+ *   catalog-common, scaffolder-common, kubernetes-common, devtools-common
+ *   and example-todo-list-common. Only the first three are registered in
+ *   packages/backend/src/index.ts.
+ * - Search and notifications are NOT missing from this list — they have no
+ *   permissions at all. plugin-search-common and plugin-notifications-common
+ *   contain zero createPermission calls. plugin-search-backend authorizes
+ *   per document type using each collator's declared visibilityPermission
+ *   (see AuthorizedSearchEngine, `this.types[type]?.visibilityPermission`),
+ *   which for the catalog and techdocs collators is catalog.entity.read — a
+ *   catalog-entity RESOURCE permission, so it takes the conditional branch
+ *   above and never reaches this set. Notifications are scoped by recipient
+ *   and never enter the permission framework.
+ * - plugin-scaffolder-backend enforces seven permissions: the six listed
+ *   below plus scaffolder.template.management, which is an admin operation
+ *   and is intentionally denied for members. (scaffolder.template.dry-run
+ *   exists upstream but is not enforced by the installed version, so the
+ *   template editor in the /create context menu produces no DENY.)
+ * - catalog.entity.create, catalog.entity.validate and all four
+ *   catalog.location.* are BASIC permissions upstream (no resourceType), so
+ *   they land here and are denied. That is intended and breaks no template:
+ *   the templates under platform-gitops/backstage/templates/ use only
+ *   catalog:fetch, http:backstage:request and the mctl:* actions — none uses
+ *   catalog:register or catalog:write, so no run can stop half-completed.
+ *
+ * Re-run those checks before concluding that a newly denied permission is a
+ * regression rather than the intended tightening.
+ */
+const ALLOWED_NON_CATALOG_PERMISSIONS: ReadonlySet<string> = new Set([
+  'scaffolder.action.execute',
+  'scaffolder.task.create',
+  'scaffolder.task.read',
+  'scaffolder.task.cancel',
+  'scaffolder.template.parameter.read',
+  'scaffolder.template.step.read',
+  'kubernetes.resources.read',
+  'kubernetes.clusters.read',
+]);
+
+export class TeamBasedPermissionPolicy implements PermissionPolicy {
+  constructor(private readonly logger: LoggerService) {}
+
   async handle(
     request: PolicyQuery,
     user?: PolicyQueryUser,
   ): Promise<PolicyDecision> {
-    // Allow unauthenticated service-to-service calls
+    // No resolvable user identity. ServerPermissionClient resolves service
+    // principals locally and never forwards them here, so a request that
+    // reaches handle() with no user is always an anonymous/unauthenticated
+    // caller, never a legitimate internal service-to-service call. Deny by
+    // default rather than the previous fail-open ALLOW.
     if (!user) {
-      return { result: AuthorizeResult.ALLOW };
+      this.logger.warn(
+        `Denying permission "${request.permission.name}": no resolvable user`,
+      );
+      return { result: AuthorizeResult.DENY };
     }
 
     const ownership = user.info.ownershipEntityRefs ?? [];
@@ -119,8 +187,19 @@ class TeamBasedPermissionPolicy implements PermissionPolicy {
       );
     }
 
-    // Allow all other permissions (search, notifications, etc.)
-    return { result: AuthorizeResult.ALLOW };
+    // Non-catalog permissions (scaffolder, kubernetes, search, notifications,
+    // etc.) are denied by default; only the explicitly reviewed set in
+    // ALLOWED_NON_CATALOG_PERMISSIONS is allowed. This also covers
+    // catalog.location.* (a basic permission, not a catalog-entity resource
+    // permission, so it never reaches the branch above).
+    if (ALLOWED_NON_CATALOG_PERMISSIONS.has(request.permission.name)) {
+      return { result: AuthorizeResult.ALLOW };
+    }
+
+    this.logger.warn(
+      `Denying permission "${request.permission.name}": not in ALLOWED_NON_CATALOG_PERMISSIONS`,
+    );
+    return { result: AuthorizeResult.DENY };
   }
 }
 
@@ -135,7 +214,7 @@ export const teamPolicyModule = createBackendModule({
       },
       async init({ policy, logger }) {
         logger.info('Registering team-based permission policy');
-        policy.setPolicy(new TeamBasedPermissionPolicy());
+        policy.setPolicy(new TeamBasedPermissionPolicy(logger));
       },
     });
   },
