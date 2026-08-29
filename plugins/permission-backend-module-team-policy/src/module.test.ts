@@ -127,6 +127,54 @@ describe('TeamBasedPermissionPolicy', () => {
     );
   });
 
+  // The allowlist carries load-bearing reasoning (see the doc comment on
+  // ALLOWED_NON_CATALOG_PERMISSIONS): each literal is there because a real,
+  // in-use portal feature needs it. Assert every entry by name, so silently
+  // dropping one — which would break that feature for every non-admin member
+  // — fails here rather than in production. The deny cases pin the other
+  // edge: names deliberately left out must stay out.
+  describe('ALLOWED_NON_CATALOG_PERMISSIONS membership', () => {
+    const ALLOWED = [
+      'scaffolder.action.execute',
+      'scaffolder.task.create',
+      'scaffolder.task.read',
+      'scaffolder.task.cancel',
+      'scaffolder.template.parameter.read',
+      'scaffolder.template.step.read',
+      'kubernetes.resources.read',
+      'kubernetes.clusters.read',
+    ];
+
+    // Deliberately absent: template.management is an admin operation,
+    // kubernetes.proxy is held back until it shows up in the DENY warn logs,
+    // and catalog.entity.create / catalog.location.read are basic (not
+    // catalog-entity resource) permissions, so they land here and are denied.
+    const DENIED = [
+      'scaffolder.template.management',
+      'kubernetes.proxy',
+      'catalog.entity.create',
+      'catalog.location.read',
+    ];
+
+    it.each(ALLOWED)('allows %s for a non-viewer member', async name => {
+      const policy = new TeamBasedPermissionPolicy(fakeLogger() as any);
+      const decision = await policy.handle(
+        { permission: createPermission({ name, attributes: {} }) },
+        fakeUser(['group:default/acme']),
+      );
+      expect(decision).toEqual({ result: AuthorizeResult.ALLOW });
+    });
+
+    it.each(DENIED)('denies %s for a non-viewer member', async name => {
+      const policy = new TeamBasedPermissionPolicy(fakeLogger() as any);
+      const decision = await policy.handle(
+        { permission: createPermission({ name, attributes: {} }) },
+        fakeUser(['group:default/acme']),
+      );
+      expect(decision).toEqual({ result: AuthorizeResult.DENY });
+    });
+  });
+
   it('denies a non-viewer member for catalog.location.create (a basic, not resource, permission)', async () => {
     const logger = fakeLogger();
     const policy = new TeamBasedPermissionPolicy(logger as any);
