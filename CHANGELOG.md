@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.14.4](https://github.com/mctlhq/mctl-portal/compare/4.14.3...4.14.4) (2026-08-29)
+
+
+### Bug Fixes
+
+* **agents:** issue-81-team-policy-deny-requests-without-a-user ([b58419d](https://github.com/mctlhq/mctl-portal/commit/b58419d88005b16d5efe121a46b91962dc23bb79))
+
 ## [4.14.3](https://github.com/mctlhq/mctl-portal/compare/4.14.2...4.14.3) (2026-08-29)
 
 
