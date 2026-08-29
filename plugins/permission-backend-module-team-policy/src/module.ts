@@ -1,6 +1,7 @@
 import {
   createBackendModule,
   coreServices,
+  LoggerService,
 } from '@backstage/backend-plugin-api';
 import {
   PolicyDecision,
@@ -35,14 +36,47 @@ function isViewerRole(ownershipEntityRefs: string[]): boolean {
   return ownershipEntityRefs.some(ref => ref.startsWith('group:default/viewer-'));
 }
 
-class TeamBasedPermissionPolicy implements PermissionPolicy {
+/**
+ * Non-catalog permission names explicitly allowed for logged-in, non-admin
+ * members. Anything not listed here (and not a catalog-entity resource
+ * permission handled above) is denied by default — see module.test.ts and
+ * the issue-81 proposal (platform-gitops/agents-state/mctl-portal/proposals/
+ * issue-81-team-policy-deny-requests-without-a-user/) for the reasoning.
+ *
+ * Seeded with exactly the permissions the portal's own frontend exercises
+ * today: the scaffolder actions needed to browse/run/cancel templates, and
+ * the kubernetes permissions needed by the EntityPage Kubernetes tab. Add a
+ * new entry here only after confirming (e.g. via the DENY warn logs below)
+ * that a real, in-use portal feature needs it.
+ */
+const ALLOWED_NON_CATALOG_PERMISSIONS: ReadonlySet<string> = new Set([
+  'scaffolder.action.execute',
+  'scaffolder.task.create',
+  'scaffolder.task.read',
+  'scaffolder.task.cancel',
+  'scaffolder.template.parameter.read',
+  'scaffolder.template.step.read',
+  'kubernetes.resources.read',
+  'kubernetes.clusters.read',
+]);
+
+export class TeamBasedPermissionPolicy implements PermissionPolicy {
+  constructor(private readonly logger: LoggerService) {}
+
   async handle(
     request: PolicyQuery,
     user?: PolicyQueryUser,
   ): Promise<PolicyDecision> {
-    // Allow unauthenticated service-to-service calls
+    // No resolvable user identity. ServerPermissionClient resolves service
+    // principals locally and never forwards them here, so a request that
+    // reaches handle() with no user is always an anonymous/unauthenticated
+    // caller, never a legitimate internal service-to-service call. Deny by
+    // default rather than the previous fail-open ALLOW.
     if (!user) {
-      return { result: AuthorizeResult.ALLOW };
+      this.logger.warn(
+        `Denying permission "${request.permission.name}": no resolvable user`,
+      );
+      return { result: AuthorizeResult.DENY };
     }
 
     const ownership = user.info.ownershipEntityRefs ?? [];
@@ -119,8 +153,19 @@ class TeamBasedPermissionPolicy implements PermissionPolicy {
       );
     }
 
-    // Allow all other permissions (search, notifications, etc.)
-    return { result: AuthorizeResult.ALLOW };
+    // Non-catalog permissions (scaffolder, kubernetes, search, notifications,
+    // etc.) are denied by default; only the explicitly reviewed set in
+    // ALLOWED_NON_CATALOG_PERMISSIONS is allowed. This also covers
+    // catalog.location.* (a basic permission, not a catalog-entity resource
+    // permission, so it never reaches the branch above).
+    if (ALLOWED_NON_CATALOG_PERMISSIONS.has(request.permission.name)) {
+      return { result: AuthorizeResult.ALLOW };
+    }
+
+    this.logger.warn(
+      `Denying permission "${request.permission.name}": not in ALLOWED_NON_CATALOG_PERMISSIONS`,
+    );
+    return { result: AuthorizeResult.DENY };
   }
 }
 
@@ -135,7 +180,7 @@ export const teamPolicyModule = createBackendModule({
       },
       async init({ policy, logger }) {
         logger.info('Registering team-based permission policy');
-        policy.setPolicy(new TeamBasedPermissionPolicy());
+        policy.setPolicy(new TeamBasedPermissionPolicy(logger));
       },
     });
   },
