@@ -253,12 +253,23 @@ export function createRouter(options: RouterOptions): Router {
   //
   // Used by Traefik ForwardAuth flows where we need an interactive login
   // redirect instead of OIDC authorization-code issuance to a registered client.
+  //
+  // returnTo is allowlisted: only relative paths and https://mctl.ai /
+  // https://*.mctl.ai absolute URLs are honored. Anything else (wrong
+  // scheme, unrelated host, lookalike host such as mctl.ai.evil.example)
+  // falls back to DEFAULT_POST_LOGIN_PATH before it is redirected to or
+  // persisted via store.savePendingAuth, so this endpoint cannot be used
+  // as an open redirect. Do not reintroduce raw returnTo usage here.
   router.get('/login', async (req: Request, res: Response) => {
-    const returnTo = typeof req.query.returnTo === 'string' ? req.query.returnTo.trim() : '';
-    if (!returnTo) {
+    const rawReturnTo = typeof req.query.returnTo === 'string' ? req.query.returnTo.trim() : '';
+    if (!rawReturnTo) {
       res.status(400).send('Missing returnTo');
       return;
     }
+    if (!isAllowedReturnTo(rawReturnTo)) {
+      logger.warn(`[OIDC] /login rejected disallowed returnTo host=${summarizeUrlHost(rawReturnTo)}`);
+    }
+    const returnTo = sanitizeReturnTo(rawReturnTo);
     const session = await readSessionCookie(req);
     if (session && session.expiresAt > Date.now()) {
       res.setHeader('Set-Cookie', buildSessionCookie(session.sessionId, returnTo));
@@ -592,6 +603,39 @@ export function createRouter(options: RouterOptions): Router {
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────
+
+// Default post-login target used whenever a /login returnTo is rejected by
+// isAllowedReturnTo. Always same-origin (resolved relative to the issuer by
+// the browser), so it can never itself become an open redirect.
+const DEFAULT_POST_LOGIN_PATH = '/';
+
+// Allowlist for /login's returnTo: relative paths, or absolute https URLs
+// whose hostname is exactly mctl.ai or ends with .mctl.ai (dot-boundary
+// suffix match). Exported for unit testing.
+export function isAllowedReturnTo(returnTo: string): boolean {
+  // Relative path: allowed, but must not be scheme-relative ("//host/...")
+  // or a backslash variant ("/\host/...") that some browsers normalize to
+  // scheme-relative.
+  if (returnTo.startsWith('/') && !returnTo.startsWith('//') && !returnTo.startsWith('/\\')) {
+    return true;
+  }
+  try {
+    const url = new URL(returnTo);
+    if (url.protocol !== 'https:') {
+      return false;
+    }
+    const host = url.hostname.toLowerCase();
+    return host === 'mctl.ai' || host.endsWith('.mctl.ai');
+  } catch {
+    return false;
+  }
+}
+
+// Returns returnTo unchanged if allowed, otherwise DEFAULT_POST_LOGIN_PATH.
+// Exported for unit testing.
+export function sanitizeReturnTo(returnTo: string): string {
+  return isAllowedReturnTo(returnTo) ? returnTo : DEFAULT_POST_LOGIN_PATH;
+}
 
 function decodeOpenAICodexReturnTo(state: string): string | null {
   try {
