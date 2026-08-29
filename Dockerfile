@@ -9,7 +9,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 
 RUN pip3 install mkdocs-techdocs-core --break-system-packages
 
-RUN corepack enable && \
+RUN npm install -g corepack && corepack enable && \
     mkdir -p /home/node/.cache/node/corepack && \
     chown -R node:node /home/node/.cache
 
@@ -49,7 +49,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 
 RUN pip3 install mkdocs-techdocs-core --break-system-packages
 
-RUN corepack enable && \
+RUN npm install -g corepack && corepack enable && \
     mkdir -p /home/node/.cache/node/corepack && \
     chown -R node:node /home/node/.cache
 
