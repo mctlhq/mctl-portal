@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.14.2](https://github.com/mctlhq/mctl-portal/compare/4.14.1...4.14.2) (2026-08-29)
+
+
+### Bug Fixes
+
+* **docker:** revert base to node:22 — engines allow 22||24, native deps fail on 26 ([66f3457](https://github.com/mctlhq/mctl-portal/commit/66f345760ca91be0f4f9499f3acb0a225e8fb97b))
+
 ## [4.14.1](https://github.com/mctlhq/mctl-portal/compare/4.14.0...4.14.1) (2026-08-29)
 
 
