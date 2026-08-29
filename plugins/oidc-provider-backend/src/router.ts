@@ -266,10 +266,10 @@ export function createRouter(options: RouterOptions): Router {
       res.status(400).send('Missing returnTo');
       return;
     }
-    if (!isAllowedReturnTo(rawReturnTo)) {
+    const returnTo = sanitizeReturnTo(rawReturnTo);
+    if (returnTo !== rawReturnTo) {
       logger.warn(`[OIDC] /login rejected disallowed returnTo host=${summarizeUrlHost(rawReturnTo)}`);
     }
-    const returnTo = sanitizeReturnTo(rawReturnTo);
     const session = await readSessionCookie(req);
     if (session && session.expiresAt > Date.now()) {
       res.setHeader('Set-Cookie', buildSessionCookie(session.sessionId, returnTo));
@@ -612,6 +612,15 @@ const DEFAULT_POST_LOGIN_PATH = '/';
 // Allowlist for /login's returnTo: relative paths, or absolute https URLs
 // whose hostname is exactly mctl.ai or ends with .mctl.ai (dot-boundary
 // suffix match). Exported for unit testing.
+//
+// mctl.me is deliberately NOT allowlisted (operator decision at the
+// audit-wave-3 approve gate): the domain was retired on 2026-08-28
+// (mctl-gitops#934 removed its mirror and DNS). The .mctl.me branches
+// still present elsewhere in this file (deriveCookieDomain,
+// deriveTenantBaseDomain, decodeOpenAICodexReturnTo) are legacy leftovers
+// of that retirement, pending their own cleanup — not evidence of a live
+// alternate platform domain. If a *.mctl.me environment is ever
+// resurrected, allowlisting it here must be a deliberate edit.
 export function isAllowedReturnTo(returnTo: string): boolean {
   // Relative path: allowed, but must not be scheme-relative ("//host/...")
   // or a backslash variant ("/\host/...") that some browsers normalize to
