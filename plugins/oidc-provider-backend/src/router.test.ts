@@ -37,6 +37,21 @@ describe('isAllowedReturnTo', () => {
     expect(isAllowedReturnTo('/\\evil')).toBe(false);
   });
 
+  it('rejects a relative path smuggling a tab (browsers strip it into //)', () => {
+    expect(isAllowedReturnTo('/\t/evil.example')).toBe(false);
+  });
+
+  it('rejects embedded newline and carriage-return characters', () => {
+    expect(isAllowedReturnTo('/\n/evil.example')).toBe(false);
+    expect(isAllowedReturnTo('/\r/evil.example')).toBe(false);
+    expect(isAllowedReturnTo('https://app.mctl.ai/x\n')).toBe(false);
+  });
+
+  it('rejects other ASCII control characters anywhere in the value', () => {
+    expect(isAllowedReturnTo('/dash\x00board')).toBe(false);
+    expect(isAllowedReturnTo('/dash\x7fboard')).toBe(false);
+  });
+
   it('rejects a trailing-dot host', () => {
     expect(isAllowedReturnTo('https://mctl.ai./')).toBe(false);
   });

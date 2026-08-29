@@ -668,11 +668,11 @@ function decodeOpenAICodexReturnTo(state: string): string | null {
     }
     const url = new URL(returnTo);
     const host = url.hostname.toLowerCase();
-    if (
-      host === 'localhost' ||
-      host.endsWith('.mctl.ai') ||
-      host.endsWith('.mctl.me')
-    ) {
+    // .mctl.me removed from this trust list together with the /login
+    // allowlist above: the domain is retired (mctl-gitops#934), and a
+    // retired domain kept as a trusted redirect target is exactly the
+    // open-redirect-by-reregistration hazard this PR closes.
+    if (host === 'localhost' || host.endsWith('.mctl.ai')) {
       return url.toString();
     }
     return null;
