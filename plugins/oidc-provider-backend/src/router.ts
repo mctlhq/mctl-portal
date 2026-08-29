@@ -614,14 +614,26 @@ const DEFAULT_POST_LOGIN_PATH = '/';
 // suffix match). Exported for unit testing.
 //
 // mctl.me is deliberately NOT allowlisted (operator decision at the
-// audit-wave-3 approve gate): the domain was retired on 2026-08-28
-// (mctl-gitops#934 removed its mirror and DNS). The .mctl.me branches
-// still present elsewhere in this file (deriveCookieDomain,
-// deriveTenantBaseDomain, decodeOpenAICodexReturnTo) are legacy leftovers
-// of that retirement, pending their own cleanup — not evidence of a live
-// alternate platform domain. If a *.mctl.me environment is ever
-// resurrected, allowlisting it here must be a deliberate edit.
+// audit-wave-3 approve gate): the domain itself was retired on 2026-08-28
+// — mctl-gitops#934 removed its mirror and DNS, so nothing resolvable
+// serves *.mctl.me anymore. This repository still carries stale mctl.me
+// references (app-config domainAlt/argocd/argoWorkflows URLs, the
+// tenant-backend workflow links, and the .mctl.me branches in this file);
+// their removal is tracked as a separate portal cleanup issue and none of
+// them makes the domain reachable. Allowlisting an unregistered-able
+// domain here would hand an open redirect to whoever re-registers it.
+// If a *.mctl.me environment is ever resurrected, allowlisting it must
+// be a deliberate edit.
 export function isAllowedReturnTo(returnTo: string): boolean {
+  // ASCII control characters (tab, CR, LF, ...) are stripped by browsers
+  // when following a Location header, so "/\t/evil.example" would collapse
+  // into scheme-relative "//evil.example" AFTER passing the prefix checks
+  // below. No legitimate returnTo contains control characters — reject
+  // outright before any shape check.
+  // eslint-disable-next-line no-control-regex
+  if (/[\x00-\x1f\x7f]/.test(returnTo)) {
+    return false;
+  }
   // Relative path: allowed, but must not be scheme-relative ("//host/...")
   // or a backslash variant ("/\host/...") that some browsers normalize to
   // scheme-relative.
