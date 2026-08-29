@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useState } from 'react';
 import { scaffolderPlugin } from '@backstage/plugin-scaffolder';
 import { createScaffolderFieldExtension } from '@backstage/plugin-scaffolder-react';
 import TextField from '@material-ui/core/TextField';
@@ -68,28 +68,19 @@ const SecureVarsEditorFieldComponent = (
   const classes = useStyles();
   const [masked, setMasked] = useState(false);
   const [localErrors, setLocalErrors] = useState<string[]>([]);
-  const autoFilled = useRef(false);
 
   const currentConfig = (formContext as any)?.formData?.currentConfig;
 
-  useEffect(() => {
-    if (autoFilled.current || formData) return;
-    if (!currentConfig) return;
-
-    try {
-      const config = JSON.parse(currentConfig);
-      const secrets: Record<string, string> = config.secrets || {};
-      const keys = Object.keys(secrets);
-      if (keys.length > 0) {
-        const lines = keys.map(k => `${k}=${secrets[k]}`).join('\n');
-        onChange(lines);
-        autoFilled.current = true;
-        setMasked(true);
-      }
-    } catch {
-      // Invalid JSON — skip
-    }
-  }, [currentConfig, formData, onChange]);
+  // Existing secret values are never fetched into this form — /secrets now
+  // returns only key names (see CurrentConfigField.tsx). Show those names as
+  // a read-only hint so the user knows what's already set, without
+  // pre-filling the editable field with plaintext (or anything at all).
+  let existingSecretKeys: string[] = [];
+  try {
+    existingSecretKeys = currentConfig ? JSON.parse(currentConfig).secretKeys || [] : [];
+  } catch {
+    // Invalid JSON — no hint to show
+  }
 
   const handleChange = useCallback(
     (e: React.ChangeEvent<HTMLTextAreaElement>) => {
@@ -112,6 +103,13 @@ const SecureVarsEditorFieldComponent = (
 
   return (
     <>
+      {existingSecretKeys.length > 0 && (
+        <Typography variant="caption" color="textSecondary" component="div">
+          Existing keys (values hidden): {existingSecretKeys.join(', ')}. Leave
+          blank to keep them unchanged; add a KEY=value line only for a key
+          you want to set or change.
+        </Typography>
+      )}
       <TextField
         label={schema.title || 'Secure Variables'}
         multiline

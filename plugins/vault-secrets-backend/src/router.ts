@@ -51,7 +51,7 @@ export const secretsVaultPath = (team: string, app: string) =>
  */
 export function auditSecretRead(
   logger: LoggerService,
-  kind: 'database' | 'secrets',
+  kind: 'database' | 'database-meta' | 'secrets' | 'secrets-meta',
   team: string,
   app: string,
   auth: { userId: string; role: string; viaAdminBypass: boolean },
@@ -91,6 +91,34 @@ export function createRouter(options: RouterOptions): Router {
         res.status(404).json({ error: `No database found for ${team}/${app}` });
         return;
       }
+      auditSecretRead(logger, 'database-meta', team, app, auth);
+      res.json({
+        host: creds.host,
+        port: creds.port,
+        database: creds.database,
+        username: creds.username,
+        hasPassword: Boolean(creds.password),
+      });
+    } catch (err: any) {
+      logger.error(`vault-secrets error for ${team}/${app}: ${err}`);
+      res.status(500).json({ error: 'Internal error' });
+    }
+  });
+
+  router.get('/teams/:team/:app/database/reveal', async (req: Request, res: Response) => {
+    const { team, app } = req.params;
+    const auth = await requireTenantRole(req, httpAuth, userInfo, db, isPostgres, team, 'developer');
+    if (!auth.ok) {
+      res.status(auth.status).json({ error: auth.error });
+      return;
+    }
+
+    try {
+      const creds = await readVaultKV(vaultAddr, vaultTokens, databaseVaultPath(team, app));
+      if (!creds) {
+        res.status(404).json({ error: `No database found for ${team}/${app}` });
+        return;
+      }
       auditSecretRead(logger, 'database', team, app, auth);
       res.json({
         host: creds.host,
@@ -108,6 +136,24 @@ export function createRouter(options: RouterOptions): Router {
   router.get('/teams/:team/:app/secrets', async (req: Request, res: Response) => {
     const { team, app } = req.params;
     const auth = await requireTenantRole(req, httpAuth, userInfo, db, isPostgres, team, 'viewer');
+    if (!auth.ok) {
+      res.status(auth.status).json({ error: auth.error });
+      return;
+    }
+
+    try {
+      const secrets = await readVaultKV(vaultAddr, vaultTokens, secretsVaultPath(team, app));
+      auditSecretRead(logger, 'secrets-meta', team, app, auth, Object.keys(secrets ?? {}));
+      res.json({ secretKeys: Object.keys(secrets ?? {}) });
+    } catch (err: any) {
+      logger.error(`vault-secrets error for ${team}/${app}: ${err}`);
+      res.status(500).json({ error: 'Internal error' });
+    }
+  });
+
+  router.get('/teams/:team/:app/secrets/reveal', async (req: Request, res: Response) => {
+    const { team, app } = req.params;
+    const auth = await requireTenantRole(req, httpAuth, userInfo, db, isPostgres, team, 'developer');
     if (!auth.ok) {
       res.status(auth.status).json({ error: auth.error });
       return;
@@ -222,7 +268,7 @@ async function requireTenantRole(
   db: Knex,
   isPostgres: boolean,
   team: string,
-  minimumRole: 'viewer' | 'owner',
+  minimumRole: 'viewer' | 'developer' | 'owner',
 ): Promise<TenantAuthResult> {
   try {
     const credentials = await httpAuth.credentials(req, { allow: ['user'] });
@@ -240,12 +286,21 @@ async function requireTenantRole(
   }
 }
 
+// Three-value tenant role model (see plugins/tenant-backend/src/types.ts:64):
+// viewer < developer < owner. Ranked so a single numeric comparison covers
+// every "at least this role" check instead of a per-role equality branch.
+const ROLE_RANK: Record<string, number> = { viewer: 0, developer: 1, owner: 2 };
+
+function meetsMinimumRole(role: string, minimumRole: 'viewer' | 'developer' | 'owner'): boolean {
+  return (ROLE_RANK[role] ?? -1) >= ROLE_RANK[minimumRole];
+}
+
 export async function checkTenantRole(
   db: Knex,
   isPostgres: boolean,
   team: string,
   userId: string,
-  minimumRole: 'viewer' | 'owner',
+  minimumRole: 'viewer' | 'developer' | 'owner',
 ): Promise<TenantAuthResult> {
   // Platform admins (owner role in the 'admins' tenant) bypass per-team
   // membership, mirroring tenant-backend's isAdmin pattern in resolveAuth().
@@ -256,8 +311,8 @@ export async function checkTenantRole(
   if (!member) {
     return { ok: false, status: 403, error: `Access denied: not a member of team '${team}'` };
   }
-  if (minimumRole === 'owner' && member.role !== 'owner') {
-    return { ok: false, status: 403, error: `Access denied: owner role required for team '${team}'` };
+  if (!meetsMinimumRole(member.role, minimumRole)) {
+    return { ok: false, status: 403, error: `Access denied: ${minimumRole} role required for team '${team}'` };
   }
   return { ok: true, userId, role: member.role, viaAdminBypass: false };
 }

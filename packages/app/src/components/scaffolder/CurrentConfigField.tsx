@@ -57,7 +57,6 @@ const useStyles = makeStyles(theme => ({
 interface ServiceConfig {
   envVars: string;
   secretKeys: string[];
-  secrets: Record<string, string>;
 }
 
 function CurrentConfigFieldComponent(
@@ -152,8 +151,7 @@ function CurrentConfigFieldComponent(
           secretKeys = data.secretKeys || [];
         }
 
-        // Fetch actual secret values from Vault
-        let secrets: Record<string, string> = {};
+        // Fetch secret key names (masked — no plaintext values) from Vault
         try {
           const vaultBase = await discoveryApi.getBaseUrl('vault-secrets');
           const vaultResp = await fetchApi.fetch(
@@ -161,14 +159,14 @@ function CurrentConfigFieldComponent(
           );
           if (vaultResp.ok) {
             const vaultData = await vaultResp.json();
-            secrets = (vaultData as any).secrets || {};
+            secretKeys = (vaultData as any).secretKeys || secretKeys;
           }
         } catch {
-          // Vault fetch failed — continue without secrets
+          // Vault fetch failed — continue without secret keys
         }
 
         if (!cancelled) {
-          const combined: ServiceConfig = { envVars, secretKeys, secrets };
+          const combined: ServiceConfig = { envVars, secretKeys };
           const dataStr = JSON.stringify(combined);
           configCache.set(cacheKey, { data: combined, fetchedAt: Date.now() });
           setConfig(combined);
@@ -225,19 +223,7 @@ function CurrentConfigFieldComponent(
 
       <div className={classes.section}>
         <Typography className={classes.label}>Secure Variables (in Vault)</Typography>
-        {Object.keys(config.secrets).length > 0 ? (
-          <Box display="flex" flexWrap="wrap">
-            {Object.keys(config.secrets).map(key => (
-              <Chip
-                key={key}
-                label={`${key}=****`}
-                size="small"
-                variant="outlined"
-                className={classes.chip}
-              />
-            ))}
-          </Box>
-        ) : config.secretKeys.length > 0 ? (
+        {config.secretKeys.length > 0 ? (
           <Box display="flex" flexWrap="wrap">
             {config.secretKeys.map(key => (
               <Chip
