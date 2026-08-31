@@ -1,5 +1,17 @@
 # Changelog
 
+## [4.15.0](https://github.com/mctlhq/mctl-portal/compare/4.14.4...4.15.0) (2026-08-31)
+
+
+### Features
+
+* **agents:** issue-84-fix-cve-2024-21534-jsonpath-plus-rce-for ([dc1fd68](https://github.com/mctlhq/mctl-portal/commit/dc1fd68a763017cd7bb80c3d9fe8268f9f150571))
+
+
+### Bug Fixes
+
+* **agents:** issue-84-fix-cve-2024-21534-jsonpath-plus-rce-for ([e7d3864](https://github.com/mctlhq/mctl-portal/commit/e7d38644d03367e5ef35e4cfdf4b7f5846d3c62f))
+
 ## [4.14.4](https://github.com/mctlhq/mctl-portal/compare/4.14.3...4.14.4) (2026-08-29)
 
 
