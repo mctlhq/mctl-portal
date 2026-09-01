@@ -7,6 +7,8 @@ import {
   PolicyDecision,
   AuthorizeResult,
   isResourcePermission,
+  PermissionCriteria,
+  PermissionCondition,
 } from '@backstage/plugin-permission-common';
 import {
   PermissionPolicy,
@@ -32,6 +34,12 @@ import {
  *
  * Catalog visibility (all roles): entities owned by group:default/{tenantName}.
  */
+/**
+ * One arm of the catalog-entity `anyOf`. Named so the arm array can be given
+ * an explicit non-empty-tuple type — see the `anyOf` declaration in `handle()`.
+ */
+type CatalogCriteria = PermissionCriteria<PermissionCondition<'catalog-entity'>>;
+
 function isViewerRole(ownershipEntityRefs: string[]): boolean {
   return ownershipEntityRefs.some(ref => ref.startsWith('group:default/viewer-'));
 }
@@ -163,7 +171,13 @@ export class TeamBasedPermissionPolicy implements PermissionPolicy {
     //     shared templates but cannot delete/refresh (mutate) them — OR owned by user's group
     //     (delete/refresh of a team's own templates is unchanged, per team-scoped arms below)
     if (isResourcePermission(request.permission, 'catalog-entity')) {
-      const anyOf = [
+      // Annotated rather than inferred, as a non-empty tuple. Left to
+      // inference, the element type comes from the five literals below — none
+      // of which use `not` — so the conditional admin-template arm fails to
+      // type-check; and a plain `T[]` would not satisfy the `NonEmptyArray`
+      // that `createCatalogConditionalDecision` requires. The tuple form keeps
+      // both facts in the type instead of asserting them away.
+      const anyOf: [CatalogCriteria, ...CatalogCriteria[]] = [
         // Groups: only the user's own team group(s)
         {
           allOf: [
