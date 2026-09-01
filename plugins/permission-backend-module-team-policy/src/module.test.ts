@@ -1,7 +1,31 @@
 import { AuthorizeResult, createPermission } from '@backstage/plugin-permission-common';
 import { PolicyQuery, PolicyQueryUser } from '@backstage/plugin-permission-node';
 import { BackstageCredentials } from '@backstage/backend-plugin-api';
+import { catalogConditions } from '@backstage/plugin-catalog-backend/alpha';
 import { TeamBasedPermissionPolicy } from './module';
+
+// The exact same arm shape module.ts assembles for the global-admin-template
+// condition, built from the same factory functions, so tests can assert
+// presence/absence by deep-equality rather than reaching into serialization
+// details of createCatalogConditionalDecision.
+const adminTemplateArm = {
+  allOf: [
+    catalogConditions.isEntityKind({ kinds: ['Template'] }),
+    catalogConditions.isEntityOwner({ claims: ['group:default/admins'] }),
+    { not: catalogConditions.hasAnnotation({ annotation: 'mctl.me/admin-only' }) },
+  ],
+};
+
+function catalogEntityPermission(
+  name: string,
+  action?: 'create' | 'read' | 'update' | 'delete',
+) {
+  return createPermission({
+    name,
+    attributes: action === undefined ? {} : { action },
+    resourceType: 'catalog-entity',
+  });
+}
 
 // Regression guard for the fail-open fixes in issue-81: the policy previously
 // allowed (1) any request with no resolvable user, and (2) any non-catalog
@@ -187,5 +211,143 @@ describe('TeamBasedPermissionPolicy', () => {
     const decision = await policy.handle(request, user);
 
     expect(decision).toEqual({ result: AuthorizeResult.DENY });
+  });
+
+  // Regression guard for issue-102: the global-admin-template arm previously
+  // ignored the permission's action, letting any non-admin member delete or
+  // refresh (update) shared platform templates via the API, and the viewer
+  // gate only checked the scaffolder.* name prefix. See platform-gitops/
+  // agents-state/mctl-portal/proposals/
+  // issue-102-team-policy-any-member-can-delete-or-ref/.
+  describe('issue-102: action-gated catalog-entity conditions', () => {
+    const teamOwnershipArm = {
+      allOf: [
+        catalogConditions.isEntityKind({ kinds: ['Component', 'API', 'Resource'] }),
+        catalogConditions.isEntityOwner({ claims: ['group:default/acme'] }),
+      ],
+    };
+
+    it('T1: non-viewer non-admin + catalog.entity.delete does not include the global-admin-template arm', async () => {
+      const policy = new TeamBasedPermissionPolicy(fakeLogger() as any);
+      const request: PolicyQuery = {
+        permission: catalogEntityPermission('catalog.entity.delete', 'delete'),
+      };
+      const user = fakeUser(['group:default/acme']);
+
+      const decision: any = await policy.handle(request, user);
+
+      expect(decision.result).toBe(AuthorizeResult.CONDITIONAL);
+      expect(decision.conditions.anyOf).not.toContainEqual(adminTemplateArm);
+    });
+
+    it('T2: non-viewer non-admin + catalog.entity.refresh (action update) does not include the global-admin-template arm', async () => {
+      const policy = new TeamBasedPermissionPolicy(fakeLogger() as any);
+      const request: PolicyQuery = {
+        permission: catalogEntityPermission('catalog.entity.refresh', 'update'),
+      };
+      const user = fakeUser(['group:default/acme']);
+
+      const decision: any = await policy.handle(request, user);
+
+      expect(decision.result).toBe(AuthorizeResult.CONDITIONAL);
+      expect(decision.conditions.anyOf).not.toContainEqual(adminTemplateArm);
+    });
+
+    it('T3: non-viewer non-admin + catalog.entity.read still includes the global-admin-template arm', async () => {
+      const policy = new TeamBasedPermissionPolicy(fakeLogger() as any);
+      const request: PolicyQuery = {
+        permission: catalogEntityPermission('catalog.entity.read', 'read'),
+      };
+      const user = fakeUser(['group:default/acme']);
+
+      const decision: any = await policy.handle(request, user);
+
+      expect(decision.result).toBe(AuthorizeResult.CONDITIONAL);
+      expect(decision.conditions.anyOf).toContainEqual(adminTemplateArm);
+    });
+
+    it('T4: viewer + catalog.entity.delete is denied outright', async () => {
+      const policy = new TeamBasedPermissionPolicy(fakeLogger() as any);
+      const request: PolicyQuery = {
+        permission: catalogEntityPermission('catalog.entity.delete', 'delete'),
+      };
+      const user = fakeUser(['group:default/viewer-acme', 'group:default/acme']);
+
+      const decision = await policy.handle(request, user);
+
+      expect(decision).toEqual({ result: AuthorizeResult.DENY });
+    });
+
+    it('T5: viewer + catalog.entity.refresh (action update) is denied outright', async () => {
+      const policy = new TeamBasedPermissionPolicy(fakeLogger() as any);
+      const request: PolicyQuery = {
+        permission: catalogEntityPermission('catalog.entity.refresh', 'update'),
+      };
+      const user = fakeUser(['group:default/viewer-acme', 'group:default/acme']);
+
+      const decision = await policy.handle(request, user);
+
+      expect(decision).toEqual({ result: AuthorizeResult.DENY });
+    });
+
+    it('T6: viewer + catalog.entity.read remains conditional (unaffected)', async () => {
+      const policy = new TeamBasedPermissionPolicy(fakeLogger() as any);
+      const request: PolicyQuery = {
+        permission: catalogEntityPermission('catalog.entity.read', 'read'),
+      };
+      const user = fakeUser(['group:default/viewer-acme', 'group:default/acme']);
+
+      const decision = await policy.handle(request, user);
+
+      expect(decision.result).toBe(AuthorizeResult.CONDITIONAL);
+    });
+
+    it('T7: non-viewer non-admin + catalog.entity.delete on entity owned by own team group is still permitted', async () => {
+      const policy = new TeamBasedPermissionPolicy(fakeLogger() as any);
+      const request: PolicyQuery = {
+        permission: catalogEntityPermission('catalog.entity.delete', 'delete'),
+      };
+      const user = fakeUser(['group:default/acme']);
+
+      const decision: any = await policy.handle(request, user);
+
+      expect(decision.result).toBe(AuthorizeResult.CONDITIONAL);
+      expect(decision.conditions.anyOf).toContainEqual(teamOwnershipArm);
+    });
+
+    it('T8: admin-owner + catalog.entity.delete on global admin template is allowed unconditionally', async () => {
+      const policy = new TeamBasedPermissionPolicy(fakeLogger() as any);
+      const request: PolicyQuery = {
+        permission: catalogEntityPermission('catalog.entity.delete', 'delete'),
+      };
+      const user = fakeUser(['group:default/admins-owners']);
+
+      const decision = await policy.handle(request, user);
+
+      expect(decision).toEqual({ result: AuthorizeResult.ALLOW });
+    });
+
+    it('T9: catalog-entity permission with attributes.action absent entirely falls to the restrictive side', async () => {
+      const logger = fakeLogger();
+      const policy = new TeamBasedPermissionPolicy(logger as any);
+
+      // Non-viewer, non-admin: admin-template arm must be absent.
+      const nonViewerDecision: any = await policy.handle(
+        { permission: catalogEntityPermission('catalog.entity.read') },
+        fakeUser(['group:default/acme']),
+      );
+      expect(nonViewerDecision.result).toBe(AuthorizeResult.CONDITIONAL);
+      expect(nonViewerDecision.conditions.anyOf).not.toContainEqual(adminTemplateArm);
+      expect(logger.warn).toHaveBeenCalledWith(
+        expect.stringContaining('catalog.entity.read'),
+      );
+
+      // Viewer: denied outright, same as any other non-read action.
+      const viewerDecision = await policy.handle(
+        { permission: catalogEntityPermission('catalog.entity.read') },
+        fakeUser(['group:default/viewer-acme', 'group:default/acme']),
+      );
+      expect(viewerDecision).toEqual({ result: AuthorizeResult.DENY });
+    });
   });
 });
