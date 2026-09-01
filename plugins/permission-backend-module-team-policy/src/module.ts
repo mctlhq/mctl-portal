@@ -7,6 +7,8 @@ import {
   PolicyDecision,
   AuthorizeResult,
   isResourcePermission,
+  PermissionCriteria,
+  PermissionCondition,
 } from '@backstage/plugin-permission-common';
 import {
   PermissionPolicy,
@@ -32,6 +34,12 @@ import {
  *
  * Catalog visibility (all roles): entities owned by group:default/{tenantName}.
  */
+/**
+ * One arm of the catalog-entity `anyOf`. Named so the arm array can be given
+ * an explicit non-empty-tuple type — see the `anyOf` declaration in `handle()`.
+ */
+type CatalogCriteria = PermissionCriteria<PermissionCondition<'catalog-entity'>>;
+
 function isViewerRole(ownershipEntityRefs: string[]): boolean {
   return ownershipEntityRefs.some(ref => ref.startsWith('group:default/viewer-'));
 }
@@ -121,9 +129,35 @@ export class TeamBasedPermissionPolicy implements PermissionPolicy {
       return { result: AuthorizeResult.ALLOW };
     }
 
-    // Viewer role: deny scaffolder task creation (read-only users)
-    if (isViewerRole(ownership) && request.permission.name.startsWith('scaffolder.')) {
-      return { result: AuthorizeResult.DENY };
+    // The permission's action, used both by the viewer gate below and by the
+    // catalog-entity anyOf assembly further down, so the two enforcement
+    // points cannot drift apart. A catalog-entity permission whose action is
+    // missing or unrecognized is deliberately treated as non-read (fail
+    // closed): the admin-template arm is dropped and viewers are denied,
+    // rather than defaulting to permissive. This should never happen against
+    // a working Backstage install; if it starts happening (e.g. after an
+    // upstream upgrade renames/drops the attribute), the warn below is the
+    // only signal that shared templates silently stopped being visible.
+    const action = request.permission.attributes?.action;
+    const isReadAction = action === 'read';
+    if (isResourcePermission(request.permission, 'catalog-entity') && action === undefined) {
+      this.logger.warn(
+        `catalog-entity permission "${request.permission.name}" arrived with no attributes.action; treating as non-read (fail closed)`,
+      );
+    }
+
+    // Viewer role: read-only users. Deny scaffolder task creation outright,
+    // and deny any catalog-entity resource permission whose action is not
+    // read (delete/refresh) — even on entities their own team owns. Viewer
+    // read access (action === 'read') is unaffected and falls through to the
+    // catalog-entity conditional branch below.
+    if (isViewerRole(ownership)) {
+      if (request.permission.name.startsWith('scaffolder.')) {
+        return { result: AuthorizeResult.DENY };
+      }
+      if (isResourcePermission(request.permission, 'catalog-entity') && !isReadAction) {
+        return { result: AuthorizeResult.DENY };
+      }
     }
 
     // For catalog entity permissions, return a conditional decision that
@@ -132,59 +166,70 @@ export class TeamBasedPermissionPolicy implements PermissionPolicy {
     //   - Group, User: only those belonging to the user's team (spec.owner = user's group)
     //   - System: only those owned by user's groups
     //   - Component/API/Resource: only those owned by user's groups (unchanged)
-    //   - Template: global admin templates (owned by admins, not admin-only) OR owned by user's group
+    //   - Template: global admin templates (owned by admins, not admin-only), read-only —
+    //     included in the anyOf only when the action is `read`, so members can see and run
+    //     shared templates but cannot delete/refresh (mutate) them — OR owned by user's group
+    //     (delete/refresh of a team's own templates is unchanged, per team-scoped arms below)
     if (isResourcePermission(request.permission, 'catalog-entity')) {
-      return createCatalogConditionalDecision(
-        request.permission,
+      // Annotated rather than inferred, as a non-empty tuple. Left to
+      // inference, the element type comes from the five literals below — none
+      // of which use `not` — so the conditional admin-template arm fails to
+      // type-check; and a plain `T[]` would not satisfy the `NonEmptyArray`
+      // that `createCatalogConditionalDecision` requires. The tuple form keeps
+      // both facts in the type instead of asserting them away.
+      const anyOf: [CatalogCriteria, ...CatalogCriteria[]] = [
+        // Groups: only the user's own team group(s)
         {
-          anyOf: [
-            // Groups: only the user's own team group(s)
-            {
-              allOf: [
-                catalogConditions.isEntityKind({ kinds: ['Group'] }),
-                catalogConditions.isEntityOwner({ claims: ownership }),
-              ],
-            },
-            // Users: only teammates (same group owner)
-            {
-              allOf: [
-                catalogConditions.isEntityKind({ kinds: ['User'] }),
-                catalogConditions.isEntityOwner({ claims: ownership }),
-              ],
-            },
-            // Systems: only those owned by user's groups
-            {
-              allOf: [
-                catalogConditions.isEntityKind({ kinds: ['System'] }),
-                catalogConditions.isEntityOwner({ claims: ownership }),
-              ],
-            },
-            // Components, APIs, Resources: owned by user's groups
-            {
-              allOf: [
-                catalogConditions.isEntityKind({ kinds: ['Component', 'API', 'Resource'] }),
-                catalogConditions.isEntityOwner({ claims: ownership }),
-              ],
-            },
-            // Global admin templates: owned by admins and NOT admin-only restricted
-            {
-              allOf: [
-                catalogConditions.isEntityKind({ kinds: ['Template'] }),
-                catalogConditions.isEntityOwner({ claims: ['group:default/admins'] }),
-                { not: catalogConditions.hasAnnotation({ annotation: 'mctl.me/admin-only' }) },
-              ],
-            },
-            // Group-specific templates: owned by user's group
-            {
-              allOf: [
-                catalogConditions.isEntityKind({ kinds: ['Template'] }),
-                catalogConditions.isEntityOwner({ claims: ownership }),
-              ],
-            },
-            // Domain and Location are intentionally omitted → DENY for non-admins
+          allOf: [
+            catalogConditions.isEntityKind({ kinds: ['Group'] }),
+            catalogConditions.isEntityOwner({ claims: ownership }),
           ],
         },
-      );
+        // Users: only teammates (same group owner)
+        {
+          allOf: [
+            catalogConditions.isEntityKind({ kinds: ['User'] }),
+            catalogConditions.isEntityOwner({ claims: ownership }),
+          ],
+        },
+        // Systems: only those owned by user's groups
+        {
+          allOf: [
+            catalogConditions.isEntityKind({ kinds: ['System'] }),
+            catalogConditions.isEntityOwner({ claims: ownership }),
+          ],
+        },
+        // Components, APIs, Resources: owned by user's groups
+        {
+          allOf: [
+            catalogConditions.isEntityKind({ kinds: ['Component', 'API', 'Resource'] }),
+            catalogConditions.isEntityOwner({ claims: ownership }),
+          ],
+        },
+        // Group-specific templates: owned by user's group
+        {
+          allOf: [
+            catalogConditions.isEntityKind({ kinds: ['Template'] }),
+            catalogConditions.isEntityOwner({ claims: ownership }),
+          ],
+        },
+      ];
+
+      // Global admin templates: owned by admins and NOT admin-only restricted.
+      // Read-only — only included for the read action, so delete/refresh can
+      // never be granted via this arm (see issue-102).
+      if (isReadAction) {
+        anyOf.push({
+          allOf: [
+            catalogConditions.isEntityKind({ kinds: ['Template'] }),
+            catalogConditions.isEntityOwner({ claims: ['group:default/admins'] }),
+            { not: catalogConditions.hasAnnotation({ annotation: 'mctl.me/admin-only' }) },
+          ],
+        });
+      }
+
+      // Domain and Location are intentionally omitted → DENY for non-admins
+      return createCatalogConditionalDecision(request.permission, { anyOf });
     }
 
     // Non-catalog permissions (scaffolder, kubernetes, search, notifications,
