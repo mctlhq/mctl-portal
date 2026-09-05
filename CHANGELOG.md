@@ -1,5 +1,18 @@
 # Changelog
 
+## [4.16.0](https://github.com/mctlhq/mctl-portal/compare/4.15.0...4.16.0) (2026-09-01)
+
+
+### Features
+
+* **agents:** issue-102-team-policy-any-member-can-delete-or-ref ([ce2ac7b](https://github.com/mctlhq/mctl-portal/commit/ce2ac7bdb3dae93a81d9238ac2c6b08f447d23b8))
+
+
+### Bug Fixes
+
+* **agents:** issue-102-team-policy-any-member-can-delete-or-ref ([88a6ba8](https://github.com/mctlhq/mctl-portal/commit/88a6ba8c32ed2dfcc90fe1fc65ca1eb14392b9c8))
+* **team-policy:** type the catalog anyOf array so tsc accepts the read-gated arm ([10e2553](https://github.com/mctlhq/mctl-portal/commit/10e25539b95c3ac237b196f27af14c75cb854163))
+
 ## [4.15.0](https://github.com/mctlhq/mctl-portal/compare/4.14.4...4.15.0) (2026-08-31)
 
 
