@@ -14,10 +14,23 @@ backend:
     img-src: ["'self'", 'data:', 'https://ui.mctl.ai']
   # mctl-api is not a Backstage backend, so it cannot mint service tokens of
   # its own. It authenticates with this shared static token, sent as a Bearer.
-  # Without an entry here the backend rejects it as "Illegal token" — which is
-  # what has kept custom domains unusable since the /domains* auth policy was
-  # tightened. Restricted to custom-domains, the only plugin needing it today;
-  # mctl-api's other calls still ride the plugins' own unauthenticated policies.
+  # Without an entry here the backend rejects it as "Illegal token".
+  # custom-domains-backend is now a thin gateway onto mctl-api's own domains
+  # registry (internal/domains + internal/api/handlers_domains.go in
+  # mctlhq/mctl-api) rather than a local store, so the traffic direction that
+  # matters day to day is this plugin calling OUT to mctl-api — see the
+  # customDomains.baseUrl/token block below (MCTL_API_URL/MCTL_API_TOKEN).
+  # This externalAccess entry is the reverse direction: it is what would let
+  # mctl-api (or a workflow acting as it) call INTO this plugin. Verified
+  # against mctl-gitops main at the time of this change: nothing in
+  # wft-add-custom-domain.yaml calls this plugin any more (mctl-gitops#1085
+  # repointed it at mctl-api's PATCH endpoint directly), so this tier now
+  # only matters for GET /domains; POST /domains/:id/activate, the route
+  # this tier originally existed for, always answers 410 regardless of
+  # caller. Left in place rather than removed so a stale caller degrades to
+  # a diagnosable 410/403 instead of the entry disappearing out from under it.
+  # Restricted to custom-domains, the only plugin needing it; mctl-api's
+  # other calls still ride the plugins' own unauthenticated policies.
   # Its tenant notification is deliberately absent: that one posts to
   # /api/plugin-tenant/..., but tenant-backend registers as 'tenant-management',
   # so the path 404s regardless of auth — a separate bug, long hidden because
@@ -66,6 +79,13 @@ argoWorkflows:
   baseUrl: ${ARGO_WORKFLOWS_URL}
   namespace: argo-workflows
   # token: ${ARGO_WORKFLOWS_TOKEN}  # optional, only if auth-mode=client
+
+customDomains:
+  # mctl-api's domains registry (internal/domains in mctlhq/mctl-api). This
+  # plugin proxies GET/POST /api/v1/domains and the per-domain verify/delete
+  # endpoints instead of owning its own table.
+  baseUrl: ${MCTL_API_URL}
+  token: ${MCTL_API_TOKEN}
 
 catalog:
   rules:

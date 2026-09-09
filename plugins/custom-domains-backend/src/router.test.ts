@@ -1,8 +1,11 @@
 import express from 'express';
 import { Server } from 'http';
 import { AddressInfo } from 'net';
+import * as fs from 'fs';
+import * as path from 'path';
 import type { Knex } from 'knex';
 import { authorizeForTeam, createRouter, isWorkflowCaller, resolveCallerId, RouterOptions } from './router';
+import { MctlApiError } from './mctlApiClient';
 
 // Mirrors getTenantMember's real query shape: db('tenant_members')
 // [.withSchema(...) on Postgres].where({ tenant_name, user_id }).first()
@@ -24,6 +27,22 @@ function fakeDb(memberships: Record<string, { role: string }>): Knex {
     };
     return builder;
   });
+  return db as unknown as Knex;
+}
+
+// Pins the express-promise-router contract: getTenantMember/isAdminUser
+// (authorizeForTeam) hit this db and are awaited outside any try/catch on
+// every route. Under plain express.Router, a rejection here (a dropped
+// Knex pool connection, a query timeout) hangs the request with no
+// response written and raises an unhandled rejection at the process
+// level — this fakeDb reproduces that failure so a test can assert the
+// router actually forwards it to a response instead.
+function rejectingDb(): Knex {
+  const db = jest.fn(() => ({
+    withSchema: jest.fn().mockReturnThis(),
+    where: jest.fn().mockReturnThis(),
+    first: jest.fn().mockRejectedValue(new Error('connection terminated unexpectedly')),
+  }));
   return db as unknown as Knex;
 }
 
@@ -122,7 +141,9 @@ describe('isWorkflowCaller', () => {
 });
 
 // Full-router tests: gates T1-T9 end to end (case-mismatch T10 is covered
-// directly above against authorizeForTeam).
+// directly above against authorizeForTeam). The data layer is now a
+// DomainsClient (mctl-api gateway) rather than a local CustomDomainStore,
+// injected the same way — a plain object of jest mocks via RouterOptions.
 describe('createRouter tenant ownership gating', () => {
   let server: Server | undefined;
 
@@ -164,23 +185,22 @@ describe('createRouter tenant ownership gating', () => {
     as: 'user' | 'service' | 'none';
     userId?: string;
     memberships?: Record<string, { role: string }>;
-    store?: Partial<Record<string, jest.Mock>>;
-  }): Promise<{ base: string; store: Record<string, jest.Mock> }> {
-    const store = {
+    domains?: Partial<Record<string, jest.Mock>>;
+    db?: Knex;
+  }): Promise<{ base: string; domains: Record<string, jest.Mock> }> {
+    const domains = {
       list: jest.fn().mockResolvedValue([]),
-      getByDomain: jest.fn().mockResolvedValue(undefined),
-      getById: jest.fn().mockResolvedValue(undefined),
-      create: jest.fn().mockResolvedValue(undefined),
-      updateStatus: jest.fn().mockResolvedValue(undefined),
-      delete: jest.fn().mockResolvedValue(undefined),
-      ...opts.store,
+      create: jest.fn().mockResolvedValue({ id: 'new-id', status: 'pending' }),
+      verify: jest.fn().mockResolvedValue({ verified: false, expected_record: 'x', expected_value: 'y' }),
+      remove: jest.fn().mockResolvedValue({ status: 'deleted' }),
+      ...opts.domains,
     };
     const options = {
       logger: noopLogger,
-      store,
+      domains,
       httpAuth: makeHttpAuth(opts.as),
       userInfo: makeUserInfo(opts.userId),
-      db: fakeDb(opts.memberships ?? {}),
+      db: opts.db ?? fakeDb(opts.memberships ?? {}),
       isPostgres: false,
     } as unknown as RouterOptions;
     const app = express();
@@ -189,7 +209,7 @@ describe('createRouter tenant ownership gating', () => {
       server = app.listen(0, () => {
         resolve({
           base: `http://127.0.0.1:${(server!.address() as AddressInfo).port}`,
-          store,
+          domains,
         });
       });
     });
@@ -204,36 +224,36 @@ describe('createRouter tenant ownership gating', () => {
     }
   });
 
-  // T3: anonymous call rejected before any DB call.
-  it('rejects an anonymous GET /domains with 401 before any store call', async () => {
-    const { base, store } = await startApp({ as: 'none' });
+  // T3: anonymous call rejected before any upstream call.
+  it('rejects an anonymous GET /domains with 401 before any upstream call', async () => {
+    const { base, domains } = await startApp({ as: 'none' });
     const res = await fetch(`${base}/domains?team=acme`);
     expect(res.status).toBe(401);
-    expect(store.list).not.toHaveBeenCalled();
+    expect(domains.list).not.toHaveBeenCalled();
   });
 
   // T1: member of team gets the unchanged response.
   it('allows a member of the team to list its domains (T1)', async () => {
-    const { base, store } = await startApp({
+    const { base, domains } = await startApp({
       as: 'user',
       userId: 'carol',
       memberships: { 'acme:carol': { role: 'viewer' } },
     });
     const res = await fetch(`${base}/domains?team=acme`);
     expect(res.status).toBe(200);
-    expect(store.list).toHaveBeenCalledWith('acme', undefined);
+    expect(domains.list).toHaveBeenCalledWith('acme', undefined);
   });
 
-  // T2: authenticated non-member is denied without a store call.
+  // T2: authenticated non-member is denied without an upstream call.
   it('denies a non-member GET /domains with 403 (T2)', async () => {
-    const { base, store } = await startApp({
+    const { base, domains } = await startApp({
       as: 'user',
       userId: 'bob',
       memberships: { 'other-co:bob': { role: 'viewer' } },
     });
     const res = await fetch(`${base}/domains?team=acme`);
     expect(res.status).toBe(403);
-    expect(store.list).not.toHaveBeenCalled();
+    expect(domains.list).not.toHaveBeenCalled();
   });
 
   // T4: admins-tenant owner succeeds without an acme membership row.
@@ -247,9 +267,9 @@ describe('createRouter tenant ownership gating', () => {
     expect(res.status).toBe(200);
   });
 
-  // T5: non-member POST is denied and nothing is created.
-  it('denies POST /domains from a non-member with 403 and no insert (T5)', async () => {
-    const { base, store } = await startApp({
+  // T5: non-member POST is denied and nothing is created upstream.
+  it('denies POST /domains from a non-member with 403 and no upstream create (T5)', async () => {
+    const { base, domains } = await startApp({
       as: 'user',
       userId: 'bob',
       memberships: {},
@@ -260,12 +280,13 @@ describe('createRouter tenant ownership gating', () => {
       body: JSON.stringify({ team: 'acme', service: 'web', domain: 'example.com' }),
     });
     expect(res.status).toBe(403);
-    expect(store.create).not.toHaveBeenCalled();
+    expect(domains.create).not.toHaveBeenCalled();
   });
 
-  // POST /domains sets created_by from the authenticated caller, not the body.
-  it('forces created_by to the authenticated caller regardless of the request body', async () => {
-    const { base, store } = await startApp({
+  // POST /domains forwards actor as the authenticated caller, not anything
+  // spoofable from the request body.
+  it('forces the create actor to the authenticated caller regardless of the request body', async () => {
+    const { base, domains } = await startApp({
       as: 'user',
       userId: 'carol',
       memberships: { 'acme:carol': { role: 'owner' } },
@@ -281,100 +302,305 @@ describe('createRouter tenant ownership gating', () => {
       }),
     });
     expect(res.status).toBe(201);
-    expect(store.create).toHaveBeenCalledWith(expect.objectContaining({ created_by: 'carol' }));
+    expect(domains.create).toHaveBeenCalledWith(
+      expect.objectContaining({ team: 'acme', service: 'web', domain: 'example.com', actor: 'carol' }),
+    );
   });
 
-  // T6: non-member verify is denied; no status update happens.
-  it('denies POST /domains/:id/verify from a non-member with 403 (T6)', async () => {
-    const { base, store } = await startApp({
-      as: 'user',
-      userId: 'bob',
-      memberships: { 'other-co:bob': { role: 'viewer' } },
-      store: {
-        getById: jest.fn().mockResolvedValue({
-          id: 'd1',
-          team: 'acme',
-          service: 'web',
-          domain: 'example.com',
-          auto_domain: 'acme-web.mctl.ai',
-        }),
-      },
-    });
-    const res = await fetch(`${base}/domains/d1/verify`, { method: 'POST' });
-    expect(res.status).toBe(403);
-    expect(store.updateStatus).not.toHaveBeenCalled();
-  });
-
-  // T7: own-tenant delete flow is unchanged.
-  it('allows a member to delete their own tenant domain (T7)', async () => {
-    const { base, store } = await startApp({
+  // A JSON body can hand `team` any shape, unlike a query param (which
+  // Express's parser already guarantees is a string or undefined). An
+  // array value for `team` would otherwise reach authorizeForTeam's Knex
+  // `.where({ tenant_name: team, ... })` unvalidated — reject it (and any
+  // non-string field) with 400 before authorizeForTeam or the upstream
+  // create ever run.
+  it('rejects a non-string team in the POST /domains body with 400, no upstream call', async () => {
+    const { base, domains } = await startApp({
       as: 'user',
       userId: 'carol',
       memberships: { 'acme:carol': { role: 'owner' } },
-      store: {
-        getById: jest.fn().mockResolvedValue({
-          id: 'd1',
-          team: 'acme',
-          service: 'web',
-          domain: 'example.com',
-        }),
-      },
     });
-    const res = await fetch(`${base}/domains/d1`, { method: 'DELETE' });
-    expect(res.status).toBe(200);
-    expect(store.delete).toHaveBeenCalledWith('d1');
+    const res = await fetch(`${base}/domains`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ team: ['acme', 'victim-team'], service: 'web', domain: 'example.com' }),
+    });
+    expect(res.status).toBe(400);
+    expect(domains.create).not.toHaveBeenCalled();
   });
 
-  // T8: existence check ordering preserved — 404 for a missing id.
-  it('returns 404 for DELETE of a nonexistent id for an authenticated caller (T8)', async () => {
-    const { base } = await startApp({ as: 'user', userId: 'carol', memberships: {} });
-    const res = await fetch(`${base}/domains/missing`, { method: 'DELETE' });
+  it('rejects a non-string service or domain in the POST /domains body with 400, no upstream call', async () => {
+    const { base, domains } = await startApp({
+      as: 'user',
+      userId: 'carol',
+      memberships: { 'acme:carol': { role: 'owner' } },
+    });
+    const res = await fetch(`${base}/domains`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ team: 'acme', service: { $ne: null }, domain: 42 }),
+    });
+    expect(res.status).toBe(400);
+    expect(domains.create).not.toHaveBeenCalled();
+  });
+
+  // T6: non-member verify is denied; no upstream verify call happens.
+  it('denies POST /domains/:id/verify from a non-member with 403 (T6)', async () => {
+    const { base, domains } = await startApp({
+      as: 'user',
+      userId: 'bob',
+      memberships: { 'other-co:bob': { role: 'viewer' } },
+    });
+    const res = await fetch(`${base}/domains/d1/verify?team=acme`, { method: 'POST' });
+    expect(res.status).toBe(403);
+    expect(domains.verify).not.toHaveBeenCalled();
+  });
+
+  // T7: own-tenant delete flow is unchanged, once the id genuinely appears
+  // in that team's own domain list (the ownership check added below).
+  it('allows a member to delete their own tenant domain (T7)', async () => {
+    const { base, domains } = await startApp({
+      as: 'user',
+      userId: 'carol',
+      memberships: { 'acme:carol': { role: 'owner' } },
+      domains: { list: jest.fn().mockResolvedValue([{ id: 'd1', team: 'acme' }]) },
+    });
+    const res = await fetch(`${base}/domains/d1?team=acme`, { method: 'DELETE' });
+    expect(res.status).toBe(200);
+    expect(domains.remove).toHaveBeenCalledWith('d1', 'acme');
+  });
+
+  // T8: a nonexistent id surfaces mctl-api's own 404 unchanged, once the
+  // ownership check itself has already been satisfied (the id is genuinely
+  // in the caller's team's list, but mctl-api rejects the delete anyway —
+  // e.g. a race where it was already removed).
+  it('returns 404 for DELETE of a nonexistent id, per mctl-api\'s own 404 (T8)', async () => {
+    const { base } = await startApp({
+      as: 'user',
+      userId: 'carol',
+      memberships: { 'acme:carol': { role: 'owner' } },
+      domains: {
+        list: jest.fn().mockResolvedValue([{ id: 'missing', team: 'acme' }]),
+        remove: jest.fn().mockRejectedValue(new MctlApiError(404, 'domain not found')),
+      },
+    });
+    const res = await fetch(`${base}/domains/missing?team=acme`, { method: 'DELETE' });
     expect(res.status).toBe(404);
   });
 
-  // T9: the workflow's service credential activates without any tenant_members row.
-  it('allows a service credential to activate with no tenant_members rows at all (T9)', async () => {
-    const { base, store } = await startApp({
-      as: 'service',
-      memberships: {},
-      store: {
-        getById: jest.fn().mockResolvedValue({
-          id: 'd1',
-          team: 'acme',
-          service: 'web',
-          domain: 'example.com',
-        }),
-      },
+  // Cross-tenant IDOR guard: a genuine member of the team they name must
+  // still be denied when the id in the URL belongs to a different team's
+  // domain. Before this check, authorizeForTeam only proved the caller
+  // belongs to the team they *named* — not that they may touch this
+  // specific id — and mctl-api's own ?team= check cannot be relied on to
+  // catch the mismatch, because this plugin's bearer token is an
+  // admin-tier service credential that clears mctl-api's per-team check
+  // entirely (see MctlApiDomainsClient's doc comment on `verify`/`remove`).
+  it('denies DELETE of an id that does not belong to the caller-supplied team, even for a genuine member of that team', async () => {
+    const { base, domains } = await startApp({
+      as: 'user',
+      userId: 'carol',
+      memberships: { 'acme:carol': { role: 'owner' } },
+      // carol really is a member of acme, but acme's own domain list does
+      // not contain 'team-b-domain' — it belongs to some other team.
+      domains: { list: jest.fn().mockResolvedValue([{ id: 'd1', team: 'acme' }]) },
     });
-    const res = await fetch(`${base}/domains/d1/activate`, { method: 'POST' });
-    expect(res.status).toBe(200);
-    expect(store.updateStatus).toHaveBeenCalledWith('d1', 'active');
+    const res = await fetch(`${base}/domains/team-b-domain?team=acme`, { method: 'DELETE' });
+    expect(res.status).toBe(404);
+    expect(domains.remove).not.toHaveBeenCalled();
+  });
+
+  it('denies verify of an id that does not belong to the caller-supplied team, even for a genuine member of that team', async () => {
+    const { base, domains } = await startApp({
+      as: 'user',
+      userId: 'carol',
+      memberships: { 'acme:carol': { role: 'owner' } },
+      domains: { list: jest.fn().mockResolvedValue([{ id: 'd1', team: 'acme' }]) },
+    });
+    const res = await fetch(`${base}/domains/team-b-domain/verify?team=acme`, { method: 'POST' });
+    expect(res.status).toBe(404);
+    expect(domains.verify).not.toHaveBeenCalled();
+  });
+
+  // Regression for the P1 the ownership check itself introduced: the
+  // domainBelongsToTeam call must be inside the try/catch, not above it, so
+  // a rejection from domains.list is mapped to a 502 by
+  // respondToDomainsError rather than left for the router to forward
+  // unhandled. This is belt-and-suspenders with the express-promise-router
+  // swap below (which guarantees a response even for an await NOT wrapped
+  // in a local try/catch) — the two protections are independent, and this
+  // test would still fail without the try/catch even under
+  // express-promise-router, because an unhandled rejection there reaches
+  // Express's generic error handler, not this route's own 502 JSON body.
+  it('returns 502 (not a hang/unhandled rejection) when the ownership check itself fails upstream on verify', async () => {
+    const { base, domains } = await startApp({
+      as: 'user',
+      userId: 'carol',
+      memberships: { 'acme:carol': { role: 'owner' } },
+      domains: { list: jest.fn().mockRejectedValue(new MctlApiError(502, 'mctl-api upstream error 500 at /api/v1/domains')) },
+    });
+    const res = await fetch(`${base}/domains/d1/verify?team=acme`, { method: 'POST' });
+    expect(res.status).toBe(502);
+    expect(domains.verify).not.toHaveBeenCalled();
+  });
+
+  it('returns 502 (not a hang/unhandled rejection) when the ownership check itself fails upstream on delete', async () => {
+    const { base, domains } = await startApp({
+      as: 'user',
+      userId: 'carol',
+      memberships: { 'acme:carol': { role: 'owner' } },
+      domains: { list: jest.fn().mockRejectedValue(new MctlApiError(502, 'mctl-api upstream error 500 at /api/v1/domains')) },
+    });
+    const res = await fetch(`${base}/domains/d1?team=acme`, { method: 'DELETE' });
+    expect(res.status).toBe(502);
+    expect(domains.remove).not.toHaveBeenCalled();
   });
 
   // Same workflow tier applies to GET /domains per the reviewed proposal
-  // decision (wft-add-custom-domain.yaml calls both routes).
+  // decision (wft-add-custom-domain.yaml historically called this route).
   it('allows a service credential to list domains without tenant membership', async () => {
     const { base } = await startApp({ as: 'service', memberships: {} });
     const res = await fetch(`${base}/domains?team=acme`);
     expect(res.status).toBe(200);
   });
 
-  it('denies a non-member user activating another tenant domain', async () => {
-    const { base, store } = await startApp({
+  it('denies a non-member user deleting another tenant domain even with an explicit ?team=', async () => {
+    const { base, domains } = await startApp({
       as: 'user',
       userId: 'bob',
       memberships: { 'other-co:bob': { role: 'viewer' } },
-      store: {
-        getById: jest.fn().mockResolvedValue({
-          id: 'd1',
-          team: 'acme',
-          service: 'web',
-          domain: 'example.com',
-        }),
+    });
+    const res = await fetch(`${base}/domains/d1?team=acme`, { method: 'DELETE' });
+    expect(res.status).toBe(403);
+    expect(domains.remove).not.toHaveBeenCalled();
+  });
+
+  it('rejects verify/delete missing the now-required team query param with 400, no upstream call', async () => {
+    const { base, domains } = await startApp({
+      as: 'user',
+      userId: 'carol',
+      memberships: { 'acme:carol': { role: 'owner' } },
+    });
+    const verifyRes = await fetch(`${base}/domains/d1/verify`, { method: 'POST' });
+    expect(verifyRes.status).toBe(400);
+    const deleteRes = await fetch(`${base}/domains/d1`, { method: 'DELETE' });
+    expect(deleteRes.status).toBe(400);
+    expect(domains.verify).not.toHaveBeenCalled();
+    expect(domains.remove).not.toHaveBeenCalled();
+  });
+
+  // T5 (upstream failure gating, distinct from the T5 gating test above):
+  // an upstream 5xx/network failure on GET /domains must surface as a
+  // readable 502, never a silent 200 with an empty array.
+  it('returns 502 (not 200 with an empty array) when mctl-api fails on GET /domains', async () => {
+    const { base } = await startApp({
+      as: 'user',
+      userId: 'carol',
+      memberships: { 'acme:carol': { role: 'owner' } },
+      domains: { list: jest.fn().mockRejectedValue(new MctlApiError(502, 'mctl-api upstream error 500 at /api/v1/domains')) },
+    });
+    const res = await fetch(`${base}/domains?team=acme`);
+    expect(res.status).toBe(502);
+    const body = await res.json();
+    expect(body.error).toContain('mctl-api');
+  });
+
+  it('returns 502 when the upstream call throws a plain (non-MctlApiError) failure', async () => {
+    const { base } = await startApp({
+      as: 'user',
+      userId: 'carol',
+      memberships: { 'acme:carol': { role: 'owner' } },
+      domains: { list: jest.fn().mockRejectedValue(new Error('ECONNREFUSED')) },
+    });
+    const res = await fetch(`${base}/domains?team=acme`);
+    expect(res.status).toBe(502);
+  });
+
+  // T6: a 409 from mctl-api on POST /domains reaches the caller as 409 with
+  // mctl-api's own message, not collapsed into a generic 500.
+  it('surfaces an upstream 409 on POST /domains as 409 with mctl-api\'s message', async () => {
+    const { base } = await startApp({
+      as: 'user',
+      userId: 'carol',
+      memberships: { 'acme:carol': { role: 'owner' } },
+      domains: {
+        create: jest.fn().mockRejectedValue(new MctlApiError(409, 'mctl-api 409 at /api/v1/domains: domain already registered')),
       },
     });
-    const res = await fetch(`${base}/domains/d1/activate`, { method: 'POST' });
-    expect(res.status).toBe(403);
-    expect(store.updateStatus).not.toHaveBeenCalled();
+    const res = await fetch(`${base}/domains`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ team: 'acme', service: 'web', domain: 'example.com' }),
+    });
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body.error).toContain('domain already registered');
+  });
+
+  // T7 (activate retirement): the route stays registered but always answers
+  // 410 and never reaches the domains client, for either caller tier.
+  it.each(['user', 'service'] as const)(
+    'POST /domains/:id/activate is retired (410, no client call) for a %s caller',
+    async as => {
+      const { base, domains } = await startApp({
+        as,
+        userId: as === 'user' ? 'carol' : undefined,
+        memberships: as === 'user' ? { 'acme:carol': { role: 'owner' } } : {},
+      });
+      const res = await fetch(`${base}/domains/d1/activate`, { method: 'POST' });
+      expect(res.status).toBe(410);
+      expect(domains.list).not.toHaveBeenCalled();
+      expect(domains.create).not.toHaveBeenCalled();
+      expect(domains.verify).not.toHaveBeenCalled();
+      expect(domains.remove).not.toHaveBeenCalled();
+    },
+  );
+
+  // Pins the express-promise-router contract itself, not just the
+  // domainBelongsToTeam try/catch above. authorizeForTeam and
+  // resolveCallerId hit this db and are awaited outside any try/catch on
+  // every route — under plain express.Router (Express 4), a rejection
+  // there hangs the request with no response and raises an unhandled
+  // rejection at the process level, rather than reaching Express's default
+  // error handler. This test fails by timing out if router.ts's
+  // `Router_()` (express-promise-router) is reverted to plain
+  // `Router()`, which is exactly the regression claude-review flagged:
+  // every other fix in this PR shipped with a test that fails for the
+  // right reason, and this swap did not until now.
+  it.each([
+    { label: 'GET /domains', method: 'GET' as const, path: '/domains?team=acme' },
+    { label: 'DELETE /domains/:id', method: 'DELETE' as const, path: '/domains/d1?team=acme' },
+  ])('answers 500 rather than hanging when the membership lookup itself rejects ($label)', async ({ method, path }) => {
+    const { base, domains } = await startApp({
+      as: 'user',
+      userId: 'carol',
+      db: rejectingDb(),
+    });
+    const res = await fetch(`${base}${path}`, { method });
+    expect(res.status).toBe(500);
+    expect(domains.list).not.toHaveBeenCalled();
+    expect(domains.remove).not.toHaveBeenCalled();
+  });
+});
+
+// T8 (guard): pins that the store-backed implementation (Node's dns module,
+// the custom_domains table) is fully gone from this plugin's source, not
+// just from the files this change happened to touch.
+describe('gateway migration guard (T8)', () => {
+  const srcDir = path.join(__dirname);
+
+  function readAllSources(): string {
+    return fs
+      .readdirSync(srcDir)
+      .filter(f => f.endsWith('.ts') && !f.endsWith('.test.ts'))
+      .map(f => fs.readFileSync(path.join(srcDir, f), 'utf8'))
+      .join('\n');
+  }
+
+  it('never imports Node\'s dns module', () => {
+    expect(readAllSources()).not.toMatch(/from ['"]dns['"]/);
+  });
+
+  it('never references the retired custom_domains table', () => {
+    expect(readAllSources()).not.toContain('custom_domains');
   });
 });

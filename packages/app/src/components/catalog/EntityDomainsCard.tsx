@@ -52,11 +52,14 @@ interface CustomDomain {
   service: string;
   domain: string;
   auto_domain: string;
-  status: 'pending' | 'verified' | 'active' | 'failed';
+  status: string;
   verified_at: string | null;
   created_by: string;
   created_at: string;
   updated_at: string;
+  /** TXT record name/value the tenant must create. Present while pending/failed. */
+  challenge_record_name?: string;
+  challenge_record_value?: string;
 }
 
 const statusConfig: Record<
@@ -83,6 +86,18 @@ const statusConfig: Record<
     color: 'secondary',
     icon: <ErrorIcon fontSize="small" />,
   },
+};
+
+// Falls back to a neutral chip for any status mctl-api's registry reports
+// that this card does not recognize, instead of silently mislabeling it
+// "Pending DNS" (statusConfig[d.status] ?? statusConfig.pending, the
+// previous behavior). mctl-api owns the status vocabulary now; a value
+// this card has never seen should read as "unknown", not as a specific
+// wrong one.
+const unknownStatusConfig = {
+  label: 'Unknown',
+  color: 'default' as const,
+  icon: <HourglassEmptyIcon fontSize="small" />,
 };
 
 const useStyles = makeStyles(theme => ({
@@ -139,6 +154,12 @@ export function EntityDomainsCard() {
   const [adding, setAdding] = useState(false);
   const [verifying, setVerifying] = useState<string | null>(null);
   const [deleting, setDeleting] = useState<string | null>(null);
+  const [verifyError, setVerifyError] = useState<string | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [justAdded, setJustAdded] = useState<{
+    challenge_record_name?: string;
+    challenge_record_value?: string;
+  } | null>(null);
 
   const team = entity.metadata.annotations?.[TEAM_ANNOTATION] ?? '';
   const service = entity.metadata.name;
@@ -186,6 +207,11 @@ export function EntityDomainsCard() {
         setAddError(body.error ?? `HTTP ${resp.status}`);
         return;
       }
+      const created = (await resp.json()) as CustomDomain;
+      setJustAdded({
+        challenge_record_name: created.challenge_record_name,
+        challenge_record_value: created.challenge_record_value,
+      });
       setAddOpen(false);
       setNewDomain('');
       await fetchDomains();
@@ -198,14 +224,21 @@ export function EntityDomainsCard() {
 
   const handleVerify = async (id: string) => {
     setVerifying(id);
+    setVerifyError(null);
     try {
       const baseUrl = await discoveryApi.getBaseUrl('custom-domains');
-      await fetchApi.fetch(`${baseUrl}/domains/${id}/verify`, {
-        method: 'POST',
-      });
+      const resp = await fetchApi.fetch(
+        `${baseUrl}/domains/${encodeURIComponent(id)}/verify?team=${encodeURIComponent(team)}`,
+        { method: 'POST' },
+      );
+      if (!resp.ok) {
+        const body = (await resp.json().catch(() => ({}))) as any;
+        setVerifyError(body.error ?? `HTTP ${resp.status}`);
+        return;
+      }
       await fetchDomains();
-    } catch {
-      // Silently fail — user can retry
+    } catch (e: any) {
+      setVerifyError(e.message ?? 'Failed to verify domain');
     } finally {
       setVerifying(null);
     }
@@ -214,14 +247,21 @@ export function EntityDomainsCard() {
   const handleDelete = async (id: string) => {
     if (!window.confirm('Remove this custom domain?')) return;
     setDeleting(id);
+    setDeleteError(null);
     try {
       const baseUrl = await discoveryApi.getBaseUrl('custom-domains');
-      await fetchApi.fetch(`${baseUrl}/domains/${id}`, {
-        method: 'DELETE',
-      });
+      const resp = await fetchApi.fetch(
+        `${baseUrl}/domains/${encodeURIComponent(id)}?team=${encodeURIComponent(team)}`,
+        { method: 'DELETE' },
+      );
+      if (!resp.ok) {
+        const body = (await resp.json().catch(() => ({}))) as any;
+        setDeleteError(body.error ?? `HTTP ${resp.status}`);
+        return;
+      }
       await fetchDomains();
-    } catch {
-      // Silently fail
+    } catch (e: any) {
+      setDeleteError(e.message ?? 'Failed to delete domain');
     } finally {
       setDeleting(null);
     }
@@ -252,7 +292,10 @@ export function EntityDomainsCard() {
                 size="small"
                 variant="outlined"
                 startIcon={<AddIcon />}
-                onClick={() => setAddOpen(true)}
+                onClick={() => {
+                  setJustAdded(null);
+                  setAddOpen(true);
+                }}
               >
                 Add Domain
               </Button>
@@ -293,6 +336,41 @@ export function EntityDomainsCard() {
               {error}
             </Typography>
           )}
+          {verifyError && (
+            <Typography variant="body2" color="error" style={{ marginTop: 8 }}>
+              Verify failed: {verifyError}
+            </Typography>
+          )}
+          {deleteError && (
+            <Typography variant="body2" color="error" style={{ marginTop: 8 }}>
+              Delete failed: {deleteError}
+            </Typography>
+          )}
+
+          {/* TXT challenge from the domain just registered, shown once the
+              Add Domain dialog has closed since it is also visible per-row
+              in the Verification column below for every pending domain. */}
+          {justAdded?.challenge_record_name && justAdded?.challenge_record_value && (
+            <Box mt={2}>
+              <Typography variant="subtitle2" gutterBottom>
+                Verify ownership
+              </Typography>
+              <Typography variant="body2">
+                Create a <strong>TXT</strong> record at your DNS provider (or the CNAME shown
+                above works too):
+              </Typography>
+              <div className={classes.cnameHint}>
+                {justAdded.challenge_record_name} TXT {justAdded.challenge_record_value}
+                <IconButton
+                  size="small"
+                  onClick={() => handleCopy(justAdded.challenge_record_value as string)}
+                  style={{ marginLeft: 4 }}
+                >
+                  <FileCopyIcon style={{ fontSize: 14 }} />
+                </IconButton>
+              </div>
+            </Box>
+          )}
 
           {/* Custom domains table */}
           {!loading && domains.length > 0 && (
@@ -305,13 +383,22 @@ export function EntityDomainsCard() {
                   <TableRow>
                     <TableCell>Domain</TableCell>
                     <TableCell>Status</TableCell>
+                    <TableCell>Verification</TableCell>
                     <TableCell>Created</TableCell>
                     <TableCell align="right">Actions</TableCell>
                   </TableRow>
                 </TableHead>
                 <TableBody>
                   {domains.map(d => {
-                    const sc = statusConfig[d.status] ?? statusConfig.pending;
+                    const sc = statusConfig[d.status] ?? unknownStatusConfig;
+                    // Driven by the presence of the challenge fields rather
+                    // than an allowlist of statuses: mctl-api documents them
+                    // as present for both 'pending' and 'failed' (a failed
+                    // DNS check does not reset the row like the old backend
+                    // did — it stays 'failed' and still needs a retry path),
+                    // and this degrades the same way for a status this card
+                    // has never seen, instead of silently hiding the record.
+                    const canVerify = Boolean(d.challenge_record_name && d.challenge_record_value);
                     return (
                       <TableRow key={d.id}>
                         <TableCell className={classes.domainCell}>
@@ -335,12 +422,33 @@ export function EntityDomainsCard() {
                           />
                         </TableCell>
                         <TableCell>
+                          {canVerify ? (
+                            <Box display="flex" alignItems="center" style={{ gap: 4 }}>
+                              <Typography variant="caption" className={classes.domainCell}>
+                                TXT {d.challenge_record_name}
+                              </Typography>
+                              <Tooltip title="Copy TXT value">
+                                <IconButton
+                                  size="small"
+                                  onClick={() => handleCopy(d.challenge_record_value as string)}
+                                >
+                                  <FileCopyIcon style={{ fontSize: 14 }} />
+                                </IconButton>
+                              </Tooltip>
+                            </Box>
+                          ) : (
+                            <Typography variant="caption" color="textSecondary">
+                              —
+                            </Typography>
+                          )}
+                        </TableCell>
+                        <TableCell>
                           <Typography variant="caption">
                             {new Date(d.created_at).toLocaleDateString()}
                           </Typography>
                         </TableCell>
                         <TableCell align="right">
-                          {d.status === 'pending' && (
+                          {canVerify && (
                             <Tooltip title="Verify DNS">
                               <span>
                                 <IconButton

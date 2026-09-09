@@ -1,17 +1,13 @@
-import { Router, json, Request, Response } from 'express';
+import { json, Request, Response, Router } from 'express';
+import Router_ from 'express-promise-router';
 import { HttpAuthService, LoggerService, UserInfoService } from '@backstage/backend-plugin-api';
 import type { Knex } from 'knex';
-import { CustomDomainStore } from './store';
+import { DomainsClient, MctlApiError } from './mctlApiClient';
 import { getTenantMember, isAdminUser } from '../../tenant-backend/src/membershipLookup';
-import * as crypto from 'crypto';
-import { resolve as dnsResolve } from 'dns';
-import { promisify } from 'util';
-
-const resolveCname = promisify(dnsResolve);
 
 export interface RouterOptions {
   logger: LoggerService;
-  store: CustomDomainStore;
+  domains: DomainsClient;
   httpAuth: HttpAuthService;
   userInfo: UserInfoService;
   db: Knex;
@@ -74,11 +70,19 @@ export async function authorizeForTeam(
 
 /**
  * Tier accepted in addition to tenant membership/admin for the Argo
- * ingress-update workflow (wft-add-custom-domain.yaml), which calls
- * GET /domains and POST /domains/:id/activate without a Backstage user
- * session. The workflow authenticates with the Backstage external-access
+ * ingress-update workflow (wft-add-custom-domain.yaml), which historically
+ * called GET /domains and POST /domains/:id/activate without a Backstage
+ * user session. The workflow authenticates with the Backstage external-access
  * static token (backend.auth.externalAccess, subject mctl-api, restricted
  * to the custom-domains plugin).
+ *
+ * Verified against mctl-gitops main at the time of this change: nothing in
+ * wft-add-custom-domain.yaml calls this plugin any more (mctl-gitops#1085
+ * repointed it at mctl-api directly), so this tier now only matters for
+ * GET /domains — /activate itself always answers 410 regardless of caller
+ * tier (see below). Left in place rather than removed with the rest of the
+ * cleanup so a change on either side degrades to a diagnosable 410/403
+ * instead of a routing 404.
  *
  * The subject allowlist below is load-bearing: accessRestrictions only
  * scope the *external* static token, so a bare `allow: ['service']` check
@@ -102,44 +106,56 @@ export async function isWorkflowCaller(req: Request, httpAuth: HttpAuthService):
   }
 }
 
-// Validate domain is a proper FQDN and not a platform domain
-function isValidCustomDomain(domain: string): boolean {
-  const fqdnRegex = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/i;
-  if (!fqdnRegex.test(domain)) return false;
-  // Reject platform domains — those are auto-generated
-  if (domain.endsWith('.mctl.ai') || domain.endsWith('.mctl.me')) return false;
-  return true;
+/**
+ * Maps an error from the DomainsClient onto an HTTP response. A MctlApiError
+ * already carries the status the caller should see (upstream status for a
+ * 4xx, 502 for anything else — see MctlApiError's own doc comment); any
+ * other thrown value is an unexpected local failure and also becomes a 502,
+ * never a 200, so an upstream outage or a bug here can't silently look like
+ * an empty-but-successful response.
+ */
+function respondToDomainsError(res: Response, logger: LoggerService, context: string, err: unknown): void {
+  if (err instanceof MctlApiError) {
+    logger.error(`${context}: ${err.message}`);
+    res.status(err.status).json({ error: err.message });
+    return;
+  }
+  logger.error(`${context}: ${err}`);
+  res.status(502).json({ error: 'Upstream domains registry unavailable' });
 }
 
-// DNS verification: check if domain has CNAME pointing to expected target
-async function verifyDns(
-  domain: string,
-  expectedTarget: string,
-): Promise<{ ok: boolean; actual: string | null; error?: string }> {
-  try {
-    const addresses = await resolveCname(domain);
-    if (!addresses || addresses.length === 0) {
-      return { ok: false, actual: null, error: 'No DNS records found' };
-    }
-    // CNAME should resolve to the expected auto-domain
-    const normalized = addresses.map((a: string) => a.replace(/\.$/, '').toLowerCase());
-    const target = expectedTarget.toLowerCase();
-    const match = normalized.some((a: string) => a === target || a.endsWith('.' + target));
-    return {
-      ok: match,
-      actual: normalized.join(', '),
-      error: match ? undefined : `CNAME points to ${normalized.join(', ')}, expected ${target}`,
-    };
-  } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : String(err);
-    return { ok: false, actual: null, error: `DNS lookup failed: ${message}` };
-  }
+/**
+ * Confirms `id` actually belongs to `team` before verify/delete are allowed
+ * to proceed. This plugin's bearer token is a platform-wide mctl-api service
+ * credential that clears mctl-api's own admin bypass regardless of team (see
+ * MctlApiDomainsClient's doc comment), so mctl-api's `?team=` check on the
+ * verify/delete routes cannot be relied on to reject a mismatched id — it
+ * never even runs for this caller. Without this check, authorizeForTeam only
+ * proves the caller belongs to the team *they named*, not that they may
+ * touch the specific `id` in the URL: a member of team-a could otherwise
+ * verify or delete team-b's domain by passing `?team=team-a` alongside
+ * team-b's id. Listing the caller's own team's domains and requiring the id
+ * to appear in that list restores the ownership check store.getById used to
+ * provide before this plugin lost its local table.
+ */
+async function domainBelongsToTeam(domains: DomainsClient, id: string, team: string): Promise<boolean> {
+  const rows = await domains.list(team);
+  return rows.some(d => d.id === id);
 }
 
 export function createRouter(options: RouterOptions): Router {
-  const { logger, store, httpAuth, userInfo, db, isPostgres } = options;
-  const router = Router();
+  const { logger, domains, httpAuth, userInfo, db, isPostgres } = options;
+  // express-promise-router (already a dependency, used the same way by
+  // github-app-connect-backend and oidc-provider-backend) so an async
+  // handler's rejection is forwarded to Express's error pipeline instead of
+  // hanging the request and becoming an unhandled rejection at the process
+  // level. Plain express.Router does not do this on Express 4 — every
+  // `await ... outside a try` in this file (authorizeForTeam,
+  // resolveCallerId, isWorkflowCaller, domainBelongsToTeam) relied on the
+  // caller wrapping it correctly instead of the router guaranteeing it.
+  const router: Router = Router_();
   router.use(json());
+
   // GET /domains?team=X&service=Y (service is optional)
   router.get('/domains', async (req: Request, res: Response) => {
     const { team, service } = req.query;
@@ -160,17 +176,30 @@ export function createRouter(options: RouterOptions): Router {
       }
     }
     try {
-      const domains = await store.list(team, service as string | undefined);
-      res.json({ domains });
+      const list = await domains.list(team, service as string | undefined);
+      res.json({ domains: list });
     } catch (err) {
-      logger.error(`Failed to list domains: ${err}`);
-      res.status(500).json({ error: 'Internal error' });
+      respondToDomainsError(res, logger, `Failed to list domains for team '${team}'`, err);
     }
   });
 
-  // POST /domains — register a new custom domain
+  // POST /domains — register a new custom domain via mctl-api's registry
   router.post('/domains', async (req: Request, res: Response) => {
     const { team, service, domain } = req.body;
+    // Unlike the query-param routes above (where Express's query parser
+    // already guarantees a string or undefined), a JSON body can hand any
+    // of these an array, number, or object. Left unvalidated, an array
+    // value for `team` reaches authorizeForTeam's Knex `.where({ tenant_name:
+    // team, ... })` — an object/array value there does not behave like the
+    // plain-string equality every other check in this file assumes, so a
+    // caller who is a genuine member of one team could shape a request that
+    // is authorized against a team they never actually named. Reject
+    // anything that is not a plain string before any of that runs, the same
+    // way GET/DELETE already reject a non-string ?team=.
+    if (typeof team !== 'string' || typeof service !== 'string' || typeof domain !== 'string') {
+      res.status(400).json({ error: 'team, service, and domain must be strings' });
+      return;
+    }
     if (!team || !service || !domain) {
       res.status(400).json({ error: 'Missing required fields: team, service, domain' });
       return;
@@ -185,141 +214,98 @@ export function createRouter(options: RouterOptions): Router {
       res.status(auth.status).json({ error: auth.error });
       return;
     }
-    if (!isValidCustomDomain(domain)) {
-      res.status(400).json({
-        error: 'Invalid domain. Must be a valid FQDN and not a *.mctl.ai or *.mctl.me domain.',
-      });
-      return;
-    }
-
-    // Check uniqueness
-    const existing = await store.getByDomain(domain);
-    if (existing) {
-      res.status(409).json({
-        error: `Domain ${domain} is already registered for ${existing.team}/${existing.service}`,
-      });
-      return;
-    }
-
-    const id = crypto.randomUUID();
-    const autoDomain = `${team}-${service}.mctl.ai`;
-
+    // Domain syntax validation, platform-domain rejection, and uniqueness
+    // are no longer checked here — mctl-api's AddDomain now owns all three
+    // (validateHostname, isPlatformDomain, the store's conflict check).
     try {
-      await store.create({
-        id,
-        team,
-        service,
-        domain,
-        auto_domain: autoDomain,
-        status: 'pending',
-        verified_at: null,
-        // Forced to the authenticated caller rather than trusting the
-        // request body, closing a related IDOR-adjacent spoofing gap
-        // flagged during proposal review.
-        created_by: caller.userId,
-      });
-      logger.info(`Custom domain registered: ${domain} → ${autoDomain}`);
-      res.status(201).json({
-        id,
-        domain,
-        auto_domain: autoDomain,
-        status: 'pending',
-        cname_target: autoDomain,
-        instructions: `Create a CNAME record: ${domain} → ${autoDomain}`,
-      });
+      const created = await domains.create({ team, service, domain, actor: caller.userId });
+      logger.info(
+        `Custom domain registered via mctl-api: ${domain} (team=${team}, service=${service}, actor=${caller.userId})`,
+      );
+      res.status(201).json(created);
     } catch (err) {
-      logger.error(`Failed to register domain: ${err}`);
-      res.status(500).json({ error: 'Failed to register domain' });
+      respondToDomainsError(res, logger, `Failed to register domain '${domain}'`, err);
     }
   });
 
-  // POST /domains/:id/verify — check DNS and update status
+  // POST /domains/:id/verify?team=X — trigger TXT/CNAME verification
   router.post('/domains/:id/verify', async (req: Request, res: Response) => {
     const { id } = req.params;
+    const { team } = req.query;
+    if (!team || typeof team !== 'string') {
+      res.status(400).json({ error: 'Missing required param: team' });
+      return;
+    }
     const caller = await resolveCallerId(req, httpAuth, userInfo);
     if ('status' in caller) {
       res.status(caller.status).json({ error: caller.error });
       return;
     }
-    const entry = await store.getById(id);
-    if (!entry) {
-      res.status(404).json({ error: 'Domain not found' });
-      return;
-    }
-    const auth = await authorizeForTeam(db, isPostgres, caller.userId, entry.team);
+    const auth = await authorizeForTeam(db, isPostgres, caller.userId, team);
     if (!auth.ok) {
       res.status(auth.status).json({ error: auth.error });
       return;
     }
-
-    const result = await verifyDns(entry.domain, entry.auto_domain);
-    if (result.ok) {
-      await store.updateStatus(id, 'verified', new Date().toISOString());
-      logger.info(`Domain verified: ${entry.domain} → ${entry.auto_domain}`);
-      res.json({ status: 'verified', domain: entry.domain, cname: result.actual });
-    } else {
-      await store.updateStatus(id, 'pending');
-      res.json({
-        status: 'pending',
-        domain: entry.domain,
-        error: result.error,
-        expected_cname: entry.auto_domain,
-        actual_cname: result.actual,
-      });
+    try {
+      if (!(await domainBelongsToTeam(domains, id, team))) {
+        res.status(404).json({ error: 'domain not found' });
+        return;
+      }
+      const result = await domains.verify(id, team);
+      res.json(result);
+    } catch (err) {
+      respondToDomainsError(res, logger, `Failed to verify domain '${id}'`, err);
     }
   });
 
-  // POST /domains/:id/activate — mark as active (called by workflow after ingress update)
-  router.post('/domains/:id/activate', async (req: Request, res: Response) => {
-    const { id } = req.params;
-    const isWorkflow = await isWorkflowCaller(req, httpAuth);
-    let callerId: string | undefined;
-    if (!isWorkflow) {
-      const caller = await resolveCallerId(req, httpAuth, userInfo);
-      if ('status' in caller) {
-        res.status(caller.status).json({ error: caller.error });
-        return;
-      }
-      callerId = caller.userId;
-    }
-    const entry = await store.getById(id);
-    if (!entry) {
-      res.status(404).json({ error: 'Domain not found' });
-      return;
-    }
-    if (!isWorkflow) {
-      const auth = await authorizeForTeam(db, isPostgres, callerId as string, entry.team);
-      if (!auth.ok) {
-        res.status(auth.status).json({ error: auth.error });
-        return;
-      }
-    }
-    await store.updateStatus(id, 'active');
-    logger.info(`Domain activated: ${entry.domain}`);
-    res.json({ status: 'active', domain: entry.domain });
+  // POST /domains/:id/activate — retired. mctl-api now activates a domain
+  // itself once its own remove/add-custom-domain workflow finishes updating
+  // ingress and TLS (PATCH /api/v1/domains/{id}, restricted to its service
+  // principal); this plugin has no store to flip a status on any more.
+  // Verified (not assumed) against mctl-gitops main at the time of this
+  // change: platform-gitops/argo-workflows/cluster-templates/wft-add-custom-domain.yaml
+  // no longer references this plugin or a Backstage `/activate` call
+  // anywhere — mctl-gitops#1085 repointed it at mctl-api's PATCH endpoint
+  // directly. The route stays registered (rather than 404ing, which would
+  // look like a routing bug) but calls no client method and requires no
+  // auth tier — it has nothing left to authorize.
+  router.post('/domains/:id/activate', (_req: Request, res: Response) => {
+    res.status(410).json({
+      error:
+        'This route is retired: mctl-api is now the system of record for custom domains and ' +
+        'owns activation directly. See mctlhq/mctl-api internal/api/handlers_domains.go (UpdateDomainStatus).',
+    });
   });
 
-  // DELETE /domains/:id — remove a custom domain
+  // DELETE /domains/:id?team=X — remove a custom domain
   router.delete('/domains/:id', async (req: Request, res: Response) => {
     const { id } = req.params;
+    const { team } = req.query;
+    if (!team || typeof team !== 'string') {
+      res.status(400).json({ error: 'Missing required param: team' });
+      return;
+    }
     const caller = await resolveCallerId(req, httpAuth, userInfo);
     if ('status' in caller) {
       res.status(caller.status).json({ error: caller.error });
       return;
     }
-    const entry = await store.getById(id);
-    if (!entry) {
-      res.status(404).json({ error: 'Domain not found' });
-      return;
-    }
-    const auth = await authorizeForTeam(db, isPostgres, caller.userId, entry.team);
+    const auth = await authorizeForTeam(db, isPostgres, caller.userId, team);
     if (!auth.ok) {
       res.status(auth.status).json({ error: auth.error });
       return;
     }
-    await store.delete(id);
-    logger.info(`Domain deleted: ${entry.domain}`);
-    res.json({ deleted: true, domain: entry.domain });
+    try {
+      if (!(await domainBelongsToTeam(domains, id, team))) {
+        res.status(404).json({ error: 'domain not found' });
+        return;
+      }
+      const result = await domains.remove(id, team);
+      logger.info(`Domain deleted via mctl-api: ${id} (team=${team}, actor=${caller.userId})`);
+      res.json(result);
+    } catch (err) {
+      respondToDomainsError(res, logger, `Failed to delete domain '${id}'`, err);
+    }
   });
 
   // GET /health

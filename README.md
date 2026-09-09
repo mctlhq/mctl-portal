@@ -94,7 +94,7 @@ The platform ships 8 custom backend plugins that extend Backstage with mctl-spec
 | `vault-secrets-backend` | Secure credential delivery from HashiCorp Vault to authorized users |
 | `resource-usage-backend` | Kubernetes namespace quota monitoring and live resource metrics display |
 | `permission-backend-module-team-policy` | Team-based catalog entity filtering via RBAC policies |
-| `custom-domains-backend` | Custom domain route mapping and management for deployed services |
+| `custom-domains-backend` | Thin gateway to mctl-api's custom-domains registry (TXT-challenge verification, ingress activation) |
 
 Core Backstage plugins (catalog, scaffolder, techdocs, kubernetes, org, search, notifications,
 signals, permission, user-settings, catalog-graph, api-docs, proxy, app-backend, and others)
