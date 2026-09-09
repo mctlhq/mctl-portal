@@ -302,29 +302,70 @@ describe('createRouter tenant ownership gating', () => {
     expect(domains.verify).not.toHaveBeenCalled();
   });
 
-  // T7: own-tenant delete flow is unchanged.
+  // T7: own-tenant delete flow is unchanged, once the id genuinely appears
+  // in that team's own domain list (the ownership check added below).
   it('allows a member to delete their own tenant domain (T7)', async () => {
     const { base, domains } = await startApp({
       as: 'user',
       userId: 'carol',
       memberships: { 'acme:carol': { role: 'owner' } },
+      domains: { list: jest.fn().mockResolvedValue([{ id: 'd1', team: 'acme' }]) },
     });
     const res = await fetch(`${base}/domains/d1?team=acme`, { method: 'DELETE' });
     expect(res.status).toBe(200);
     expect(domains.remove).toHaveBeenCalledWith('d1', 'acme');
   });
 
-  // T8: a nonexistent id surfaces mctl-api's 404 unchanged (no local
-  // existence check to preserve now that the plugin has no store).
+  // T8: a nonexistent id surfaces mctl-api's own 404 unchanged, once the
+  // ownership check itself has already been satisfied (the id is genuinely
+  // in the caller's team's list, but mctl-api rejects the delete anyway —
+  // e.g. a race where it was already removed).
   it('returns 404 for DELETE of a nonexistent id, per mctl-api\'s own 404 (T8)', async () => {
     const { base } = await startApp({
       as: 'user',
       userId: 'carol',
       memberships: { 'acme:carol': { role: 'owner' } },
-      domains: { remove: jest.fn().mockRejectedValue(new MctlApiError(404, 'domain not found')) },
+      domains: {
+        list: jest.fn().mockResolvedValue([{ id: 'missing', team: 'acme' }]),
+        remove: jest.fn().mockRejectedValue(new MctlApiError(404, 'domain not found')),
+      },
     });
     const res = await fetch(`${base}/domains/missing?team=acme`, { method: 'DELETE' });
     expect(res.status).toBe(404);
+  });
+
+  // Cross-tenant IDOR guard: a genuine member of the team they name must
+  // still be denied when the id in the URL belongs to a different team's
+  // domain. Before this check, authorizeForTeam only proved the caller
+  // belongs to the team they *named* — not that they may touch this
+  // specific id — and mctl-api's own ?team= check cannot be relied on to
+  // catch the mismatch, because this plugin's bearer token is an
+  // admin-tier service credential that clears mctl-api's per-team check
+  // entirely (see MctlApiDomainsClient's doc comment on `verify`/`remove`).
+  it('denies DELETE of an id that does not belong to the caller-supplied team, even for a genuine member of that team', async () => {
+    const { base, domains } = await startApp({
+      as: 'user',
+      userId: 'carol',
+      memberships: { 'acme:carol': { role: 'owner' } },
+      // carol really is a member of acme, but acme's own domain list does
+      // not contain 'team-b-domain' — it belongs to some other team.
+      domains: { list: jest.fn().mockResolvedValue([{ id: 'd1', team: 'acme' }]) },
+    });
+    const res = await fetch(`${base}/domains/team-b-domain?team=acme`, { method: 'DELETE' });
+    expect(res.status).toBe(404);
+    expect(domains.remove).not.toHaveBeenCalled();
+  });
+
+  it('denies verify of an id that does not belong to the caller-supplied team, even for a genuine member of that team', async () => {
+    const { base, domains } = await startApp({
+      as: 'user',
+      userId: 'carol',
+      memberships: { 'acme:carol': { role: 'owner' } },
+      domains: { list: jest.fn().mockResolvedValue([{ id: 'd1', team: 'acme' }]) },
+    });
+    const res = await fetch(`${base}/domains/team-b-domain/verify?team=acme`, { method: 'POST' });
+    expect(res.status).toBe(404);
+    expect(domains.verify).not.toHaveBeenCalled();
   });
 
   // Same workflow tier applies to GET /domains per the reviewed proposal

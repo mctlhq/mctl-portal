@@ -171,7 +171,20 @@ export class MctlApiDomainsClient implements DomainsClient {
       throw new MctlApiError(502, `mctl-api upstream error ${resp.status} at ${path}${detail}`);
     }
 
-    return resp.json() as Promise<T>;
+    // A successful response can still have an empty or non-JSON body (e.g. a
+    // 204 No Content from DELETE — resp.ok is true, resp.json() would throw
+    // a raw SyntaxError, and that error is not an MctlApiError, so it used
+    // to be mapped to a generic 502 by respondToDomainsError even though the
+    // upstream operation actually succeeded).
+    const text = await resp.text();
+    if (!text) {
+      return undefined as T;
+    }
+    try {
+      return JSON.parse(text) as T;
+    } catch {
+      throw new MctlApiError(502, `mctl-api returned a non-JSON body at ${path}`);
+    }
   }
 
   async list(team: string, service?: string): Promise<CustomDomain[]> {

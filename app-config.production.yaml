@@ -21,11 +21,14 @@ backend:
   # matters day to day is this plugin calling OUT to mctl-api — see the
   # customDomains.baseUrl/token block below (MCTL_API_URL/MCTL_API_TOKEN).
   # This externalAccess entry is the reverse direction: it is what would let
-  # mctl-api (or a workflow acting as it) call INTO this plugin. Whether
-  # anything still needs to after the mctl-api repoint was not re-verified
-  # against mctl-gitops as part of this change, so the entry is left in
-  # place unconditionally rather than guessed at; POST /domains/:id/activate,
-  # the one route this tier existed for, now always answers 410 regardless.
+  # mctl-api (or a workflow acting as it) call INTO this plugin. Verified
+  # against mctl-gitops main at the time of this change: nothing in
+  # wft-add-custom-domain.yaml calls this plugin any more (mctl-gitops#1085
+  # repointed it at mctl-api's PATCH endpoint directly), so this tier now
+  # only matters for GET /domains; POST /domains/:id/activate, the route
+  # this tier originally existed for, always answers 410 regardless of
+  # caller. Left in place rather than removed so a stale caller degrades to
+  # a diagnosable 410/403 instead of the entry disappearing out from under it.
   # Restricted to custom-domains, the only plugin needing it; mctl-api's
   # other calls still ride the plugins' own unauthenticated policies.
   # Its tenant notification is deliberately absent: that one posts to

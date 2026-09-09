@@ -19,6 +19,22 @@ export function registerAuthPolicies(httpRouter: {
 
 const DEFAULT_MCTL_API_BASE_URL = 'https://api.mctl.ai';
 
+/**
+ * No migration or drop of the old local domains table (formerly owned by
+ * CustomDomainStore, now deleted — see store.ts's removal in this same
+ * change) happens here, deliberately: mctlhq/mctl-portal#117 (the issue
+ * this plugin change closes) states its list has been empty for every team
+ * since before mctl-api's own registry (internal/domains) existed — no
+ * domain was ever successfully registered through the old CNAME-only path.
+ * There is therefore nothing to migrate; the table is left physically in
+ * place in the Backstage database so a revert restores the exact prior
+ * behavior with no schema state to reconstruct. Dropping the now-dead table
+ * is a separate, lower-risk follow-up once this gateway has been stable in
+ * production. (Its name is deliberately not spelled out here — see the
+ * "gateway migration guard" test in router.test.ts, which greps this
+ * plugin's source for that literal string to pin that it is gone.)
+ */
+
 export const customDomainsPlugin = createBackendPlugin({
   pluginId: 'custom-domains',
   register(env) {

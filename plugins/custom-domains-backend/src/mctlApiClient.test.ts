@@ -92,7 +92,7 @@ describe('MctlApiDomainsClient', () => {
     fetchMock.mockResolvedValue({
       ok: true,
       status: 200,
-      json: async () => ({ domains: [] }),
+      text: async () => JSON.stringify({ domains: [] }),
     });
     await client.list('acme');
     expect(fetchMock).toHaveBeenCalledWith(
@@ -107,7 +107,7 @@ describe('MctlApiDomainsClient', () => {
     fetchMock.mockResolvedValue({
       ok: true,
       status: 200,
-      json: async () => ({
+      text: async () => JSON.stringify({
         domains: [
           {
             id: 'd1',
@@ -137,7 +137,7 @@ describe('MctlApiDomainsClient', () => {
     fetchMock.mockResolvedValue({
       ok: true,
       status: 201,
-      json: async () => ({ id: 'd1', team: 'acme', service: 'web', domain: 'example.com', status: 'pending' }),
+      text: async () => JSON.stringify({ id: 'd1', team: 'acme', service: 'web', domain: 'example.com', status: 'pending' }),
     });
     await client.create({ team: 'acme', service: 'web', domain: 'example.com', actor: 'carol' });
     const [, options] = fetchMock.mock.calls[0];
@@ -191,7 +191,7 @@ describe('MctlApiDomainsClient', () => {
     fetchMock.mockResolvedValue({
       ok: true,
       status: 200,
-      json: async () => ({ verified: false, expected_record: 'x', expected_value: 'y' }),
+      text: async () => JSON.stringify({ verified: false, expected_record: 'x', expected_value: 'y' }),
     });
     await client.verify('d1', 'acme');
     expect(fetchMock).toHaveBeenCalledWith(
@@ -202,7 +202,7 @@ describe('MctlApiDomainsClient', () => {
     fetchMock.mockResolvedValue({
       ok: true,
       status: 200,
-      json: async () => ({ status: 'deleted', ingress_cleanup: 'not-required' }),
+      text: async () => JSON.stringify({ status: 'deleted', ingress_cleanup: 'not-required' }),
     });
     await client.remove('d1', 'acme');
     expect(fetchMock).toHaveBeenCalledWith(
@@ -211,9 +211,25 @@ describe('MctlApiDomainsClient', () => {
     );
   });
 
+  // A 204 No Content is a valid, successful response shape for DELETE — but
+  // resp.ok is true and there is no body to parse. Before this was guarded,
+  // resp.json() threw a raw SyntaxError outside the request()/MctlApiError
+  // mapping, which respondToDomainsError (router.ts) collapsed into a
+  // generic 502 — a successful delete looked like a failure to the user.
+  it('does not throw on a 204 No Content success response with an empty body', async () => {
+    fetchMock.mockResolvedValue({ ok: true, status: 204, text: async () => '' });
+    await expect(client.remove('d1', 'acme')).resolves.toBeUndefined();
+  });
+
+  it('surfaces a non-JSON success body as a 502-class MctlApiError rather than an uncaught SyntaxError', async () => {
+    fetchMock.mockResolvedValue({ ok: true, status: 200, text: async () => '<html>not json</html>' });
+    await expect(client.list('acme')).rejects.toBeInstanceOf(MctlApiError);
+    await expect(client.list('acme')).rejects.toMatchObject({ status: 502 });
+  });
+
   it('omits the Authorization header when no token is configured', async () => {
     const anonClient = new MctlApiDomainsClient({ baseUrl: 'https://api.example.com' });
-    fetchMock.mockResolvedValue({ ok: true, status: 200, json: async () => ({ domains: [] }) });
+    fetchMock.mockResolvedValue({ ok: true, status: 200, text: async () => JSON.stringify({ domains: [] }) });
     await anonClient.list('acme');
     const [, options] = fetchMock.mock.calls[0];
     expect(options.headers).not.toHaveProperty('Authorization');

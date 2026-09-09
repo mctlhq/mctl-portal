@@ -75,12 +75,13 @@ export async function authorizeForTeam(
  * static token (backend.auth.externalAccess, subject mctl-api, restricted
  * to the custom-domains plugin).
  *
- * Whether wft-add-custom-domain.yaml still calls this plugin at all (versus
- * calling mctl-api directly now that mctl-api owns the registry) was not
- * re-verified against mctl-gitops as part of this change — see the commit
- * body. This scaffolding is left exactly as it was so that caller keeps
- * working unmodified either way; /activate itself now always answers 410
- * regardless of caller tier (see below).
+ * Verified against mctl-gitops main at the time of this change: nothing in
+ * wft-add-custom-domain.yaml calls this plugin any more (mctl-gitops#1085
+ * repointed it at mctl-api directly), so this tier now only matters for
+ * GET /domains — /activate itself always answers 410 regardless of caller
+ * tier (see below). Left in place rather than removed with the rest of the
+ * cleanup so a change on either side degrades to a diagnosable 410/403
+ * instead of a routing 404.
  *
  * The subject allowlist below is load-bearing: accessRestrictions only
  * scope the *external* static token, so a bare `allow: ['service']` check
@@ -120,6 +121,25 @@ function respondToDomainsError(res: Response, logger: LoggerService, context: st
   }
   logger.error(`${context}: ${err}`);
   res.status(502).json({ error: 'Upstream domains registry unavailable' });
+}
+
+/**
+ * Confirms `id` actually belongs to `team` before verify/delete are allowed
+ * to proceed. This plugin's bearer token is a platform-wide mctl-api service
+ * credential that clears mctl-api's own admin bypass regardless of team (see
+ * MctlApiDomainsClient's doc comment), so mctl-api's `?team=` check on the
+ * verify/delete routes cannot be relied on to reject a mismatched id — it
+ * never even runs for this caller. Without this check, authorizeForTeam only
+ * proves the caller belongs to the team *they named*, not that they may
+ * touch the specific `id` in the URL: a member of team-a could otherwise
+ * verify or delete team-b's domain by passing `?team=team-a` alongside
+ * team-b's id. Listing the caller's own team's domains and requiring the id
+ * to appear in that list restores the ownership check store.getById used to
+ * provide before this plugin lost its local table.
+ */
+async function domainBelongsToTeam(domains: DomainsClient, id: string, team: string): Promise<boolean> {
+  const rows = await domains.list(team);
+  return rows.some(d => d.id === id);
 }
 
 export function createRouter(options: RouterOptions): Router {
@@ -176,7 +196,9 @@ export function createRouter(options: RouterOptions): Router {
     // (validateHostname, isPlatformDomain, the store's conflict check).
     try {
       const created = await domains.create({ team, service, domain, actor: caller.userId });
-      logger.info(`Custom domain registered via mctl-api: ${domain} (team=${team}, service=${service})`);
+      logger.info(
+        `Custom domain registered via mctl-api: ${domain} (team=${team}, service=${service}, actor=${caller.userId})`,
+      );
       res.status(201).json(created);
     } catch (err) {
       respondToDomainsError(res, logger, `Failed to register domain '${domain}'`, err);
@@ -201,6 +223,10 @@ export function createRouter(options: RouterOptions): Router {
       res.status(auth.status).json({ error: auth.error });
       return;
     }
+    if (!(await domainBelongsToTeam(domains, id, team))) {
+      res.status(404).json({ error: 'domain not found' });
+      return;
+    }
     try {
       const result = await domains.verify(id, team);
       res.json(result);
@@ -212,10 +238,14 @@ export function createRouter(options: RouterOptions): Router {
   // POST /domains/:id/activate — retired. mctl-api now activates a domain
   // itself once its own remove/add-custom-domain workflow finishes updating
   // ingress and TLS (PATCH /api/v1/domains/{id}, restricted to its service
-  // principal); this plugin has no store to flip a status on any more. The
-  // route stays registered (rather than 404ing, which would look like a
-  // routing bug) but calls no client method and requires no auth tier — it
-  // has nothing left to authorize.
+  // principal); this plugin has no store to flip a status on any more.
+  // Verified (not assumed) against mctl-gitops main at the time of this
+  // change: platform-gitops/argo-workflows/cluster-templates/wft-add-custom-domain.yaml
+  // no longer references this plugin or a Backstage `/activate` call
+  // anywhere — mctl-gitops#1085 repointed it at mctl-api's PATCH endpoint
+  // directly. The route stays registered (rather than 404ing, which would
+  // look like a routing bug) but calls no client method and requires no
+  // auth tier — it has nothing left to authorize.
   router.post('/domains/:id/activate', (_req: Request, res: Response) => {
     res.status(410).json({
       error:
@@ -242,9 +272,13 @@ export function createRouter(options: RouterOptions): Router {
       res.status(auth.status).json({ error: auth.error });
       return;
     }
+    if (!(await domainBelongsToTeam(domains, id, team))) {
+      res.status(404).json({ error: 'domain not found' });
+      return;
+    }
     try {
       const result = await domains.remove(id, team);
-      logger.info(`Domain deleted via mctl-api: ${id} (team=${team})`);
+      logger.info(`Domain deleted via mctl-api: ${id} (team=${team}, actor=${caller.userId})`);
       res.json(result);
     } catch (err) {
       respondToDomainsError(res, logger, `Failed to delete domain '${id}'`, err);
