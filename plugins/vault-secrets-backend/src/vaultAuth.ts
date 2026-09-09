@@ -1,4 +1,3 @@
-import fetch from 'node-fetch';
 import { readFile } from 'fs/promises';
 import type { LoggerService } from '@backstage/backend-plugin-api';
 

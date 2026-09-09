@@ -1,4 +1,3 @@
-import fetch from 'node-fetch';
 import { LoggerService } from '@backstage/backend-plugin-api';
 import {
   ScmIntegrations,

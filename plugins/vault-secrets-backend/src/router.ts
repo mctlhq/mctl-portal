@@ -1,5 +1,4 @@
 import { Router, Request, Response, urlencoded } from 'express';
-import fetch from 'node-fetch';
 import type { Knex } from 'knex';
 import {
   HttpAuthService,

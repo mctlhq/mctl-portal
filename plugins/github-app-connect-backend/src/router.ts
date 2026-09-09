@@ -3,7 +3,6 @@ import express from 'express';
 import Router_ from 'express-promise-router';
 import { Logger } from 'winston';
 import crypto from 'crypto';
-import fetch from 'node-fetch';
 import type { Knex } from 'knex';
 import type {
   HttpAuthService,

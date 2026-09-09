@@ -1,9 +1,8 @@
 import crypto from 'crypto';
-import fetch from 'node-fetch';
 
 /**
  * Generates a GitHub App installation token using the App's private key.
- * Uses only Node.js built-in crypto and node-fetch (no extra deps).
+ * Uses only Node.js built-in crypto and the Node 22 global fetch (no extra deps).
  */
 export async function getGithubAppInstallationToken(
   appId: string,

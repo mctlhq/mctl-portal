@@ -1,4 +1,3 @@
-import fetch from 'node-fetch';
 import yaml from 'js-yaml';
 import { LoggerService } from '@backstage/backend-plugin-api';
 import { TenantStore } from './tenantStore';
