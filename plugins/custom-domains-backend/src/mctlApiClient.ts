@@ -193,7 +193,7 @@ export class MctlApiDomainsClient implements DomainsClient {
       params.set('service', service);
     }
     const data = await this.request<{ domains: unknown[] }>(`/api/v1/domains?${params.toString()}`);
-    return (data.domains ?? []).map(toPortalDomain);
+    return (data?.domains ?? []).map(toPortalDomain);
   }
 
   async create(params: CreateDomainParams): Promise<CustomDomain> {

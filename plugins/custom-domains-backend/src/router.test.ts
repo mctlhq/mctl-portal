@@ -368,6 +368,35 @@ describe('createRouter tenant ownership gating', () => {
     expect(domains.verify).not.toHaveBeenCalled();
   });
 
+  // Regression for the P1 the ownership check itself introduced: the
+  // domainBelongsToTeam call must be inside the try/catch, not above it —
+  // otherwise an upstream failure on domains.list becomes an unhandled
+  // rejection (plain express.Router on Express 4 does not forward an async
+  // handler's rejection to error middleware) instead of a 502 response.
+  it('returns 502 (not a hang/unhandled rejection) when the ownership check itself fails upstream on verify', async () => {
+    const { base, domains } = await startApp({
+      as: 'user',
+      userId: 'carol',
+      memberships: { 'acme:carol': { role: 'owner' } },
+      domains: { list: jest.fn().mockRejectedValue(new MctlApiError(502, 'mctl-api upstream error 500 at /api/v1/domains')) },
+    });
+    const res = await fetch(`${base}/domains/d1/verify?team=acme`, { method: 'POST' });
+    expect(res.status).toBe(502);
+    expect(domains.verify).not.toHaveBeenCalled();
+  });
+
+  it('returns 502 (not a hang/unhandled rejection) when the ownership check itself fails upstream on delete', async () => {
+    const { base, domains } = await startApp({
+      as: 'user',
+      userId: 'carol',
+      memberships: { 'acme:carol': { role: 'owner' } },
+      domains: { list: jest.fn().mockRejectedValue(new MctlApiError(502, 'mctl-api upstream error 500 at /api/v1/domains')) },
+    });
+    const res = await fetch(`${base}/domains/d1?team=acme`, { method: 'DELETE' });
+    expect(res.status).toBe(502);
+    expect(domains.remove).not.toHaveBeenCalled();
+  });
+
   // Same workflow tier applies to GET /domains per the reviewed proposal
   // decision (wft-add-custom-domain.yaml historically called this route).
   it('allows a service credential to list domains without tenant membership', async () => {

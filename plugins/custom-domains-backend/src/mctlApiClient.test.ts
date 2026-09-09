@@ -221,6 +221,15 @@ describe('MctlApiDomainsClient', () => {
     await expect(client.remove('d1', 'acme')).resolves.toBeUndefined();
   });
 
+  // Regression: request() can return `undefined` for an empty body (the
+  // case above), and list()'s `data.domains ?? []` used to assume `data`
+  // itself was always an object — a TypeError, not the empty array the
+  // empty-body guard was meant to produce.
+  it('resolves to an empty array, not a thrown TypeError, when list gets a 200 with an empty body', async () => {
+    fetchMock.mockResolvedValue({ ok: true, status: 200, text: async () => '' });
+    await expect(client.list('acme')).resolves.toEqual([]);
+  });
+
   it('surfaces a non-JSON success body as a 502-class MctlApiError rather than an uncaught SyntaxError', async () => {
     fetchMock.mockResolvedValue({ ok: true, status: 200, text: async () => '<html>not json</html>' });
     await expect(client.list('acme')).rejects.toBeInstanceOf(MctlApiError);

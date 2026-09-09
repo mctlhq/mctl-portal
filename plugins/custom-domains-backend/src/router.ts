@@ -223,11 +223,11 @@ export function createRouter(options: RouterOptions): Router {
       res.status(auth.status).json({ error: auth.error });
       return;
     }
-    if (!(await domainBelongsToTeam(domains, id, team))) {
-      res.status(404).json({ error: 'domain not found' });
-      return;
-    }
     try {
+      if (!(await domainBelongsToTeam(domains, id, team))) {
+        res.status(404).json({ error: 'domain not found' });
+        return;
+      }
       const result = await domains.verify(id, team);
       res.json(result);
     } catch (err) {
@@ -272,11 +272,11 @@ export function createRouter(options: RouterOptions): Router {
       res.status(auth.status).json({ error: auth.error });
       return;
     }
-    if (!(await domainBelongsToTeam(domains, id, team))) {
-      res.status(404).json({ error: 'domain not found' });
-      return;
-    }
     try {
+      if (!(await domainBelongsToTeam(domains, id, team))) {
+        res.status(404).json({ error: 'domain not found' });
+        return;
+      }
       const result = await domains.remove(id, team);
       logger.info(`Domain deleted via mctl-api: ${id} (team=${team}, actor=${caller.userId})`);
       res.json(result);
