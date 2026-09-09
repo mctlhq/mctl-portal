@@ -40,6 +40,7 @@ import {
   useApi,
 } from '@backstage/core-plugin-api';
 import { usePlatformConfig } from '../../platformConfig';
+import { canVerifyDomain, hasChallenge, verifyMessageFrom } from './domainsCardLogic';
 
 const TEAM_ANNOTATION = 'platform.mctl.me/team';
 
@@ -236,6 +237,12 @@ export function EntityDomainsCard() {
         setVerifyError(body.error ?? `HTTP ${resp.status}`);
         return;
       }
+      // A 2xx response body can still report verified: false (the DNS check
+      // ran but has not passed yet) — that is not a silent success, and must
+      // not be swallowed. An absent/unparseable body on a 2xx is treated as
+      // "nothing to report" rather than a spurious error.
+      const body = await resp.json().catch(() => null);
+      setVerifyError(verifyMessageFrom(body));
       await fetchDomains();
     } catch (e: any) {
       setVerifyError(e.message ?? 'Failed to verify domain');
@@ -391,14 +398,14 @@ export function EntityDomainsCard() {
                 <TableBody>
                   {domains.map(d => {
                     const sc = statusConfig[d.status] ?? unknownStatusConfig;
-                    // Driven by the presence of the challenge fields rather
-                    // than an allowlist of statuses: mctl-api documents them
-                    // as present for both 'pending' and 'failed' (a failed
-                    // DNS check does not reset the row like the old backend
-                    // did — it stays 'failed' and still needs a retry path),
-                    // and this degrades the same way for a status this card
-                    // has never seen, instead of silently hiding the record.
-                    const canVerify = Boolean(d.challenge_record_name && d.challenge_record_value);
+                    // canVerifyDomain offers Verify for a 'pending'/'failed'
+                    // row even before challenge fields show up, and for any
+                    // status (including one this card has never seen) once
+                    // both challenge fields are present. hasChallenge alone
+                    // drives whether the Verification column has a TXT hint
+                    // to show at all.
+                    const canVerify = canVerifyDomain(d);
+                    const showChallenge = hasChallenge(d);
                     return (
                       <TableRow key={d.id}>
                         <TableCell className={classes.domainCell}>
@@ -422,7 +429,7 @@ export function EntityDomainsCard() {
                           />
                         </TableCell>
                         <TableCell>
-                          {canVerify ? (
+                          {showChallenge ? (
                             <Box display="flex" alignItems="center" style={{ gap: 4 }}>
                               <Typography variant="caption" className={classes.domainCell}>
                                 TXT {d.challenge_record_name}
