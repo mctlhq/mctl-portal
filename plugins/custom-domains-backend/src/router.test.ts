@@ -30,6 +30,22 @@ function fakeDb(memberships: Record<string, { role: string }>): Knex {
   return db as unknown as Knex;
 }
 
+// Pins the express-promise-router contract: getTenantMember/isAdminUser
+// (authorizeForTeam) hit this db and are awaited outside any try/catch on
+// every route. Under plain express.Router, a rejection here (a dropped
+// Knex pool connection, a query timeout) hangs the request with no
+// response written and raises an unhandled rejection at the process
+// level — this fakeDb reproduces that failure so a test can assert the
+// router actually forwards it to a response instead.
+function rejectingDb(): Knex {
+  const db = jest.fn(() => ({
+    withSchema: jest.fn().mockReturnThis(),
+    where: jest.fn().mockReturnThis(),
+    first: jest.fn().mockRejectedValue(new Error('connection terminated unexpectedly')),
+  }));
+  return db as unknown as Knex;
+}
+
 // authorizeForTeam gates every /domains* route below. This exercises the
 // admin bypass and the case-mismatch handling directly, without any
 // Express req/res.
@@ -170,6 +186,7 @@ describe('createRouter tenant ownership gating', () => {
     userId?: string;
     memberships?: Record<string, { role: string }>;
     domains?: Partial<Record<string, jest.Mock>>;
+    db?: Knex;
   }): Promise<{ base: string; domains: Record<string, jest.Mock> }> {
     const domains = {
       list: jest.fn().mockResolvedValue([]),
@@ -183,7 +200,7 @@ describe('createRouter tenant ownership gating', () => {
       domains,
       httpAuth: makeHttpAuth(opts.as),
       userInfo: makeUserInfo(opts.userId),
-      db: fakeDb(opts.memberships ?? {}),
+      db: opts.db ?? fakeDb(opts.memberships ?? {}),
       isPostgres: false,
     } as unknown as RouterOptions;
     const app = express();
@@ -369,10 +386,15 @@ describe('createRouter tenant ownership gating', () => {
   });
 
   // Regression for the P1 the ownership check itself introduced: the
-  // domainBelongsToTeam call must be inside the try/catch, not above it —
-  // otherwise an upstream failure on domains.list becomes an unhandled
-  // rejection (plain express.Router on Express 4 does not forward an async
-  // handler's rejection to error middleware) instead of a 502 response.
+  // domainBelongsToTeam call must be inside the try/catch, not above it, so
+  // a rejection from domains.list is mapped to a 502 by
+  // respondToDomainsError rather than left for the router to forward
+  // unhandled. This is belt-and-suspenders with the express-promise-router
+  // swap below (which guarantees a response even for an await NOT wrapped
+  // in a local try/catch) — the two protections are independent, and this
+  // test would still fail without the try/catch even under
+  // express-promise-router, because an unhandled rejection there reaches
+  // Express's generic error handler, not this route's own 502 JSON body.
   it('returns 502 (not a hang/unhandled rejection) when the ownership check itself fails upstream on verify', async () => {
     const { base, domains } = await startApp({
       as: 'user',
@@ -496,6 +518,32 @@ describe('createRouter tenant ownership gating', () => {
       expect(domains.remove).not.toHaveBeenCalled();
     },
   );
+
+  // Pins the express-promise-router contract itself, not just the
+  // domainBelongsToTeam try/catch above. authorizeForTeam and
+  // resolveCallerId hit this db and are awaited outside any try/catch on
+  // every route — under plain express.Router (Express 4), a rejection
+  // there hangs the request with no response and raises an unhandled
+  // rejection at the process level, rather than reaching Express's default
+  // error handler. This test fails by timing out if router.ts's
+  // `Router_()` (express-promise-router) is reverted to plain
+  // `Router()`, which is exactly the regression claude-review flagged:
+  // every other fix in this PR shipped with a test that fails for the
+  // right reason, and this swap did not until now.
+  it.each([
+    { label: 'GET /domains', method: 'GET' as const, path: '/domains?team=acme' },
+    { label: 'DELETE /domains/:id', method: 'DELETE' as const, path: '/domains/d1?team=acme' },
+  ])('answers 500 rather than hanging when the membership lookup itself rejects ($label)', async ({ method, path }) => {
+    const { base, domains } = await startApp({
+      as: 'user',
+      userId: 'carol',
+      db: rejectingDb(),
+    });
+    const res = await fetch(`${base}${path}`, { method });
+    expect(res.status).toBe(500);
+    expect(domains.list).not.toHaveBeenCalled();
+    expect(domains.remove).not.toHaveBeenCalled();
+  });
 });
 
 // T8 (guard): pins that the store-backed implementation (Node's dns module,
