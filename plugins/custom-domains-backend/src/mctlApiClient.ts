@@ -1,4 +1,17 @@
-import fetch, { RequestInit } from 'node-fetch';
+/**
+ * Structural logger shape, not Backstage's LoggerService, so this client
+ * stays free of a @backstage/backend-plugin-api dependency. plugin.ts passes
+ * coreServices.logger in, which satisfies this shape.
+ */
+export interface ClientLogger {
+  warn(msg: string): void;
+  error(msg: string): void;
+}
+
+const noopLogger: ClientLogger = {
+  warn: () => {},
+  error: () => {},
+};
 
 /**
  * Shape the frontend card (packages/app/src/components/catalog/EntityDomainsCard.tsx)
@@ -124,10 +137,12 @@ export function toPortalDomain(raw: unknown): CustomDomain {
 export class MctlApiDomainsClient implements DomainsClient {
   private readonly baseUrl: string;
   private readonly token?: string;
+  private readonly logger: ClientLogger;
 
-  constructor(options: { baseUrl: string; token?: string }) {
+  constructor(options: { baseUrl: string; token?: string; logger?: ClientLogger }) {
     this.baseUrl = options.baseUrl.replace(/\/$/, '');
     this.token = options.token;
+    this.logger = options.logger ?? noopLogger;
   }
 
   private headers(): Record<string, string> {
@@ -141,7 +156,7 @@ export class MctlApiDomainsClient implements DomainsClient {
     return h;
   }
 
-  private async request<T>(path: string, options?: RequestInit): Promise<T> {
+  private async request<T>(path: string, options?: RequestInit): Promise<T | undefined> {
     const url = `${this.baseUrl}${path}`;
     let resp;
     try {
@@ -154,30 +169,42 @@ export class MctlApiDomainsClient implements DomainsClient {
         signal: AbortSignal.timeout(DEFAULT_TIMEOUT_MS),
       });
     } catch (err) {
-      // Never interpolate this.token here — err messages from node-fetch
-      // and AbortSignal never echo request headers, but keeping the token
-      // out of every thrown message by construction (not by care) is the
-      // point.
+      // Never interpolate this.token here — err messages from the fetch
+      // driver and AbortSignal never echo request headers, but keeping the
+      // token out of every thrown message by construction (not by care) is
+      // the point. The underlying driver message and the resolved upstream
+      // URL are logged locally only — never in the message thrown back to
+      // the browser — since either can reveal internal networking details
+      // to an authenticated tenant user.
       const message = err instanceof Error ? err.message : 'network error';
-      throw new MctlApiError(502, `mctl-api request failed at ${path}: ${message}`);
+      this.logger.error(`mctl-api request failed at ${url}: ${message}`);
+      throw new MctlApiError(502, `mctl-api request failed at ${path}`);
     }
 
     if (!resp.ok) {
       const body = await resp.text().catch(() => '');
       // 401/403 can only mean THIS plugin's own MCTL_API_TOKEN is missing,
-      // expired, or unscoped — mctl-api never returns them for anything the
-      // end user did (team/domain authorization failures are handled by
-      // this router's own authorizeForTeam before a request is ever sent).
-      // Forwarding them as-is would answer the browser with a 401/403 that
-      // Backstage's core FetchApi treats as a signal that the *user's own*
-      // session expired, which can force a re-login loop for a problem the
-      // user cannot fix. Map them to 502 like any other upstream
-      // integration failure instead of passing them through as 4xx.
+      // expired, or unscoped — verified against mctlhq/mctl-api
+      // internal/api/handlers_domains.go at HEAD: AddDomain rejects a
+      // platform domain with http.StatusBadRequest (400), not 403, and the
+      // only 403 that handler emits for this caller ("access denied to
+      // team") is unreachable for an admin-scoped service token — it only
+      // fires for a per-team-scoped token, which this plugin does not use.
+      // A 403 reaching this branch therefore signals a misconfigured
+      // customDomains.token, never anything the end user did (team/domain
+      // authorization failures are handled by this router's own
+      // authorizeForTeam before a request is ever sent). Forwarding it
+      // verbatim would answer the browser with a 401/403 that Backstage's
+      // core FetchApi treats as a signal that the *user's own* session
+      // expired, which can force a re-login loop for a problem the user
+      // cannot fix. Map them to 502 like any other upstream integration
+      // failure instead of passing them through as 4xx.
       if (resp.status !== 401 && resp.status !== 403 && resp.status >= 400 && resp.status < 500) {
         // 4xx bodies are client-actionable (a 409 "domain already
-        // registered", a 400 validation message) and router.ts's
-        // respondToDomainsError forwards MctlApiError.message verbatim to
-        // the browser, so include the body here.
+        // registered", a 400 platform-domain rejection with mctl-api's own
+        // message) and router.ts's respondToDomainsError forwards
+        // MctlApiError.message verbatim to the browser, so include the body
+        // here.
         const detail = body ? `: ${body}` : '';
         throw new MctlApiError(resp.status, `mctl-api ${resp.status} at ${path}${detail}`);
       }
@@ -185,8 +212,10 @@ export class MctlApiDomainsClient implements DomainsClient {
       // internal detail. router.ts's respondToDomainsError forwards
       // MctlApiError.message verbatim to the browser, so — unlike the 4xx
       // branch above, where the body is genuinely client-actionable —
-      // deliberately drop it here rather than let an authenticated tenant
-      // user read mctl-api's internals through a routine 5xx.
+      // deliberately drop it from the thrown message and log it locally
+      // instead, rather than let an authenticated tenant user read
+      // mctl-api's internals through a routine 5xx.
+      this.logger.error(`mctl-api ${resp.status} at ${path}: ${body}`);
       throw new MctlApiError(502, `mctl-api upstream error ${resp.status} at ${path}`);
     }
 
@@ -197,7 +226,7 @@ export class MctlApiDomainsClient implements DomainsClient {
     // upstream operation actually succeeded).
     const text = await resp.text();
     if (!text) {
-      return undefined as T;
+      return undefined;
     }
     try {
       return JSON.parse(text) as T;
@@ -229,17 +258,27 @@ export class MctlApiDomainsClient implements DomainsClient {
 
   async verify(id: string, team: string): Promise<VerifyResult> {
     const params = new URLSearchParams({ team });
-    return this.request<VerifyResult>(
-      `/api/v1/domains/${encodeURIComponent(id)}/verify?${params.toString()}`,
-      { method: 'POST' },
-    );
+    const path = `/api/v1/domains/${encodeURIComponent(id)}/verify?${params.toString()}`;
+    const result = await this.request<VerifyResult>(path, { method: 'POST' });
+    // mctl-api's verifyAndRespond (internal/api/handlers_domains.go) always
+    // answers 200 with a JSON Result body — an empty or non-object body here
+    // means something between this client and mctl-api swallowed it, not a
+    // legitimate "nothing to report" response.
+    if (!result || typeof result !== 'object') {
+      throw new MctlApiError(502, `mctl-api returned an empty body at ${path}`);
+    }
+    return result;
   }
 
   async remove(id: string, team: string): Promise<RemoveResult> {
     const params = new URLSearchParams({ team });
-    return this.request<RemoveResult>(
+    const result = await this.request<RemoveResult>(
       `/api/v1/domains/${encodeURIComponent(id)}?${params.toString()}`,
       { method: 'DELETE' },
     );
+    // A 204 No Content is a valid successful delete — request() returns
+    // undefined for it. Normalize to a defined RemoveResult-shaped value so
+    // router.ts's `res.json(result)` never answers 200 with an empty body.
+    return result ?? { status: 'deleted' };
   }
 }

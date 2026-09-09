@@ -1,9 +1,17 @@
-import fetch from 'node-fetch';
-import { MctlApiDomainsClient, MctlApiError, toPortalDomain } from './mctlApiClient';
+import { ClientLogger, MctlApiDomainsClient, MctlApiError, toPortalDomain } from './mctlApiClient';
 
-jest.mock('node-fetch', () => jest.fn());
+// This plugin uses the Node 22 global `fetch` directly (no node-fetch/
+// @types/node-fetch dependency), so the mock targets the global rather than
+// a module import.
+let fetchMock: jest.SpyInstance;
 
-const fetchMock = fetch as unknown as jest.Mock;
+beforeEach(() => {
+  fetchMock = jest.spyOn(globalThis, 'fetch');
+});
+
+afterEach(() => {
+  fetchMock.mockRestore();
+});
 
 describe('toPortalDomain', () => {
   it('maps an mctl-api domainResponse onto the frontend CustomDomain shape, including both challenge fields', () => {
@@ -262,9 +270,12 @@ describe('MctlApiDomainsClient', () => {
   // resp.json() threw a raw SyntaxError outside the request()/MctlApiError
   // mapping, which respondToDomainsError (router.ts) collapsed into a
   // generic 502 — a successful delete looked like a failure to the user.
-  it('does not throw on a 204 No Content success response with an empty body', async () => {
+  // remove() normalizes the empty body to a defined RemoveResult-shaped
+  // value so router.ts's `res.json(result)` never answers 200 with an empty
+  // body.
+  it('resolves to a defined RemoveResult on a 204 No Content success response', async () => {
     fetchMock.mockResolvedValue({ ok: true, status: 204, text: async () => '' });
-    await expect(client.remove('d1', 'acme')).resolves.toBeUndefined();
+    await expect(client.remove('d1', 'acme')).resolves.toEqual({ status: 'deleted' });
   });
 
   // Regression: request() can return `undefined` for an empty body (the
@@ -288,5 +299,93 @@ describe('MctlApiDomainsClient', () => {
     await anonClient.list('acme');
     const [, options] = fetchMock.mock.calls[0];
     expect(options.headers).not.toHaveProperty('Authorization');
+  });
+
+  // mctl-api's verifyAndRespond (internal/api/handlers_domains.go) always
+  // answers 200 with a JSON Result body, so an empty body on a 200 here
+  // means something swallowed it in transit, not a legitimate response.
+  it('verify() rejects with a 502-class MctlApiError on a 200 with an empty body', async () => {
+    fetchMock.mockResolvedValue({ ok: true, status: 200, text: async () => '' });
+    await expect(client.verify('d1', 'acme')).rejects.toBeInstanceOf(MctlApiError);
+    await expect(client.verify('d1', 'acme')).rejects.toMatchObject({ status: 502 });
+  });
+
+  it('verify() resolves unchanged on a 200 with a real Result object', async () => {
+    const result = { verified: false, reason: 'DNS not propagated yet', expected_record: 'x', expected_value: 'y' };
+    fetchMock.mockResolvedValue({ ok: true, status: 200, text: async () => JSON.stringify(result) });
+    await expect(client.verify('d1', 'acme')).resolves.toEqual(result);
+  });
+
+  // Neither the resolved upstream URL nor the underlying driver's raw
+  // message should ever reach the browser through a thrown message — only
+  // the request path.
+  it('a network failure throws a message naming only the path, never the upstream host or driver message', async () => {
+    fetchMock.mockRejectedValue(new Error('getaddrinfo ENOTFOUND api.example.com'));
+    let caught: unknown;
+    try {
+      await client.list('acme');
+    } catch (err) {
+      caught = err;
+    }
+    expect((caught as Error).message).not.toContain('api.example.com');
+    expect((caught as Error).message).not.toContain('ENOTFOUND');
+    expect((caught as Error).message).toContain('/api/v1/domains');
+  });
+
+  // A 400 platform-domain rejection from mctl-api's AddDomain is
+  // client-actionable and must be forwarded as-is, per the 401/403 mapping's
+  // own documented carve-out (400 is not in the 401/403 set collapsed to
+  // 502).
+  it('forwards a 400 platform-domain rejection as 400 with mctl-api\'s own message', async () => {
+    fetchMock.mockResolvedValue({
+      ok: false,
+      status: 400,
+      text: async () => '{"error":"domain is a platform domain"}',
+    });
+    let caught: unknown;
+    try {
+      await client.create({ team: 'acme', service: 'web', domain: 'mctl.ai', actor: 'carol' });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toMatchObject({ status: 400 });
+    expect((caught as Error).message).toContain('domain is a platform domain');
+  });
+
+  describe('with an injected logger', () => {
+    const logger: jest.Mocked<ClientLogger> = { warn: jest.fn(), error: jest.fn() };
+    const loggerClient = new MctlApiDomainsClient({
+      baseUrl: 'https://api.example.com',
+      token: 'super-secret-token',
+      logger,
+    });
+
+    beforeEach(() => {
+      logger.warn.mockClear();
+      logger.error.mockClear();
+    });
+
+    it('logs the upstream status, path, and body at error level on a 5xx, and excludes the body from the thrown message', async () => {
+      fetchMock.mockResolvedValue({
+        ok: false,
+        status: 500,
+        text: async () => 'Traceback: internal db connection string leaked here',
+      });
+      let caught: unknown;
+      try {
+        await loggerClient.list('acme');
+      } catch (err) {
+        caught = err;
+      }
+      expect(logger.error).toHaveBeenCalledWith(
+        expect.stringContaining('Traceback: internal db connection string leaked here'),
+      );
+      expect((caught as Error).message).not.toContain('Traceback');
+    });
+
+    it('functions without a supplied logger, defaulting to a no-op', async () => {
+      fetchMock.mockResolvedValue({ ok: false, status: 500, text: async () => 'boom' });
+      await expect(client.list('acme')).rejects.toBeInstanceOf(MctlApiError);
+    });
   });
 });

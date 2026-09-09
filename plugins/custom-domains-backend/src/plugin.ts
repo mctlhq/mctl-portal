@@ -59,7 +59,7 @@ export const customDomainsPlugin = createBackendPlugin({
           );
         }
         const token = config.getOptionalString('customDomains.token');
-        const domainsClient = new MctlApiDomainsClient({ baseUrl, token });
+        const domainsClient = new MctlApiDomainsClient({ baseUrl, token, logger });
 
         const router = createRouter({
           logger,
