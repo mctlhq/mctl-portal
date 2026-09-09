@@ -156,6 +156,12 @@ describe('createRouter tenant ownership gating', () => {
   };
   noopLogger.child.mockReturnValue(noopLogger);
 
+  beforeEach(() => {
+    noopLogger.info.mockClear();
+    noopLogger.warn.mockClear();
+    noopLogger.error.mockClear();
+  });
+
   // Simulates httpAuth.credentials(): 'user' resolves only for allow:['user'],
   // 'service' only for allow:['service'], 'none' always rejects (anonymous).
   function makeHttpAuth(as: 'user' | 'service' | 'none') {
@@ -536,6 +542,63 @@ describe('createRouter tenant ownership gating', () => {
     expect(body.error).toContain('domain already registered');
   });
 
+  // A MctlApiError in the 400-499 range reflects a client-caused condition
+  // (a conflict, a validation failure), not a platform problem — it belongs
+  // at `warn`, not `error`, so alerting on `error`-level logs does not page
+  // on-call for something no operator can act on.
+  it('logs an upstream 409 at warn, not error', async () => {
+    const { base } = await startApp({
+      as: 'user',
+      userId: 'carol',
+      memberships: { 'acme:carol': { role: 'owner' } },
+      domains: {
+        create: jest.fn().mockRejectedValue(new MctlApiError(409, 'mctl-api 409 at /api/v1/domains: domain already registered')),
+      },
+    });
+    const res = await fetch(`${base}/domains`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ team: 'acme', service: 'web', domain: 'example.com' }),
+    });
+    expect(res.status).toBe(409);
+    expect(noopLogger.warn).toHaveBeenCalledTimes(1);
+    expect(noopLogger.error).not.toHaveBeenCalled();
+  });
+
+  // A MctlApiError with a 502 status (or any 5xx-class collapse) reflects an
+  // upstream/platform problem and belongs at `error`.
+  it('logs an upstream 502 at error, not warn', async () => {
+    const { base } = await startApp({
+      as: 'user',
+      userId: 'carol',
+      memberships: { 'acme:carol': { role: 'owner' } },
+      domains: {
+        create: jest.fn().mockRejectedValue(new MctlApiError(502, 'mctl-api upstream error 500 at /api/v1/domains')),
+      },
+    });
+    const res = await fetch(`${base}/domains`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ team: 'acme', service: 'web', domain: 'example.com' }),
+    });
+    expect(res.status).toBe(502);
+    expect(noopLogger.error).toHaveBeenCalledTimes(1);
+    expect(noopLogger.warn).not.toHaveBeenCalled();
+  });
+
+  // Express 4's default `qs` query parser can hand `service` an array
+  // (repeated ?service=a&service=b) rather than a string or undefined.
+  it('rejects a non-string ?service= on GET /domains with 400, no upstream call', async () => {
+    const { base, domains } = await startApp({
+      as: 'user',
+      userId: 'carol',
+      memberships: { 'acme:carol': { role: 'owner' } },
+    });
+    const res = await fetch(`${base}/domains?team=acme&service=a&service=b`);
+    expect(res.status).toBe(400);
+    expect(domains.list).not.toHaveBeenCalled();
+  });
+
   // T7 (activate retirement): the route stays registered but always answers
   // 410 and never reaches the domains client, for either caller tier.
   it.each(['user', 'service'] as const)(
@@ -567,17 +630,35 @@ describe('createRouter tenant ownership gating', () => {
   // every other fix in this PR shipped with a test that fails for the
   // right reason, and this swap did not until now.
   it.each([
-    { label: 'GET /domains', method: 'GET' as const, path: '/domains?team=acme' },
-    { label: 'DELETE /domains/:id', method: 'DELETE' as const, path: '/domains/d1?team=acme' },
-  ])('answers 500 rather than hanging when the membership lookup itself rejects ($label)', async ({ method, path }) => {
+    { label: 'GET /domains', method: 'GET' as const, path: '/domains?team=acme', body: undefined },
+    { label: 'DELETE /domains/:id', method: 'DELETE' as const, path: '/domains/d1?team=acme', body: undefined },
+    {
+      label: 'POST /domains',
+      method: 'POST' as const,
+      path: '/domains',
+      body: JSON.stringify({ team: 'acme', service: 'web', domain: 'example.com' }),
+    },
+    {
+      label: 'POST /domains/:id/verify',
+      method: 'POST' as const,
+      path: '/domains/d1/verify?team=acme',
+      body: undefined,
+    },
+  ])('answers 500 rather than hanging when the membership lookup itself rejects ($label)', async ({ method, path, body }) => {
     const { base, domains } = await startApp({
       as: 'user',
       userId: 'carol',
       db: rejectingDb(),
     });
-    const res = await fetch(`${base}${path}`, { method });
+    const res = await fetch(`${base}${path}`, {
+      method,
+      headers: body ? { 'Content-Type': 'application/json' } : undefined,
+      body,
+    });
     expect(res.status).toBe(500);
     expect(domains.list).not.toHaveBeenCalled();
+    expect(domains.create).not.toHaveBeenCalled();
+    expect(domains.verify).not.toHaveBeenCalled();
     expect(domains.remove).not.toHaveBeenCalled();
   });
 });

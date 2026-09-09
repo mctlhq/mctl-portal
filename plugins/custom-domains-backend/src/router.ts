@@ -113,10 +113,19 @@ export async function isWorkflowCaller(req: Request, httpAuth: HttpAuthService):
  * other thrown value is an unexpected local failure and also becomes a 502,
  * never a 200, so an upstream outage or a bug here can't silently look like
  * an empty-but-successful response.
+ *
+ * Logged at `warn` for a MctlApiError in the 400-499 range (a client-caused
+ * condition — e.g. a 409 conflict or a 400 platform-domain rejection — that
+ * does not indicate a platform problem); everything else (a MctlApiError
+ * outside that range, or any non-MctlApiError failure) is logged at `error`.
  */
 function respondToDomainsError(res: Response, logger: LoggerService, context: string, err: unknown): void {
   if (err instanceof MctlApiError) {
-    logger.error(`${context}: ${err.message}`);
+    if (err.status >= 400 && err.status < 500) {
+      logger.warn(`${context}: ${err.message}`);
+    } else {
+      logger.error(`${context}: ${err.message}`);
+    }
     res.status(err.status).json({ error: err.message });
     return;
   }
@@ -137,6 +146,14 @@ function respondToDomainsError(res: Response, logger: LoggerService, context: st
  * team-b's id. Listing the caller's own team's domains and requiring the id
  * to appear in that list restores the ownership check store.getById used to
  * provide before this plugin lost its local table.
+ *
+ * The `domains.list(team)` call below is safe to use for a membership check
+ * without pagination handling: `GET /api/v1/domains?team=` is complete and
+ * unpaginated, verified against mctlhq/mctl-api internal/domains/store.go's
+ * `ListByTeam` (no `LIMIT`/`OFFSET`) at the time of this change. Re-check
+ * `ListByTeam` if this ever starts missing a real domain — a paginated
+ * response would silently break this ownership check by truncating the
+ * list this function scans.
  */
 async function domainBelongsToTeam(domains: DomainsClient, id: string, team: string): Promise<boolean> {
   const rows = await domains.list(team);
@@ -163,6 +180,14 @@ export function createRouter(options: RouterOptions): Router {
       res.status(400).json({ error: 'Missing required param: team' });
       return;
     }
+    // Express 4's default `qs` query parser can hand `service` an array
+    // (repeated ?service=a&service=b) or a nested object, not just a string
+    // or undefined. Reject anything else before any upstream call, rather
+    // than cast it away and pass a non-string value into DomainsClient.list.
+    if (service !== undefined && typeof service !== 'string') {
+      res.status(400).json({ error: 'service must be a string' });
+      return;
+    }
     if (!(await isWorkflowCaller(req, httpAuth))) {
       const caller = await resolveCallerId(req, httpAuth, userInfo);
       if ('status' in caller) {
@@ -176,7 +201,7 @@ export function createRouter(options: RouterOptions): Router {
       }
     }
     try {
-      const list = await domains.list(team, service as string | undefined);
+      const list = await domains.list(team, service);
       res.json({ domains: list });
     } catch (err) {
       respondToDomainsError(res, logger, `Failed to list domains for team '${team}'`, err);
@@ -186,8 +211,10 @@ export function createRouter(options: RouterOptions): Router {
   // POST /domains — register a new custom domain via mctl-api's registry
   router.post('/domains', async (req: Request, res: Response) => {
     const { team, service, domain } = req.body;
-    // Unlike the query-param routes above (where Express's query parser
-    // already guarantees a string or undefined), a JSON body can hand any
+    // Unlike the query-param routes in this file, which are safe because of
+    // their own explicit `typeof` guards (not because Express 4's default
+    // `qs` query parser guarantees a string — it does not; see the
+    // service-param guard on GET /domains above), a JSON body can hand any
     // of these an array, number, or object. Left unvalidated, an array
     // value for `team` reaches authorizeForTeam's Knex `.where({ tenant_name:
     // team, ... })` — an object/array value there does not behave like the
