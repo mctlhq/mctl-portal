@@ -1,4 +1,5 @@
-import { Router, json, Request, Response } from 'express';
+import { json, Request, Response, Router } from 'express';
+import Router_ from 'express-promise-router';
 import { HttpAuthService, LoggerService, UserInfoService } from '@backstage/backend-plugin-api';
 import type { Knex } from 'knex';
 import { DomainsClient, MctlApiError } from './mctlApiClient';
@@ -144,7 +145,15 @@ async function domainBelongsToTeam(domains: DomainsClient, id: string, team: str
 
 export function createRouter(options: RouterOptions): Router {
   const { logger, domains, httpAuth, userInfo, db, isPostgres } = options;
-  const router = Router();
+  // express-promise-router (already a dependency, used the same way by
+  // github-app-connect-backend and oidc-provider-backend) so an async
+  // handler's rejection is forwarded to Express's error pipeline instead of
+  // hanging the request and becoming an unhandled rejection at the process
+  // level. Plain express.Router does not do this on Express 4 — every
+  // `await ... outside a try` in this file (authorizeForTeam,
+  // resolveCallerId, isWorkflowCaller, domainBelongsToTeam) relied on the
+  // caller wrapping it correctly instead of the router guaranteeing it.
+  const router: Router = Router_();
   router.use(json());
 
   // GET /domains?team=X&service=Y (service is optional)

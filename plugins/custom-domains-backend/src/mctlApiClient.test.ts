@@ -166,6 +166,41 @@ describe('MctlApiDomainsClient', () => {
     await expect(client.list('acme')).rejects.toBeInstanceOf(MctlApiError);
   });
 
+  // router.ts's respondToDomainsError forwards MctlApiError.message
+  // verbatim to the browser. A 4xx body is client-actionable (a 409
+  // "domain already registered") so it belongs in the message; a 5xx body
+  // can carry a stack trace or other internal detail and must not reach an
+  // authenticated tenant user through a routine upstream failure.
+  it('does not include the raw upstream response body in a 5xx error message', async () => {
+    fetchMock.mockResolvedValue({
+      ok: false,
+      status: 500,
+      text: async () => 'Traceback: internal db connection string leaked here',
+    });
+    let caught: unknown;
+    try {
+      await client.list('acme');
+    } catch (err) {
+      caught = err;
+    }
+    expect((caught as Error).message).not.toContain('internal db connection string');
+  });
+
+  it('does include the raw upstream response body in a 4xx error message (client-actionable)', async () => {
+    fetchMock.mockResolvedValue({
+      ok: false,
+      status: 409,
+      text: async () => 'domain already registered',
+    });
+    let caught: unknown;
+    try {
+      await client.list('acme');
+    } catch (err) {
+      caught = err;
+    }
+    expect((caught as Error).message).toContain('domain already registered');
+  });
+
   it('a network/timeout failure becomes a 502-class MctlApiError', async () => {
     fetchMock.mockRejectedValue(new Error('request timed out'));
     await expect(client.list('acme')).rejects.toMatchObject({ status: 502 });

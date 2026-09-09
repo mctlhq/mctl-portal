@@ -164,11 +164,21 @@ export class MctlApiDomainsClient implements DomainsClient {
 
     if (!resp.ok) {
       const body = await resp.text().catch(() => '');
-      const detail = body ? `: ${body}` : '';
       if (resp.status >= 400 && resp.status < 500) {
+        // 4xx bodies are client-actionable (a 409 "domain already
+        // registered", a 400 validation message) and router.ts's
+        // respondToDomainsError forwards MctlApiError.message verbatim to
+        // the browser, so include the body here.
+        const detail = body ? `: ${body}` : '';
         throw new MctlApiError(resp.status, `mctl-api ${resp.status} at ${path}${detail}`);
       }
-      throw new MctlApiError(502, `mctl-api upstream error ${resp.status} at ${path}${detail}`);
+      // A 5xx body can carry a stack trace, framework error HTML, or other
+      // internal detail. router.ts's respondToDomainsError forwards
+      // MctlApiError.message verbatim to the browser, so — unlike the 4xx
+      // branch above, where the body is genuinely client-actionable —
+      // deliberately drop it here rather than let an authenticated tenant
+      // user read mctl-api's internals through a routine 5xx.
+      throw new MctlApiError(502, `mctl-api upstream error ${resp.status} at ${path}`);
     }
 
     // A successful response can still have an empty or non-JSON body (e.g. a

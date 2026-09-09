@@ -228,7 +228,7 @@ export function EntityDomainsCard() {
     try {
       const baseUrl = await discoveryApi.getBaseUrl('custom-domains');
       const resp = await fetchApi.fetch(
-        `${baseUrl}/domains/${id}/verify?team=${encodeURIComponent(team)}`,
+        `${baseUrl}/domains/${encodeURIComponent(id)}/verify?team=${encodeURIComponent(team)}`,
         { method: 'POST' },
       );
       if (!resp.ok) {
@@ -251,7 +251,7 @@ export function EntityDomainsCard() {
     try {
       const baseUrl = await discoveryApi.getBaseUrl('custom-domains');
       const resp = await fetchApi.fetch(
-        `${baseUrl}/domains/${id}?team=${encodeURIComponent(team)}`,
+        `${baseUrl}/domains/${encodeURIComponent(id)}?team=${encodeURIComponent(team)}`,
         { method: 'DELETE' },
       );
       if (!resp.ok) {
