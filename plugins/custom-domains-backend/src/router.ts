@@ -186,6 +186,20 @@ export function createRouter(options: RouterOptions): Router {
   // POST /domains — register a new custom domain via mctl-api's registry
   router.post('/domains', async (req: Request, res: Response) => {
     const { team, service, domain } = req.body;
+    // Unlike the query-param routes above (where Express's query parser
+    // already guarantees a string or undefined), a JSON body can hand any
+    // of these an array, number, or object. Left unvalidated, an array
+    // value for `team` reaches authorizeForTeam's Knex `.where({ tenant_name:
+    // team, ... })` — an object/array value there does not behave like the
+    // plain-string equality every other check in this file assumes, so a
+    // caller who is a genuine member of one team could shape a request that
+    // is authorized against a team they never actually named. Reject
+    // anything that is not a plain string before any of that runs, the same
+    // way GET/DELETE already reject a non-string ?team=.
+    if (typeof team !== 'string' || typeof service !== 'string' || typeof domain !== 'string') {
+      res.status(400).json({ error: 'team, service, and domain must be strings' });
+      return;
+    }
     if (!team || !service || !domain) {
       res.status(400).json({ error: 'Missing required fields: team, service, domain' });
       return;

@@ -307,6 +307,42 @@ describe('createRouter tenant ownership gating', () => {
     );
   });
 
+  // A JSON body can hand `team` any shape, unlike a query param (which
+  // Express's parser already guarantees is a string or undefined). An
+  // array value for `team` would otherwise reach authorizeForTeam's Knex
+  // `.where({ tenant_name: team, ... })` unvalidated — reject it (and any
+  // non-string field) with 400 before authorizeForTeam or the upstream
+  // create ever run.
+  it('rejects a non-string team in the POST /domains body with 400, no upstream call', async () => {
+    const { base, domains } = await startApp({
+      as: 'user',
+      userId: 'carol',
+      memberships: { 'acme:carol': { role: 'owner' } },
+    });
+    const res = await fetch(`${base}/domains`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ team: ['acme', 'victim-team'], service: 'web', domain: 'example.com' }),
+    });
+    expect(res.status).toBe(400);
+    expect(domains.create).not.toHaveBeenCalled();
+  });
+
+  it('rejects a non-string service or domain in the POST /domains body with 400, no upstream call', async () => {
+    const { base, domains } = await startApp({
+      as: 'user',
+      userId: 'carol',
+      memberships: { 'acme:carol': { role: 'owner' } },
+    });
+    const res = await fetch(`${base}/domains`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ team: 'acme', service: { $ne: null }, domain: 42 }),
+    });
+    expect(res.status).toBe(400);
+    expect(domains.create).not.toHaveBeenCalled();
+  });
+
   // T6: non-member verify is denied; no upstream verify call happens.
   it('denies POST /domains/:id/verify from a non-member with 403 (T6)', async () => {
     const { base, domains } = await startApp({

@@ -164,7 +164,16 @@ export class MctlApiDomainsClient implements DomainsClient {
 
     if (!resp.ok) {
       const body = await resp.text().catch(() => '');
-      if (resp.status >= 400 && resp.status < 500) {
+      // 401/403 can only mean THIS plugin's own MCTL_API_TOKEN is missing,
+      // expired, or unscoped — mctl-api never returns them for anything the
+      // end user did (team/domain authorization failures are handled by
+      // this router's own authorizeForTeam before a request is ever sent).
+      // Forwarding them as-is would answer the browser with a 401/403 that
+      // Backstage's core FetchApi treats as a signal that the *user's own*
+      // session expired, which can force a re-login loop for a problem the
+      // user cannot fix. Map them to 502 like any other upstream
+      // integration failure instead of passing them through as 4xx.
+      if (resp.status !== 401 && resp.status !== 403 && resp.status >= 400 && resp.status < 500) {
         // 4xx bodies are client-actionable (a 409 "domain already
         // registered", a 400 validation message) and router.ts's
         // respondToDomainsError forwards MctlApiError.message verbatim to

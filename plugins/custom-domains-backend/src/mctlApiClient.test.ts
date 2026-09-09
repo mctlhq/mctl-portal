@@ -201,6 +201,17 @@ describe('MctlApiDomainsClient', () => {
     expect((caught as Error).message).toContain('domain already registered');
   });
 
+  // A 401/403 from mctl-api can only mean this plugin's own MCTL_API_TOKEN
+  // is wrong, not anything the end user did (team authorization is
+  // enforced by the router before any upstream call is made). Backstage's
+  // core FetchApi treats a 401 as a signal that the user's own session
+  // expired, so forwarding it verbatim risks forcing a login loop over a
+  // backend misconfiguration the user cannot fix.
+  it.each([401, 403])('maps an upstream %i to a 502-class MctlApiError rather than forwarding it', async status => {
+    fetchMock.mockResolvedValue({ ok: false, status, text: async () => 'unauthorized' });
+    await expect(client.list('acme')).rejects.toMatchObject({ status: 502 });
+  });
+
   it('a network/timeout failure becomes a 502-class MctlApiError', async () => {
     fetchMock.mockRejectedValue(new Error('request timed out'));
     await expect(client.list('acme')).rejects.toMatchObject({ status: 502 });
