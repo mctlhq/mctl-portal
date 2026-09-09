@@ -245,7 +245,8 @@ export class MctlApiDomainsClient implements DomainsClient {
   }
 
   async create(params: CreateDomainParams): Promise<CustomDomain> {
-    const raw = await this.request<unknown>('/api/v1/domains', {
+    const path = '/api/v1/domains';
+    const raw = await this.request<unknown>(path, {
       method: 'POST',
       body: JSON.stringify({
         team: params.team,
@@ -253,6 +254,17 @@ export class MctlApiDomainsClient implements DomainsClient {
         domain: params.domain,
       }),
     });
+    // mctl-api's AddDomain (internal/api/handlers_domains.go) always answers
+    // 201 with a JSON domainResponse body — an empty or non-object body here
+    // means something between this client and mctl-api swallowed it, not a
+    // legitimate "nothing to report" response. Without this guard,
+    // toPortalDomain(undefined) fabricates a fully-defaulted row (empty id,
+    // status "pending") that router.ts returns as a 201 success, so a create
+    // that never happened would read as a clean one — the same failure mode
+    // the empty-body guard on verify() exists to prevent.
+    if (!raw || typeof raw !== 'object') {
+      throw new MctlApiError(502, `mctl-api returned an empty body at ${path}`);
+    }
     return toPortalDomain(raw);
   }
 

@@ -316,6 +316,22 @@ describe('MctlApiDomainsClient', () => {
     await expect(client.verify('d1', 'acme')).resolves.toEqual(result);
   });
 
+  // mctl-api's AddDomain (internal/api/handlers_domains.go) always answers
+  // 201 with a JSON domainResponse body. Without this guard,
+  // toPortalDomain(undefined) fabricates a fully-defaulted CustomDomain (id:
+  // '', status: 'pending') and router.ts would answer 201 as if the create
+  // had actually succeeded — the same swallowed-in-transit failure mode the
+  // verify() empty-body guard above exists to catch.
+  it('create() rejects with a 502-class MctlApiError on a 201 with an empty body', async () => {
+    fetchMock.mockResolvedValue({ ok: true, status: 201, text: async () => '' });
+    await expect(
+      client.create({ team: 'acme', service: 'web', domain: 'example.com', actor: 'carol' }),
+    ).rejects.toBeInstanceOf(MctlApiError);
+    await expect(
+      client.create({ team: 'acme', service: 'web', domain: 'example.com', actor: 'carol' }),
+    ).rejects.toMatchObject({ status: 502 });
+  });
+
   // Neither the resolved upstream URL nor the underlying driver's raw
   // message should ever reach the browser through a thrown message — only
   // the request path.
