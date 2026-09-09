@@ -81,6 +81,13 @@ argoWorkflows:
   namespace: argo-workflows
   # token: <bearer-token>
 
+customDomains:
+  # mctl-api owns the custom-domains registry; this plugin is a thin gateway
+  # to it (GET/POST /api/v1/domains, per-domain verify/delete). Local dev:
+  # run mctl-api separately or port-forward it, PORT defaults to 8080 there.
+  baseUrl: http://localhost:8080
+  # token: <bearer-token>          # static service token mctl-api issues for this plugin
+
 scaffolder:
   # see https://backstage.io/docs/features/software-templates/configuration for software template options
 

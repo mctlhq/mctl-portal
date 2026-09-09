@@ -3,7 +3,7 @@ import {
   coreServices,
 } from '@backstage/backend-plugin-api';
 import { createRouter } from './router';
-import { CustomDomainStore } from './store';
+import { MctlApiDomainsClient } from './mctlApiClient';
 
 /**
  * Registers the plugin's HTTP auth policies. Only `/health` is public; every
@@ -17,6 +17,8 @@ export function registerAuthPolicies(httpRouter: {
   httpRouter.addAuthPolicy({ path: '/health', allow: 'unauthenticated' });
 }
 
+const DEFAULT_MCTL_API_BASE_URL = 'https://api.mctl.ai';
+
 export const customDomainsPlugin = createBackendPlugin({
   pluginId: 'custom-domains',
   register(env) {
@@ -27,17 +29,25 @@ export const customDomainsPlugin = createBackendPlugin({
         database: coreServices.database,
         httpAuth: coreServices.httpAuth,
         userInfo: coreServices.userInfo,
+        config: coreServices.rootConfig,
       },
-      async init({ logger, httpRouter, database, httpAuth, userInfo }) {
+      async init({ logger, httpRouter, database, httpAuth, userInfo, config }) {
         const knex = await database.getClient();
         const isPostgres = knex.client.config.client === 'pg';
-        const store = new CustomDomainStore(knex);
-        await store.initialize();
-        logger.info('custom_domains table initialized');
+
+        const baseUrl =
+          config.getOptionalString('customDomains.baseUrl') ?? DEFAULT_MCTL_API_BASE_URL;
+        if (!baseUrl) {
+          throw new Error(
+            'customDomains.baseUrl resolved empty; cannot reach the mctl-api domains registry',
+          );
+        }
+        const token = config.getOptionalString('customDomains.token');
+        const domainsClient = new MctlApiDomainsClient({ baseUrl, token });
 
         const router = createRouter({
           logger,
-          store,
+          domains: domainsClient,
           httpAuth,
           userInfo,
           db: knex,
@@ -46,7 +56,7 @@ export const customDomainsPlugin = createBackendPlugin({
         httpRouter.use(router);
         registerAuthPolicies(httpRouter);
 
-        logger.info('Custom Domains plugin initialized');
+        logger.info(`Custom Domains plugin initialized as a gateway to mctl-api (${baseUrl})`);
       },
     });
   },

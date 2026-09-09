@@ -16,7 +16,7 @@ Backstage-based developer portal. Service catalog, templates, deploy UI.
 
 ## Custom Plugins
 1. `argo-workflows-backend` — Workflow integration
-2. `custom-domains-backend` — Domain management
+2. `custom-domains-backend` — Gateway to mctl-api's custom-domains registry (no local store)
 3. `github-app-connect-backend` — GitHub App orchestration
 4. `oidc-provider-backend` — SSO provider
 5. `permission-backend-module-team-policy` — Team RBAC
