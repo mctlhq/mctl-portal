@@ -1,5 +1,3 @@
-import fetch, { RequestInit } from 'node-fetch';
-
 export interface WorkflowSubmitRequest {
   resourceKind: 'WorkflowTemplate' | 'ClusterWorkflowTemplate';
   resourceName: string;

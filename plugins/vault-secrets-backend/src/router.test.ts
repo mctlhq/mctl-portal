@@ -2,7 +2,6 @@ import type { Knex } from 'knex';
 import express from 'express';
 import { Server } from 'http';
 import { AddressInfo } from 'net';
-import fetch from 'node-fetch';
 import {
   SLUG_RE,
   auditSecretRead,
@@ -18,9 +17,21 @@ import {
 } from './router';
 import { staticTokenProvider } from './vaultAuth';
 
-jest.mock('node-fetch', () => jest.fn());
+// Captured before any jest.spyOn replaces globalThis.fetch: the route tests
+// below drive a real local server over HTTP, and must not be intercepted by
+// the spy that stubs Vault. Keeping them separate also preserves the meaning
+// of `expect(fetchMock).not.toHaveBeenCalled()` -- "Vault was never called".
+const realFetch: typeof globalThis.fetch = globalThis.fetch.bind(globalThis);
 
-const fetchMock = fetch as unknown as jest.Mock;
+let fetchMock: jest.SpyInstance;
+
+beforeEach(() => {
+  fetchMock = jest.spyOn(globalThis, 'fetch');
+});
+
+afterEach(() => {
+  fetchMock.mockRestore();
+});
 
 // team/service are interpolated into the intake HTML pages. These tests guard
 // the two layers that prevent reflected XSS there: the kebab-case slug gate
@@ -317,10 +328,12 @@ describe('auditSecretRead', () => {
 });
 
 // End-to-end route tests: a real express app wired with createRouter, driven
-// with the platform's own fetch (no supertest — this mirrors the pattern in
+// with the captured realFetch (no supertest — this mirrors the pattern in
 // plugins/tenant-backend/src/router.test.ts). httpAuth/userInfo are stubbed
 // to resolve a fixed userId; tenant role comes from the fake Knex db, and
-// Vault responses come from the module-level node-fetch mock.
+// Vault responses come from a jest.spyOn(globalThis, 'fetch') spy — kept
+// apart from the route-driving calls above via realFetch so the spy only
+// observes Vault traffic.
 describe('database and secrets routes (masked vs. reveal)', () => {
   const noopLogger = {
     info: jest.fn(),
@@ -401,7 +414,7 @@ describe('database and secrets routes (masked vs. reveal)', () => {
   it('GET /database: viewer gets 200 with no password field and hasPassword computed', async () => {
     mockVaultKV({ host: 'h', port: '5432', database: 'd', username: 'u', password: 'p' });
     const base = await startApp('viewer');
-    const res = await globalThis.fetch(`${base}/teams/nfc/quirestack-api/database`);
+    const res = await realFetch(`${base}/teams/nfc/quirestack-api/database`);
     const body = await res.json();
     expect(res.status).toBe(200);
     expect(body).toEqual({ host: 'h', port: '5432', database: 'd', username: 'u', hasPassword: true });
@@ -411,7 +424,7 @@ describe('database and secrets routes (masked vs. reveal)', () => {
   it('GET /database/reveal: developer gets 200 with plaintext password', async () => {
     mockVaultKV({ host: 'h', port: '5432', database: 'd', username: 'u', password: 'p' });
     const base = await startApp('developer');
-    const res = await globalThis.fetch(`${base}/teams/nfc/quirestack-api/database/reveal`);
+    const res = await realFetch(`${base}/teams/nfc/quirestack-api/database/reveal`);
     const body = await res.json();
     expect(res.status).toBe(200);
     expect(body).toEqual({ host: 'h', port: '5432', database: 'd', username: 'u', password: 'p' });
@@ -420,7 +433,7 @@ describe('database and secrets routes (masked vs. reveal)', () => {
   it('GET /database/reveal: viewer gets 403 with no secret value in the body', async () => {
     mockVaultKV({ host: 'h', port: '5432', database: 'd', username: 'u', password: 'p' });
     const base = await startApp('viewer');
-    const res = await globalThis.fetch(`${base}/teams/nfc/quirestack-api/database/reveal`);
+    const res = await realFetch(`${base}/teams/nfc/quirestack-api/database/reveal`);
     const text = await res.text();
     expect(res.status).toBe(403);
     expect(text).not.toContain('p"');
@@ -430,7 +443,7 @@ describe('database and secrets routes (masked vs. reveal)', () => {
   it('GET /secrets: viewer gets 200 with secretKeys only, no plaintext', async () => {
     mockVaultKV({ API_KEY: 'super-secret', DATABASE_PASSWORD: 'hunter2' });
     const base = await startApp('viewer');
-    const res = await globalThis.fetch(`${base}/teams/nfc/quirestack-api/secrets`);
+    const res = await realFetch(`${base}/teams/nfc/quirestack-api/secrets`);
     const body = await res.json();
     expect(res.status).toBe(200);
     expect(body).toEqual({ secretKeys: ['API_KEY', 'DATABASE_PASSWORD'] });
@@ -441,7 +454,7 @@ describe('database and secrets routes (masked vs. reveal)', () => {
   it('GET /secrets/reveal: developer gets 200 with plaintext secrets map', async () => {
     mockVaultKV({ API_KEY: 'super-secret' });
     const base = await startApp('developer');
-    const res = await globalThis.fetch(`${base}/teams/nfc/quirestack-api/secrets/reveal`);
+    const res = await realFetch(`${base}/teams/nfc/quirestack-api/secrets/reveal`);
     const body = await res.json();
     expect(res.status).toBe(200);
     expect(body).toEqual({ secrets: { API_KEY: 'super-secret' } });
@@ -450,7 +463,7 @@ describe('database and secrets routes (masked vs. reveal)', () => {
   it('GET /secrets/reveal: viewer gets 403', async () => {
     mockVaultKV({ API_KEY: 'super-secret' });
     const base = await startApp('viewer');
-    const res = await globalThis.fetch(`${base}/teams/nfc/quirestack-api/secrets/reveal`);
+    const res = await realFetch(`${base}/teams/nfc/quirestack-api/secrets/reveal`);
     const text = await res.text();
     expect(res.status).toBe(403);
     expect(text).not.toContain('super-secret');
@@ -465,7 +478,7 @@ describe('database and secrets routes (masked vs. reveal)', () => {
   it('GET /secrets/reveal: a traversal-encoded app escapes no tenant boundary (400, no Vault call)', async () => {
     mockVaultKV({ API_KEY: 'super-secret' });
     const base = await startApp('developer');
-    const res = await globalThis.fetch(
+    const res = await realFetch(
       `${base}/teams/nfc/..%2Fvictim-team%2Fvictim-app/secrets/reveal`,
     );
     const text = await res.text();
@@ -477,7 +490,7 @@ describe('database and secrets routes (masked vs. reveal)', () => {
   it('GET /database: a traversal-encoded team is rejected before the role lookup', async () => {
     mockVaultKV({ host: 'h', port: '5432', database: 'd', username: 'u', password: 'p' });
     const base = await startApp('viewer');
-    const res = await globalThis.fetch(
+    const res = await realFetch(
       `${base}/teams/..%2Fvictim-team/quirestack-api/database`,
     );
     expect(res.status).toBe(400);
@@ -488,7 +501,7 @@ describe('database and secrets routes (masked vs. reveal)', () => {
     mockVaultKV({ host: 'h', port: '5432', database: 'd', username: 'u', password: 'p' });
     const base = await startApp('developer');
     for (const app of ['Quirestack-API', 'a'.repeat(32), '-leading-dash']) {
-      const res = await globalThis.fetch(
+      const res = await realFetch(
         `${base}/teams/nfc/${encodeURIComponent(app)}/database/reveal`,
       );
       expect(res.status).toBe(400);
@@ -499,7 +512,7 @@ describe('database and secrets routes (masked vs. reveal)', () => {
   it('GET /secrets: reports an empty secretKeys array when nothing is stored (no plaintext {} confusion)', async () => {
     mockVaultKV(undefined);
     const base = await startApp('viewer');
-    const res = await globalThis.fetch(`${base}/teams/nfc/quirestack-api/secrets`);
+    const res = await realFetch(`${base}/teams/nfc/quirestack-api/secrets`);
     const body = await res.json();
     expect(res.status).toBe(200);
     expect(body).toEqual({ secretKeys: [] });

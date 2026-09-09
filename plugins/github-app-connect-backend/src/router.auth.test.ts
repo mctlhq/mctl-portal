@@ -1,12 +1,17 @@
 import type { Knex } from 'knex';
 import type { Router } from 'express';
 import crypto from 'crypto';
-import fetch from 'node-fetch';
 import { auditAdminBypass, checkTeamAccess, createRouter, RouterOptions } from './router';
 
-jest.mock('node-fetch', () => jest.fn());
+let fetchMock: jest.SpyInstance;
 
-const fetchMock = fetch as unknown as jest.Mock;
+beforeEach(() => {
+  fetchMock = jest.spyOn(globalThis, 'fetch');
+});
+
+afterEach(() => {
+  fetchMock.mockRestore();
+});
 
 // findInstallation/getInstallationToken sign a real JWT with this key (RS256),
 // so it must be an actual RSA private key, not an arbitrary string, for any

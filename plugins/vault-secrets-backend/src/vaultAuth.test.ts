@@ -1,9 +1,14 @@
-import fetch from 'node-fetch';
 import { kubernetesTokenProvider, staticTokenProvider } from './vaultAuth';
 
-jest.mock('node-fetch', () => jest.fn());
+let fetchMock: jest.SpyInstance;
 
-const fetchMock = fetch as unknown as jest.Mock;
+beforeEach(() => {
+  fetchMock = jest.spyOn(globalThis, 'fetch');
+});
+
+afterEach(() => {
+  fetchMock.mockRestore();
+});
 
 const loginOk = (token: string, leaseSeconds = 3600) => ({
   ok: true,

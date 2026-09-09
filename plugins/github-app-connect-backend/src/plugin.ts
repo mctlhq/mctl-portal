@@ -5,7 +5,6 @@ import {
 import { notificationService } from '@backstage/plugin-notifications-node';
 import { createRouter } from './router';
 import { RepoConnectionStore } from './store';
-import fetch from 'node-fetch';
 
 /**
  * Registers the plugin's HTTP auth policies. Only `/callback` (GitHub's
