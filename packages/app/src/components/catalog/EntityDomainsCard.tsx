@@ -391,8 +391,14 @@ export function EntityDomainsCard() {
                 <TableBody>
                   {domains.map(d => {
                     const sc = statusConfig[d.status] ?? unknownStatusConfig;
-                    const pendingChallenge =
-                      d.status === 'pending' && d.challenge_record_name && d.challenge_record_value;
+                    // Driven by the presence of the challenge fields rather
+                    // than an allowlist of statuses: mctl-api documents them
+                    // as present for both 'pending' and 'failed' (a failed
+                    // DNS check does not reset the row like the old backend
+                    // did — it stays 'failed' and still needs a retry path),
+                    // and this degrades the same way for a status this card
+                    // has never seen, instead of silently hiding the record.
+                    const canVerify = Boolean(d.challenge_record_name && d.challenge_record_value);
                     return (
                       <TableRow key={d.id}>
                         <TableCell className={classes.domainCell}>
@@ -416,7 +422,7 @@ export function EntityDomainsCard() {
                           />
                         </TableCell>
                         <TableCell>
-                          {pendingChallenge ? (
+                          {canVerify ? (
                             <Box display="flex" alignItems="center" style={{ gap: 4 }}>
                               <Typography variant="caption" className={classes.domainCell}>
                                 TXT {d.challenge_record_name}
@@ -442,7 +448,7 @@ export function EntityDomainsCard() {
                           </Typography>
                         </TableCell>
                         <TableCell align="right">
-                          {d.status === 'pending' && (
+                          {canVerify && (
                             <Tooltip title="Verify DNS">
                               <span>
                                 <IconButton
