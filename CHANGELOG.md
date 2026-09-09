@@ -1,5 +1,29 @@
 # Changelog
 
+## [4.17.0](https://github.com/mctlhq/mctl-portal/compare/4.16.0...4.17.0) (2026-09-09)
+
+
+### Features
+
+* **agents:** issue-117-custom-domains-plugin-repoint-at-mctl-ap ([5d87529](https://github.com/mctlhq/mctl-portal/commit/5d875293f197371c2d3020c08262ef381153773c))
+* **agents:** issue-117-custom-domains-plugin-repoint-at-mctl-ap ([33d120a](https://github.com/mctlhq/mctl-portal/commit/33d120a6f6026a3103856703a2706e4965a4da6d))
+* **agents:** issue-120-custom-domains-gateway-118-12-non-blocki ([e70fd40](https://github.com/mctlhq/mctl-portal/commit/e70fd404024bd3c8eae2023f320635b71887ab09))
+* **agents:** issue-122-migrate-remaining-5-plugins-off-node-fet ([20ea7f0](https://github.com/mctlhq/mctl-portal/commit/20ea7f059ee0d1092a369bef5bd6a9bba1ee1285))
+* **agents:** issue-122-migrate-remaining-5-plugins-off-node-fet ([c967810](https://github.com/mctlhq/mctl-portal/commit/c9678108c8f864790ee6486dd3aa15b79b209555))
+
+
+### Bug Fixes
+
+* **custom-domains:** guard create() against an empty 2xx body ([0d4f696](https://github.com/mctlhq/mctl-portal/commit/0d4f696c1bdfe4f8be559f5560f884fb9c6325c4))
+* **custom-domains:** harden mctl-api client transport and error hygiene ([a4d2ab8](https://github.com/mctlhq/mctl-portal/commit/a4d2ab88f54e7229a8503178e6dc915145acb980))
+* **custom-domains:** split error log levels and validate service param ([cf0ff6a](https://github.com/mctlhq/mctl-portal/commit/cf0ff6ad87dc55e3550c4903893fe2648e45cd31))
+* **custom-domains:** surface verify:false and extend Verify eligibility ([1e797bf](https://github.com/mctlhq/mctl-portal/commit/1e797bfd4defc5c45f9dc9081e3b04cfc6a4445a))
+* **domains:** close 2 real P2s from agy — body type validation, 401/403 leak ([ec45d4a](https://github.com/mctlhq/mctl-portal/commit/ec45d4a0558331990379bffa333fbc6af65e154e))
+* **domains:** close P1 IDOR and 4 P2 findings from claude-review on [#118](https://github.com/mctlhq/mctl-portal/issues/118) ([6e62bfb](https://github.com/mctlhq/mctl-portal/commit/6e62bfb86115569b84a17d5b14175db619bcf478))
+* **domains:** close real P2s from agy — unhandled rejections, 5xx info leak ([25fdbb2](https://github.com/mctlhq/mctl-portal/commit/25fdbb265002aad071318f624fff45b3b763c370))
+* **domains:** move ownership check inside try/catch, guard undefined body ([825044c](https://github.com/mctlhq/mctl-portal/commit/825044cac80668e4304b68f00b895feecc118440))
+* **domains:** stop failed domains from becoming a dead end in the card ([06d1043](https://github.com/mctlhq/mctl-portal/commit/06d10433730b9f40a5266b574d934efcfea7638a))
+
 ## [4.16.0](https://github.com/mctlhq/mctl-portal/compare/4.15.0...4.16.0) (2026-09-01)
 
 
