@@ -236,8 +236,7 @@ describe('work-items router', () => {
       { idempotencyKey: '' },
       { idempotencyKey: 42 },
       { resumedFromExecutionId: 'we_1\r\nX: y' },
-      { resumedFromExecutionId: 'not-an-execution' },
-      { resumedFromExecutionId: `we_${'a'.repeat(65)}` },
+      { resumedFromExecutionId: 'x'.repeat(129) },
     ]) {
       const res = await post('/work-items/wi_1/execution-requests', { kind: 'resume', expectedStateVersion: 1, ...extra });
       expect(res.status).toBe(400);

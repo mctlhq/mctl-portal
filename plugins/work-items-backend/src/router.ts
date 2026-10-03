@@ -14,8 +14,11 @@ export interface RouterOptions {
 type CallerId = { actor: string } | { status: 401; error: string };
 
 const WORK_ITEM_ID = /^wi_[A-Za-z0-9-]{1,64}$/;
-/** mctl-api execution ids are `we_<uuid>` (contract "ID scheme"). */
-const EXECUTION_ID = /^we_[A-Za-z0-9-]{1,64}$/;
+/**
+ * The contract does not pin mctl-api's execution id scheme, so the id is
+ * treated as opaque: only bounded and header/log-safe. mctl-api validates it.
+ */
+const EXECUTION_ID = /^[A-Za-z0-9._:-]{1,128}$/;
 /**
  * The key ends up in the Idempotency-Key header and in mctl-api's per-item key
  * space, so it is bounded and header-safe (no CR/LF). The UI sends
