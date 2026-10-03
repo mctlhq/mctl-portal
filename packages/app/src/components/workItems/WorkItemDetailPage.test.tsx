@@ -1,4 +1,5 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { renderInTestApp } from '@backstage/test-utils';
 import { ObservedSection } from './ObservedSection';
 import { WorkItemDetailView } from './WorkItemDetailPage';
 import { WorkItemsApi, WorkItemsApiError } from './api';
@@ -56,6 +57,13 @@ describe('WorkItemDetailView', () => {
       <WorkItemDetailView error={new WorkItemsApiError(403, 'x', 'link_required')} api={api()} onReload={jest.fn()} />,
     );
     expect(screen.getByText('Link your platform identity')).toBeTruthy();
+    expect(screen.queryByTestId('work-item-header')).toBeNull();
+  });
+
+  it('renders a generic error in the error panel, without the link form or data', async () => {
+    await renderInTestApp(<WorkItemDetailView error={new WorkItemsApiError(502, 'mctl-api upstream error 500')} api={api()} onReload={jest.fn()} />);
+    expect(screen.getAllByText(/mctl-api upstream error 500/).length).toBeGreaterThan(0);
+    expect(screen.queryByText('Link your platform identity')).toBeNull();
     expect(screen.queryByTestId('work-item-header')).toBeNull();
   });
 

@@ -14,6 +14,14 @@ export interface RouterOptions {
 type CallerId = { actor: string } | { status: 401; error: string };
 
 const WORK_ITEM_ID = /^wi_[A-Za-z0-9-]{1,64}$/;
+/** mctl-api execution ids are `we_<uuid>` (contract "ID scheme"). */
+const EXECUTION_ID = /^we_[A-Za-z0-9-]{1,64}$/;
+/**
+ * The key ends up in the Idempotency-Key header and in mctl-api's per-item key
+ * space, so it is bounded and header-safe (no CR/LF). The UI sends
+ * `portal-<uuid>`.
+ */
+const IDEMPOTENCY_KEY = /^[A-Za-z0-9._:-]{1,128}$/;
 
 /**
  * mctl-api's bound on a portal external id (`externalIDPattern[SurfacePortal]`
@@ -23,11 +31,14 @@ const WORK_ITEM_ID = /^wi_[A-Za-z0-9-]{1,64}$/;
  */
 export const MCTL_API_PORTAL_EXTERNAL_ID = /^[A-Za-z0-9._:@|-]{1,256}$/;
 
-// Backstage's own entity-ref grammar: namespace and name share one pattern
-// (alphanumeric runs joined by single '-', '_' or '.'), at most 63 chars. Neither
-// may contain ':' or '/', which is what makes the encoding below injective.
-const NAMESPACE = /^[a-z0-9]+(?:[-_.][a-z0-9]+)*$/;
-const NAME = /^[a-z0-9]+(?:[-_.][a-z0-9]+)*$/;
+// Backstage's isValidObjectName (@backstage/catalog-model
+// KubernetesValidatorFunctions), applied after lowercasing: 1-63 characters,
+// first and last alphanumeric, `-`, `_` and `.` anywhere in between (repeats
+// allowed). It is used for both parts: for names it is exactly Backstage's
+// rule, and for namespaces it is a superset of Backstage's default (a DNS
+// label) that also admits a custom namespace validator's `_`/`.`. Neither
+// part can contain ':' or '/', which is what makes the encoding injective.
+const ENTITY_PART = /^[a-z0-9](?:[a-z0-9_.-]{0,61}[a-z0-9])?$/;
 
 /**
  * Derive the portal external id sent as `X-MCTL-Surface-Actor` from a Backstage
@@ -38,8 +49,8 @@ const NAME = /^[a-z0-9]+(?:[-_.][a-z0-9]+)*$/;
  * - Lowercasing matches Backstage, which compares entity refs
  *   case-insensitively, so `user:default/Alice` and `user:default/alice` are
  *   one user there and one id here.
- * - Namespace and name are checked against Backstage's grammar, which forbids
- *   ':' and '/'. The id therefore splits back into exactly one
+ * - Namespace and name are checked against Backstage's object-name grammar
+ *   (ENTITY_PART), which forbids ':' and '/'. The id therefore splits back into exactly one
  *   (namespace, name) pair, so two different users can never share an id.
  *   A ref outside that grammar is refused rather than escaped.
  * - The result only uses [a-z0-9._:-] and is at most 132 characters, inside
@@ -53,8 +64,7 @@ export function toSurfaceActorId(userEntityRef: string): string | undefined {
   if (!m) return undefined;
   const [, kind, namespace, name] = m;
   if (kind !== 'user') return undefined;
-  if (namespace.length > 63 || !NAMESPACE.test(namespace)) return undefined;
-  if (name.length > 63 || !NAME.test(name)) return undefined;
+  if (!ENTITY_PART.test(namespace) || !ENTITY_PART.test(name)) return undefined;
   const id = `user:${namespace}:${name}`;
   return MCTL_API_PORTAL_EXTERNAL_ID.test(id) ? id : undefined;
 }
@@ -77,7 +87,11 @@ export async function resolveCallerId(
     const { userEntityRef } = await userInfo.getUserInfo(credentials);
     const actor = userEntityRef ? toSurfaceActorId(userEntityRef) : undefined;
     if (!actor) {
-      logger?.warn('work-items: user entity ref is not representable as a surface actor id');
+      // An entity ref is a catalog identifier, not a secret; naming it is what
+      // makes a refused user diagnosable.
+      logger?.warn(
+        `work-items: user entity ref ${JSON.stringify(userEntityRef ?? null)} is not representable as a surface actor id`,
+      );
       return { status: 401, error: 'Authentication required' };
     }
     return { actor };
@@ -182,6 +196,15 @@ export function createRouter(options: RouterOptions): Router {
       b.expectedStateVersion < 0
     ) {
       res.status(400).json({ error: 'kind (start|resume) and expectedStateVersion are required' });
+      return;
+    }
+    if (
+      (b.idempotencyKey !== undefined &&
+        (typeof b.idempotencyKey !== 'string' || !IDEMPOTENCY_KEY.test(b.idempotencyKey))) ||
+      (b.resumedFromExecutionId !== undefined &&
+        (typeof b.resumedFromExecutionId !== 'string' || !EXECUTION_ID.test(b.resumedFromExecutionId)))
+    ) {
+      res.status(400).json({ error: 'idempotencyKey or resumedFromExecutionId is malformed' });
       return;
     }
     if (!requireConfigured(res)) return;

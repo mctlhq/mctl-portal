@@ -29,6 +29,12 @@ describe('toSurfaceActorId', () => {
     'user:default/alice.smith',
     'user:default/a_b-c.d',
     'user:my-org/bob',
+    'user:my_org/alice',
+    'user:my.org/alice',
+    'user:default/john..doe',
+    'user:default/a--b',
+    'user:default/a_.b',
+    'user:a/b',
     `user:${'n'.repeat(63)}/${'x'.repeat(63)}`,
   ];
 
@@ -44,10 +50,33 @@ describe('toSurfaceActorId', () => {
     expect(toSurfaceActorId('user:default/alice')).toBe('user:default:alice');
     expect(toSurfaceActorId('User:Default/Alice')).toBe('user:default:alice');
     expect(toSurfaceActorId('user:my-org/bob.s')).toBe('user:my-org:bob.s');
+    // Backstage's isValidObjectName for both parts: `_`/`.` in a namespace,
+    // repeated or adjacent separators inside a name.
+    expect(toSurfaceActorId('user:my_org/alice')).toBe('user:my_org:alice');
+    expect(toSurfaceActorId('user:My.Org/Alice')).toBe('user:my.org:alice');
+    expect(toSurfaceActorId('user:default/john..doe')).toBe('user:default:john..doe');
+    expect(toSurfaceActorId('user:default/a--b')).toBe('user:default:a--b');
+    expect(toSurfaceActorId('user:default/a_.b')).toBe('user:default:a_.b');
   });
 
   it('is collision-free: distinct users never share an id', () => {
-    const refs = ['user:a/b-c', 'user:a-b/c', 'user:default/alice', 'user:other/alice', 'user:default/alice.x', 'user:default/alice-x'];
+    const refs = [
+      'user:a/b-c',
+      'user:a-b/c',
+      'user:a.b/c',
+      'user:a/b.c',
+      'user:a_b/c',
+      'user:a/b_c',
+      'user:my_org/alice',
+      'user:my.org/alice',
+      'user:my-org/alice',
+      'user:default/alice',
+      'user:other/alice',
+      'user:default/alice.x',
+      'user:default/alice-x',
+      'user:default/john..doe',
+      'user:default/john.doe',
+    ];
     const ids = refs.map(toSurfaceActorId);
     expect(new Set(ids).size).toBe(refs.length);
     for (const id of ids) {
@@ -65,6 +94,10 @@ describe('toSurfaceActorId', () => {
       'user:default/a/b',
       'user:default/a b',
       'user:default/-alice',
+      'user:default/alice-',
+      'user:default/alice.',
+      'user:_org/alice',
+      'user:org./alice',
       'user:default/alice@example.com',
       `user:default/${'x'.repeat(64)}`,
       `user:${'n'.repeat(64)}/alice`,
@@ -194,6 +227,31 @@ describe('work-items router', () => {
     expect((await post('/work-items/wi_1/execution-requests', { kind: 'bogus' })).status).toBe(400);
   });
 
+  it('400s a malformed idempotencyKey or resumedFromExecutionId with no upstream call', async () => {
+    const c = fakeClient();
+    await start(c, { actionsEnabled: true });
+    for (const extra of [
+      { idempotencyKey: 'a\r\nb' },
+      { idempotencyKey: 'x'.repeat(129) },
+      { idempotencyKey: '' },
+      { idempotencyKey: 42 },
+      { resumedFromExecutionId: 'we_1\r\nX: y' },
+      { resumedFromExecutionId: 'not-an-execution' },
+      { resumedFromExecutionId: `we_${'a'.repeat(65)}` },
+    ]) {
+      const res = await post('/work-items/wi_1/execution-requests', { kind: 'resume', expectedStateVersion: 1, ...extra });
+      expect(res.status).toBe(400);
+    }
+    expect(c.createExecutionRequest).not.toHaveBeenCalled();
+    const ok = await post('/work-items/wi_1/execution-requests', {
+      kind: 'resume',
+      expectedStateVersion: 1,
+      idempotencyKey: 'portal-0b6f2c1e-7d3a-4c55-9a1e-2f6b8e9d0c11',
+      resumedFromExecutionId: 'we_0b6f2c1e-7d3a-4c55-9a1e-2f6b8e9d0c11',
+    });
+    expect(ok.status).toBe(201);
+  });
+
   it('a portal admin gets no extra access: relayed as that user, mctl-api 403 passes through (T5)', async () => {
     const c = fakeClient({
       getWorkItem: jest.fn().mockRejectedValue(new MctlApiError(403, 'not visible to you', 'forbidden')),
@@ -216,11 +274,14 @@ describe('work-items router', () => {
   it('refuses a caller whose entity ref cannot be a portal actor, with no upstream call', async () => {
     for (const ref of ['group:default/admins', 'user:default/a:b', 'user:default/a/b', 'user:Default Space/alice', '']) {
       const c = fakeClient();
-      await start(c, { userEntityRef: ref });
+      const logger = { error: jest.fn(), warn: jest.fn(), info: jest.fn() };
+      await start(c, { userEntityRef: ref, logger });
       expect((await fetch(`${base}/work-items/wi_1`)).status).toBe(401);
       expect((await post('/surface-identities/redeem', { code: 'ABC' })).status).toBe(401);
       expect(c.getWorkItem).not.toHaveBeenCalled();
       expect(c.redeemIdentity).not.toHaveBeenCalled();
+      // The refusal names the ref (a catalog id, not a secret).
+      expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining(JSON.stringify(ref)));
       const running = server;
       await new Promise<void>(r => running.close(() => r()));
     }

@@ -14,8 +14,8 @@ export interface Config {
     actionsEnabled?: boolean;
     /**
      * Optional template for the Execution Canvas link. `{executionId}` and
-     * `{workItemId}` are substituted.
-     * @visibility frontend
+     * `{workItemId}` are substituted server-side; the browser only receives
+     * the filtered links, so this stays backend-only.
      */
     executionCanvasUrlTemplate?: string;
   };

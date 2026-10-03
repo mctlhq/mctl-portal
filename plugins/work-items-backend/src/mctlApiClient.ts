@@ -308,7 +308,10 @@ export class MctlApiWorkItemsClient implements WorkItemsClient {
         : { state: 'unknown', reason: 'unrecognised_shape' };
     } catch (err) {
       // The item itself was readable; degrade only this section.
-      if (err instanceof MctlApiError && (err.status === 403 || err.status === 404 || err.status === 502)) {
+      // Any upstream answer (403, 404, 429, 5xx, ...) degrades this section;
+      // only a non-MctlApiError (a plugin bug such as an allowlist violation)
+      // propagates.
+      if (err instanceof MctlApiError) {
         requests = { state: 'unknown', reason: 'fetch_failed' };
       } else {
         throw err;

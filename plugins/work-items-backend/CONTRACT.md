@@ -35,10 +35,15 @@ Rule (`toSurfaceActorId` in `src/router.ts`):
 
 - `user:<namespace>/<name>` becomes `user:<namespace>:<name>`, lowercased.
   Example: `user:default/Alice` -> `user:default:alice`.
-- Only `user` refs are accepted. The namespace must be a DNS label
-  (`[a-z0-9]+(-[a-z0-9]+)*`, max 63) and the name a Backstage object name
-  (`[a-z0-9]+([-_.][a-z0-9]+)*`, max 63), which is Backstage's own grammar.
-  A ref outside it is refused with 401; it is never escaped or truncated.
+- Only `user` refs are accepted. Namespace and name must both match
+  `^[a-z0-9]([a-z0-9_.-]{0,61}[a-z0-9])?$` after lowercasing: Backstage's
+  `isValidObjectName` (1-63 characters, first and last alphanumeric, `-`, `_`
+  and `.` anywhere in between, repeats allowed). For names that is exactly
+  Backstage's rule; for namespaces it is a superset of Backstage's default (a
+  DNS label), so custom namespaces with `_` or `.` also work. Examples:
+  `user:my_org/alice` -> `user:my_org:alice`, `user:default/john..doe` ->
+  `user:default:john..doe`. A ref outside the grammar is refused with 401 and a
+  warn log naming the ref. It is never escaped or truncated.
 - Collision-free: neither part can contain `:` or `/`, so an id splits back into
   exactly one (namespace, name) pair. Lowercasing only merges refs that differ in
   case, which Backstage already treats as the same entity.

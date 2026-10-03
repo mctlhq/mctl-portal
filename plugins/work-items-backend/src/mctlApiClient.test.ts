@@ -112,6 +112,17 @@ describe('MctlApiWorkItemsClient (T4)', () => {
     expect((await mk('//evil.example/{executionId}').getWorkItem('wi_abc', 'u')).links).toEqual([]);
   });
 
+  it('degrades only the execution-requests section on any upstream error, including 429', async () => {
+    for (const status of [400, 403, 404, 409, 429, 500, 503]) {
+      fetchMock
+        .mockResolvedValueOnce(jsonResp(200, VIEW))
+        .mockResolvedValueOnce(jsonResp(status, { error: 'x', code: 'rate_limited' }));
+      const w = await client().getWorkItem('wi_abc', 'u');
+      expect(w.id).toBe('wi_abc');
+      expect(w.executionRequests).toEqual({ state: 'unknown', reason: 'fetch_failed' });
+    }
+  });
+
   it('only allows relay routes', () => {
     expect(isRelayAllowed('GET', '/api/v1/work-items/wi_1')).toBe(true);
     expect(isRelayAllowed('GET', '/api/v1/work-items/wi_1/executions')).toBe(false);
