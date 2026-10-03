@@ -171,6 +171,11 @@ platform:
   gitopsRepo: ${GITOPS_REPO_NAME}
   containerRegistry: ${CONTAINER_REGISTRY}
 
+workItems:
+  baseUrl: ${MCTL_API_URL}
+  surfaceToken: ${MCTL_SURFACE_PORTAL_TOKEN}
+  actionsEnabled: false
+
 mctl:
   proposals:
     gitopsRepo: ${GITOPS_REPO_ORG}/${GITOPS_REPO_NAME}

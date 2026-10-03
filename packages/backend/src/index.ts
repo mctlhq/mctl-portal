@@ -106,4 +106,7 @@ backend.add(
   })),
 );
 
+// work items — read-only canonical WorkItem view via mctl-api (surface:portal relay)
+backend.add(import('@internal/plugin-work-items-backend'));
+
 backend.start();

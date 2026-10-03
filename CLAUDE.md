@@ -5,7 +5,7 @@ Backstage-based developer portal. Service catalog, templates, deploy UI.
 ## Stack
 - Backstage (Node.js 22), TypeScript
 - yarn for package management
-- 8 custom backend plugins
+- 9 custom backend plugins
 
 ## Conventions
 - TypeScript strict mode (`strict: true`)
@@ -23,6 +23,7 @@ Backstage-based developer portal. Service catalog, templates, deploy UI.
 6. `resource-usage-backend` — Quota monitoring
 7. `tenant-backend` — Workspace management
 8. `vault-secrets-backend` — Secret injection
+9. `work-items-backend` — Canonical WorkItem view via mctl-api. Authenticates as the `surface:portal` principal (`MCTL_SURFACE_PORTAL_TOKEN`) with `X-MCTL-Surface-Actor` (surface relay, mctl-api#350); never uses `MCTL_API_TOKEN`/admin credentials. mctl-api is the authorization authority. Mutations are off unless `workItems.actionsEnabled` is true (default false). See `plugins/work-items-backend/CONTRACT.md`
 
 ## Key Paths
 - `app-config.yaml` — local dev config

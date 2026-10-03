@@ -31,6 +31,7 @@ import { searchPage } from './components/search/SearchPage';
 import { Root } from './components/Root';
 import { NoTenantPage } from './components/tenant/NoTenantPage';
 import { ProposalsRoutes } from './components/proposals';
+import { WorkItemsRoutes } from './components/workItems';
 
 import {
   AlertDisplay,
@@ -263,6 +264,7 @@ const routes = (
     <Route path="/notifications" element={<NotificationsPage />} />
     <Route path="/no-tenant" element={<NoTenantPage />} />
     <Route path="/proposals/*" element={<ProposalsRoutes />} />
+    <Route path="/work-items/*" element={<WorkItemsRoutes />} />
   </FlatRoutes>
 );
 
