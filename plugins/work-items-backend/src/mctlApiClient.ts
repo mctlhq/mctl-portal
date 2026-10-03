@@ -48,6 +48,9 @@ export function isRelayAllowed(method: string, path: string): boolean {
   return RELAY_ALLOWLIST.some(r => r.method === method && r.pattern.test(path));
 }
 
+/** mctl-api internal/surfaceid/store.go externalIDPattern[SurfacePortal]. */
+const PORTAL_EXTERNAL_ID = /^[A-Za-z0-9._:@|-]{1,256}$/;
+
 const LINK_CODES = new Set(['link_not_found', 'link_revoked', 'link_expired', 'relay_required']);
 
 const str = (v: unknown): string | undefined => (typeof v === 'string' && v.length > 0 ? v : undefined);
@@ -63,6 +66,16 @@ function safeHttpUrl(v: unknown): string | undefined {
   } catch {
     return undefined;
   }
+}
+
+/**
+ * The one link filter: an absolute http(s) URL, or a same-origin path. A
+ * protocol-relative `//host` (or `/\\host`, which browsers treat the same
+ * way) is not a same-origin path and is dropped.
+ */
+export function isSafeLink(url: string): boolean {
+  if (safeHttpUrl(url)) return true;
+  return /^\/(?![/\\])/.test(url);
 }
 
 function mapExecution(raw: unknown): ExecutionRef | undefined {
@@ -122,12 +135,9 @@ export function toPortalWorkItem(
   if (!v || !w || !id) {
     throw new MctlApiError(502, 'mctl-api returned an unrecognised work item body');
   }
-  const stateVersion =
-    typeof v.state_version === 'number'
-      ? v.state_version
-      : typeof w.state_version === 'number'
-        ? w.state_version
-        : 0;
+  let stateVersion = 0;
+  if (typeof v.state_version === 'number') stateVersion = v.state_version;
+  else if (typeof w.state_version === 'number') stateVersion = w.state_version;
 
   const exec = v.latest_execution === null ? null : mapExecution(v.latest_execution);
   const snap = v.latest_snapshot === null ? null : mapSnapshot(v.latest_snapshot);
@@ -154,7 +164,7 @@ export function toPortalWorkItem(
     snapshots: NOT_VIA_RELAY,
     evidence: NOT_VIA_RELAY,
     surfaces: NOT_VIA_RELAY,
-    links: canvasLinks.filter(l => safeHttpUrl(l.url)),
+    links: canvasLinks.filter(l => isSafeLink(l.url)),
   };
 }
 
@@ -205,9 +215,19 @@ export class MctlApiWorkItemsClient implements WorkItemsClient {
     actor: string,
     body?: unknown,
     idempotencyKey?: string,
+    redact: string[] = [],
   ): Promise<{ status: number; json: unknown }> {
+    // Values that must never reach a log line (the redeem code), even when
+    // mctl-api or the network driver echoes them back.
+    const scrub = (t: string) => redact.reduce((acc, v) => (v ? acc.split(v).join('[redacted]') : acc), t);
     if (!isRelayAllowed(method, path)) {
-      throw new MctlApiError(500, `route ${method} ${path} is not on the surface relay allowlist`);
+      // A programming error in this plugin, not an upstream answer: a plain
+      // Error, so the router logs it and the browser sees only a generic 502.
+      throw new Error(`route ${method} ${path} is not on the surface relay allowlist`);
+    }
+    if (!PORTAL_EXTERNAL_ID.test(actor)) {
+      // mctl-api would answer 400 invalid_request; never send it.
+      throw new Error('surface actor id does not match the mctl-api portal pattern');
     }
     if (!this.surfaceToken) {
       throw new MctlApiError(503, 'work items are not configured', 'work_items_unconfigured');
@@ -231,7 +251,9 @@ export class MctlApiWorkItemsClient implements WorkItemsClient {
     } catch (err) {
       // Log the driver message locally only; the thrown message names the
       // route and never the URL host, token or driver detail.
-      this.logger.error(`mctl-api request failed for ${method} ${path}: ${err instanceof Error ? err.message : 'network error'}`);
+      this.logger.error(
+        scrub(`mctl-api request failed for ${method} ${path}: ${err instanceof Error ? err.message : 'network error'}`),
+      );
       throw new MctlApiError(502, 'mctl-api request failed');
     }
 
@@ -260,7 +282,7 @@ export class MctlApiWorkItemsClient implements WorkItemsClient {
       }
       // 401 means the portal's own surface token is wrong; 5xx bodies may carry
       // internals. Neither reaches the browser.
-      this.logger.error(`mctl-api ${resp.status} for ${method} ${path}: ${text.slice(0, 500)}`);
+      this.logger.error(scrub(`mctl-api ${resp.status} for ${method} ${path}: ${text.slice(0, 500)}`));
       throw new MctlApiError(502, `mctl-api upstream error ${resp.status}`);
     }
     return { status: resp.status, json: parsed };
@@ -293,18 +315,19 @@ export class MctlApiWorkItemsClient implements WorkItemsClient {
       }
     }
 
-    const mapped = toPortalWorkItem(view.json, requests);
-    return { ...mapped, links: this.canvasLinks(mapped) };
+    // Canvas link candidates go through the mapper, so one filter governs
+    // every link the browser receives.
+    return toPortalWorkItem(view.json, requests, this.canvasLinks(id, view.json));
   }
 
-  private canvasLinks(item: PortalWorkItem): { label: string; url: string }[] {
+  private canvasLinks(id: string, view: unknown): { label: string; url: string }[] {
     const tpl = this.canvasTemplate;
-    const exec = item.latestExecution.state === 'ok' ? item.latestExecution.value : null;
+    const exec = mapExecution(obj(view)?.latest_execution);
     if (!tpl || !exec) return [];
     const url = tpl
       .replace('{executionId}', encodeURIComponent(exec.id))
-      .replace('{workItemId}', encodeURIComponent(item.id));
-    return safeHttpUrl(url) || url.startsWith('/') ? [{ label: 'Execution Canvas', url }] : [];
+      .replace('{workItemId}', encodeURIComponent(id));
+    return [{ label: 'Execution Canvas', url }];
   }
 
   async createExecutionRequest(
@@ -331,6 +354,6 @@ export class MctlApiWorkItemsClient implements WorkItemsClient {
   }
 
   async redeemIdentity(code: string, actor: string): Promise<void> {
-    await this.request('POST', '/api/v1/surface-identities/redeem', actor, { code });
+    await this.request('POST', '/api/v1/surface-identities/redeem', actor, { code }, undefined, [code]);
   }
 }

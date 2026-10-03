@@ -16,10 +16,55 @@ type CallerId = { actor: string } | { status: 401; error: string };
 const WORK_ITEM_ID = /^wi_[A-Za-z0-9-]{1,64}$/;
 
 /**
+ * mctl-api's bound on a portal external id (`externalIDPattern[SurfacePortal]`
+ * in mctl-api internal/surfaceid/store.go). An `X-MCTL-Surface-Actor` that does
+ * not match is answered 400 `invalid_request` by every relay route and by
+ * redeem, so the portal must never send one.
+ */
+export const MCTL_API_PORTAL_EXTERNAL_ID = /^[A-Za-z0-9._:@|-]{1,256}$/;
+
+// Backstage's own entity-ref grammar: the namespace is a DNS label and the
+// name an object name. Neither may contain ':' or '/', which is what makes
+// the encoding below injective.
+const NAMESPACE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+const NAME = /^[a-z0-9]+(?:[-_.][a-z0-9]+)*$/;
+
+/**
+ * Derive the portal external id sent as `X-MCTL-Surface-Actor` from a Backstage
+ * user entity ref: `user:<namespace>/<name>` becomes `user:<namespace>:<name>`,
+ * lowercased. See CONTRACT.md "Actor id".
+ *
+ * - Only `user` refs are accepted; anything else is refused (undefined).
+ * - Lowercasing matches Backstage, which compares entity refs
+ *   case-insensitively, so `user:default/Alice` and `user:default/alice` are
+ *   one user there and one id here.
+ * - Namespace and name are checked against Backstage's grammar, which forbids
+ *   ':' and '/'. The id therefore splits back into exactly one
+ *   (namespace, name) pair, so two different users can never share an id.
+ *   A ref outside that grammar is refused rather than escaped.
+ * - The result only uses [a-z0-9._:-] and is at most 132 characters, inside
+ *   mctl-api's pattern. It is also checked against that pattern here.
+ *
+ * Changing this rule orphans every existing SurfaceIdentityLink, so it is part
+ * of the pinned contract.
+ */
+export function toSurfaceActorId(userEntityRef: string): string | undefined {
+  const m = /^([^:/]+):([^:/]+)\/([^:/]+)$/.exec(userEntityRef.toLowerCase());
+  if (!m) return undefined;
+  const [, kind, namespace, name] = m;
+  if (kind !== 'user') return undefined;
+  if (namespace.length > 63 || !NAMESPACE.test(namespace)) return undefined;
+  if (name.length > 63 || !NAME.test(name)) return undefined;
+  const id = `user:${namespace}:${name}`;
+  return MCTL_API_PORTAL_EXTERNAL_ID.test(id) ? id : undefined;
+}
+
+/**
  * Resolve the caller from a Backstage USER credential only (service
  * credentials are refused). The actor sent upstream as X-MCTL-Surface-Actor is
- * the stable user entity ref. mctl-api resolves it through a verified
- * SurfaceIdentityLink; being a portal admin grants nothing extra here.
+ * derived from the stable user entity ref by toSurfaceActorId. mctl-api
+ * resolves it through a verified SurfaceIdentityLink; being a portal admin
+ * grants nothing extra here.
  */
 export async function resolveCallerId(
   req: Request,
@@ -29,10 +74,11 @@ export async function resolveCallerId(
   try {
     const credentials = await httpAuth.credentials(req, { allow: ['user'] });
     const { userEntityRef } = await userInfo.getUserInfo(credentials);
-    if (!userEntityRef || userEntityRef.length > 256) {
+    const actor = userEntityRef ? toSurfaceActorId(userEntityRef) : undefined;
+    if (!actor) {
       return { status: 401, error: 'Authentication required' };
     }
-    return { actor: userEntityRef };
+    return { actor };
   } catch {
     return { status: 401, error: 'Authentication required' };
   }
@@ -47,6 +93,9 @@ function respondWithError(res: Response, err: unknown, logger: LoggerService): v
     });
     return;
   }
+  // Anything that is not a contract-pinned upstream answer (for example a
+  // relay-allowlist violation, which is a bug in this plugin) is logged here
+  // and reaches the browser only as a generic 502.
   logger.error(`work-items request failed: ${err instanceof Error ? err.message : 'unknown error'}`);
   res.status(502).json({ error: 'work items request failed' });
 }

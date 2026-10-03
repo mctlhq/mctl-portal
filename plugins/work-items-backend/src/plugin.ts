@@ -9,7 +9,24 @@ export function registerAuthPolicies(httpRouter: {
   httpRouter.addAuthPolicy({ path: '/health', allow: 'unauthenticated' });
 }
 
-const DEFAULT_MCTL_API_BASE_URL = 'https://api.mctl.ai';
+export const DEFAULT_MCTL_API_BASE_URL = 'https://api.mctl.ai';
+
+/**
+ * The plugin's whole configuration surface. The surface:portal token is the
+ * only credential read; there is no fallback to an admin token, and
+ * actionsEnabled is false unless explicitly set.
+ */
+export function readWorkItemsConfig(config: {
+  getOptionalString(key: string): string | undefined;
+  getOptionalBoolean(key: string): boolean | undefined;
+}) {
+  return {
+    baseUrl: config.getOptionalString('workItems.baseUrl') || DEFAULT_MCTL_API_BASE_URL,
+    surfaceToken: config.getOptionalString('workItems.surfaceToken') || undefined,
+    actionsEnabled: config.getOptionalBoolean('workItems.actionsEnabled') ?? false,
+    executionCanvasUrlTemplate: config.getOptionalString('workItems.executionCanvasUrlTemplate'),
+  };
+}
 
 export const workItemsPlugin = createBackendPlugin({
   pluginId: 'work-items',
@@ -23,14 +40,12 @@ export const workItemsPlugin = createBackendPlugin({
         config: coreServices.rootConfig,
       },
       async init({ logger, httpRouter, httpAuth, userInfo, config }) {
-        const baseUrl = config.getOptionalString('workItems.baseUrl') || DEFAULT_MCTL_API_BASE_URL;
         // The surface:portal token only. Never fall back to an admin credential.
-        const surfaceToken = config.getOptionalString('workItems.surfaceToken');
-        const actionsEnabled = config.getOptionalBoolean('workItems.actionsEnabled') ?? false;
+        const { baseUrl, surfaceToken, actionsEnabled, executionCanvasUrlTemplate } = readWorkItemsConfig(config);
         const client = new MctlApiWorkItemsClient({
           baseUrl,
           surfaceToken,
-          executionCanvasUrlTemplate: config.getOptionalString('workItems.executionCanvasUrlTemplate'),
+          executionCanvasUrlTemplate,
           logger,
         });
         httpRouter.use(createRouter({ logger, workItems: client, httpAuth, userInfo, actionsEnabled }));
