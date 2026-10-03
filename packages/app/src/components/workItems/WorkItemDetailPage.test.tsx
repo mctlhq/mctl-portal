@@ -75,7 +75,45 @@ describe('WorkItemDetailView', () => {
       kind: 'resume',
       expectedStateVersion: 3,
       resumedFromExecutionId: 'we_1',
+      idempotencyKey: expect.stringMatching(/^portal-.+/),
     });
+  });
+
+  it('sends one request for a double-clicked Confirm, with an idempotency key', async () => {
+    let resolve: () => void = () => {};
+    const a = api({ requestExecution: jest.fn(() => new Promise<void>(r => (resolve = r))) });
+    const onReload = jest.fn();
+    render(<WorkItemDetailView item={item({ actionsEnabled: true })} api={a} onReload={onReload} />);
+    fireEvent.click(screen.getByText('Request resume'));
+    const confirmButton = screen.getByText('Confirm');
+    fireEvent.click(confirmButton);
+    fireEvent.click(confirmButton);
+    await waitFor(() => expect(screen.getByText('Confirm').closest('button')).toHaveProperty('disabled', true));
+    fireEvent.click(screen.getByText('Confirm'));
+    expect(a.requestExecution).toHaveBeenCalledTimes(1);
+    resolve();
+    await waitFor(() => expect(onReload).toHaveBeenCalledTimes(1));
+    expect(a.requestExecution).toHaveBeenCalledTimes(1);
+  });
+
+  it('offers start for an active item that never ran', async () => {
+    const a = api({ requestExecution: jest.fn().mockResolvedValue(undefined) });
+    render(
+      <WorkItemDetailView
+        item={item({ state: 'active', waitingReason: undefined, latestExecution: { state: 'ok', value: null }, actionsEnabled: true })}
+        api={a}
+        onReload={jest.fn()}
+      />,
+    );
+    fireEvent.click(screen.getByText('Request start'));
+    fireEvent.click(screen.getByText('Confirm'));
+    await waitFor(() => expect(a.requestExecution).toHaveBeenCalled());
+    expect(a.requestExecution).toHaveBeenCalledWith('wi_1', expect.objectContaining({ kind: 'start', expectedStateVersion: 3 }));
+  });
+
+  it('shows a progress indicator while loading', () => {
+    render(<WorkItemDetailView loading api={api()} onReload={jest.fn()} />);
+    expect(screen.getByTestId('progress')).toBeTruthy();
   });
 
   it('shows the mctl-api error and re-fetches on rejection (T12)', async () => {

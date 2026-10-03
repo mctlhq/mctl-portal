@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import {
   Button,
   Chip,
@@ -13,7 +13,7 @@ import {
   TextField,
   Typography,
 } from '@material-ui/core';
-import { Content, Header, Page, ResponseErrorPanel } from '@backstage/core-components';
+import { Content, Header, Page, Progress, ResponseErrorPanel } from '@backstage/core-components';
 import { discoveryApiRef, fetchApiRef, useApi } from '@backstage/core-plugin-api';
 import useAsync from 'react-use/esm/useAsync';
 import { useParams } from 'react-router-dom';
@@ -26,6 +26,15 @@ type NextAction = {
   kind: 'start' | 'resume';
   resumedFromExecutionId?: string;
 };
+
+/** A confirmed action carries one idempotency key, so a retry is a replay. */
+type PendingAction = NextAction & { idempotencyKey: string };
+
+function newIdempotencyKey(): string {
+  const c = globalThis.crypto as Crypto | undefined;
+  if (c && typeof c.randomUUID === 'function') return `portal-${c.randomUUID()}`;
+  return `portal-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+}
 
 /** Which governed action the canonical state allows (mirrors mctl-api #368 rules). */
 export function nextExecutionAction(item: WorkItem): NextAction | undefined {
@@ -48,13 +57,18 @@ export function nextExecutionAction(item: WorkItem): NextAction | undefined {
 export const WorkItemDetailView = (props: {
   item?: WorkItem;
   error?: Error;
+  loading?: boolean;
   api: WorkItemsApi;
   onReload: () => void;
 }) => {
-  const { item, error, api, onReload } = props;
+  const { item, error, loading, api, onReload } = props;
   const [code, setCode] = useState('');
   const [linkError, setLinkError] = useState<string>();
-  const [confirm, setConfirm] = useState<NextAction>();
+  const [confirm, setConfirm] = useState<PendingAction>();
+  const [submitting, setSubmitting] = useState(false);
+  // State updates are async, so two clicks in one tick would both see
+  // submitting=false; the ref is the actual guard, the state drives the UI.
+  const inFlight = useRef(false);
   const [actionError, setActionError] = useState<string>();
 
   if (error instanceof WorkItemsApiError && error.code === 'link_required') {
@@ -94,7 +108,7 @@ export const WorkItemDetailView = (props: {
     );
   }
   if (error) return <ResponseErrorPanel error={error} />;
-  if (!item) return null;
+  if (!item) return loading ? <Progress /> : null;
 
   const action = item.actionsEnabled ? nextExecutionAction(item) : undefined;
   const openRequests =
@@ -103,19 +117,27 @@ export const WorkItemDetailView = (props: {
       : item.executionRequests.value.filter(r => r.state === 'pending' || r.state === 'claimed');
   const exec = item.latestExecution.state === 'unknown' ? undefined : item.latestExecution.value;
 
-  const runAction = async (a: NextAction) => {
+  const runAction = async (a: PendingAction) => {
+    // One request per confirmed action: the dialog is locked while it is in
+    // flight, and the key makes any resend a replay on mctl-api's side.
+    if (inFlight.current) return;
+    inFlight.current = true;
+    setSubmitting(true);
     try {
       setActionError(undefined);
       await api.requestExecution(item.id, {
         kind: a.kind,
         expectedStateVersion: item.stateVersion,
         resumedFromExecutionId: a.resumedFromExecutionId,
+        idempotencyKey: a.idempotencyKey,
       });
     } catch (e) {
       // Shown as returned by mctl-api (e.g. state_version_conflict).
       const err = e as WorkItemsApiError;
       setActionError(err.code ? `${err.code}: ${err.message}` : err.message);
     } finally {
+      inFlight.current = false;
+      setSubmitting(false);
       setConfirm(undefined);
       onReload(); // always re-fetch; never update optimistically
     }
@@ -151,14 +173,14 @@ export const WorkItemDetailView = (props: {
             </Typography>
           ))}
           {action && (
-            <Button variant="contained" color="primary" onClick={() => setConfirm(action)}>
+            <Button variant="contained" color="primary" onClick={() => setConfirm({ ...action, idempotencyKey: newIdempotencyKey() })}>
               {action.label}
             </Button>
           )}
           {actionError && <Typography color="error">{actionError}</Typography>}
         </Paper>
       </Grid>
-      <Grid item xs={12} md={6}>
+      <Grid item xs={12} md={6} data-testid="execution-requests-panel">
         <Paper style={{ padding: 16 }}>
           <ObservedSection
             title="Execution requests"
@@ -177,7 +199,7 @@ export const WorkItemDetailView = (props: {
           />
         </Paper>
       </Grid>
-      <Grid item xs={12} md={6}>
+      <Grid item xs={12} md={6} data-testid="latest-execution-panel">
         <Paper style={{ padding: 16 }}>
           <ObservedSection
             title="Latest execution"
@@ -216,7 +238,7 @@ export const WorkItemDetailView = (props: {
           <ObservedSection title="Surfaces" data={item.surfaces} render={() => null} />
         </Paper>
       </Grid>
-      <Dialog open={!!confirm} onClose={() => setConfirm(undefined)}>
+      <Dialog open={!!confirm} onClose={() => !submitting && setConfirm(undefined)}>
         <DialogTitle>{confirm?.label}</DialogTitle>
         <DialogContent>
           <DialogContentText>
@@ -225,8 +247,10 @@ export const WorkItemDetailView = (props: {
           </DialogContentText>
         </DialogContent>
         <DialogActions>
-          <Button onClick={() => setConfirm(undefined)}>Cancel</Button>
-          <Button color="primary" onClick={() => confirm && runAction(confirm)}>
+          <Button disabled={submitting} onClick={() => setConfirm(undefined)}>
+            Cancel
+          </Button>
+          <Button color="primary" disabled={submitting} onClick={() => confirm && runAction(confirm)}>
             Confirm
           </Button>
         </DialogActions>
@@ -253,6 +277,7 @@ export const WorkItemDetailPage = () => {
         <WorkItemDetailView
           item={state.value}
           error={state.error}
+          loading={state.loading}
           api={api}
           onReload={() => setReloadKey(k => k + 1)}
         />

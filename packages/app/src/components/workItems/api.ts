@@ -52,7 +52,12 @@ export class WorkItemsApi {
 
   async requestExecution(
     id: string,
-    params: { kind: 'start' | 'resume'; expectedStateVersion: number; resumedFromExecutionId?: string },
+    params: {
+      kind: 'start' | 'resume';
+      expectedStateVersion: number;
+      resumedFromExecutionId?: string;
+      idempotencyKey?: string;
+    },
   ): Promise<void> {
     const res = await this.fetchApi.fetch(
       `${await this.base()}/work-items/${encodeURIComponent(id)}/execution-requests`,

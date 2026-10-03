@@ -11,7 +11,12 @@ const OpenById = () => {
     <Page themeId="tool">
       <Header title="Work items" subtitle="Open a work item by ID" />
       <Content>
-        <TextField label="Work item ID (wi_...)" value={id} onChange={e => setId(e.target.value)} />
+        <TextField
+          id="work-item-id"
+          label="Work item ID (wi_...)"
+          value={id}
+          onChange={e => setId(e.target.value)}
+        />
         <Button
           color="primary"
           variant="contained"
