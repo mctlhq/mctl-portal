@@ -1,5 +1,13 @@
 # Changelog
 
+## [4.17.1](https://github.com/mctlhq/mctl-portal/compare/4.17.0...4.17.1) (2026-10-03)
+
+
+### Bug Fixes
+
+* **docker:** copy the work-items-backend manifest before yarn install ([4fa8288](https://github.com/mctlhq/mctl-portal/commit/4fa8288a438817ca8364a7c1857af3d22d9a66df))
+* **docker:** copy the work-items-backend manifest before yarn install ([1c226cd](https://github.com/mctlhq/mctl-portal/commit/1c226cd0bb60dd943fa0d045ff7e49a556c2b342))
+
 ## [4.17.0](https://github.com/mctlhq/mctl-portal/compare/4.16.0...4.17.0) (2026-10-03)
 
 
