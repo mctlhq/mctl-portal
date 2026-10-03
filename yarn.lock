@@ -5529,6 +5529,19 @@ __metadata:
   languageName: unknown
   linkType: soft
 
+"@internal/plugin-work-items-backend@workspace:*, @internal/plugin-work-items-backend@workspace:plugins/work-items-backend":
+  version: 0.0.0-use.local
+  resolution: "@internal/plugin-work-items-backend@workspace:plugins/work-items-backend"
+  dependencies:
+    "@backstage/backend-plugin-api": "npm:^1.9.1"
+    "@backstage/cli": "npm:^0.36.2"
+    "@backstage/config": "npm:^1.3.8"
+    "@types/express": "npm:^4.17.21"
+    express: "npm:^4.18.2"
+    express-promise-router: "npm:^4.1.1"
+  languageName: unknown
+  linkType: soft
+
 "@internationalized/date@npm:^3.12.0, @internationalized/date@npm:^3.12.1, @internationalized/date@npm:^3.12.2":
   version: 3.12.2
   resolution: "@internationalized/date@npm:3.12.2"
@@ -13950,6 +13963,7 @@ __metadata:
     "@internal/plugin-resource-usage-backend": "workspace:*"
     "@internal/plugin-tenant-backend": "workspace:*"
     "@internal/plugin-vault-secrets-backend": "workspace:*"
+    "@internal/plugin-work-items-backend": "workspace:*"
     "@roadiehq/scaffolder-backend-module-http-request": "npm:^5.5.1"
     app: "link:../app"
     better-sqlite3: "npm:^12.0.0"

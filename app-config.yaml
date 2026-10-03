@@ -88,6 +88,14 @@ customDomains:
   baseUrl: http://localhost:8080
   # token: <bearer-token>          # static service token mctl-api issues for this plugin
 
+workItems:
+  # Read-only WorkItem view via mctl-api (surface:portal relay). Authenticates
+  # with the surface:portal token ONLY, never an admin token; unset => 503.
+  baseUrl: http://localhost:8080
+  # surfaceToken: <MCTL_SURFACE_PORTAL_TOKEN>
+  actionsEnabled: false
+  # executionCanvasUrlTemplate: https://app.example/canvas/{executionId}
+
 scaffolder:
   # see https://backstage.io/docs/features/software-templates/configuration for software template options
 
