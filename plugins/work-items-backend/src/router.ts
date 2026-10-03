@@ -23,10 +23,10 @@ const WORK_ITEM_ID = /^wi_[A-Za-z0-9-]{1,64}$/;
  */
 export const MCTL_API_PORTAL_EXTERNAL_ID = /^[A-Za-z0-9._:@|-]{1,256}$/;
 
-// Backstage's own entity-ref grammar: the namespace is a DNS label and the
-// name an object name. Neither may contain ':' or '/', which is what makes
-// the encoding below injective.
-const NAMESPACE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+// Backstage's own entity-ref grammar: namespace and name share one pattern
+// (alphanumeric runs joined by single '-', '_' or '.'), at most 63 chars. Neither
+// may contain ':' or '/', which is what makes the encoding below injective.
+const NAMESPACE = /^[a-z0-9]+(?:[-_.][a-z0-9]+)*$/;
 const NAME = /^[a-z0-9]+(?:[-_.][a-z0-9]+)*$/;
 
 /**
@@ -70,12 +70,14 @@ export async function resolveCallerId(
   req: Request,
   httpAuth: HttpAuthService,
   userInfo: UserInfoService,
+  logger?: LoggerService,
 ): Promise<CallerId> {
   try {
     const credentials = await httpAuth.credentials(req, { allow: ['user'] });
     const { userEntityRef } = await userInfo.getUserInfo(credentials);
     const actor = userEntityRef ? toSurfaceActorId(userEntityRef) : undefined;
     if (!actor) {
+      logger?.warn('work-items: user entity ref is not representable as a surface actor id');
       return { status: 401, error: 'Authentication required' };
     }
     return { actor };
@@ -118,7 +120,7 @@ export function createRouter(options: RouterOptions): Router {
   };
 
   router.get('/work-items/:id', async (req: Request, res: Response) => {
-    const caller = await resolveCallerId(req, httpAuth, userInfo);
+    const caller = await resolveCallerId(req, httpAuth, userInfo, logger);
     if (!('actor' in caller)) {
       res.status(caller.status).json({ error: caller.error });
       return;
@@ -137,7 +139,7 @@ export function createRouter(options: RouterOptions): Router {
   });
 
   router.post('/surface-identities/redeem', async (req: Request, res: Response) => {
-    const caller = await resolveCallerId(req, httpAuth, userInfo);
+    const caller = await resolveCallerId(req, httpAuth, userInfo, logger);
     if (!('actor' in caller)) {
       res.status(caller.status).json({ error: caller.error });
       return;
@@ -159,7 +161,7 @@ export function createRouter(options: RouterOptions): Router {
   // The only mutation the UI uses: ask the platform to start/resume a run.
   // There is no generic /actions route.
   router.post('/work-items/:id/execution-requests', async (req: Request, res: Response) => {
-    const caller = await resolveCallerId(req, httpAuth, userInfo);
+    const caller = await resolveCallerId(req, httpAuth, userInfo, logger);
     if (!('actor' in caller)) {
       res.status(caller.status).json({ error: caller.error });
       return;
