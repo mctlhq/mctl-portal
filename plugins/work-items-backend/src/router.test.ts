@@ -251,6 +251,26 @@ describe('work-items router', () => {
     expect(ok.status).toBe(201);
   });
 
+  it('treats resumedFromExecutionId as opaque: any bounded safe id is forwarded unchanged', async () => {
+    // The pinned contract does not fix mctl-api's execution id scheme, so the
+    // router must not re-derive one; mctl-api is the validator.
+    const c = fakeClient();
+    await start(c, { actionsEnabled: true });
+    for (const id of ['we_0b6f2c1e-7d3a-4c55-9a1e-2f6b8e9d0c11', 'ex-1a28e161678f2b4c', 'exec.42:retry_1', 'x'.repeat(128)]) {
+      const res = await post('/work-items/wi_1/execution-requests', {
+        kind: 'resume',
+        expectedStateVersion: 1,
+        resumedFromExecutionId: id,
+      });
+      expect(res.status).toBe(201);
+      expect(c.createExecutionRequest).toHaveBeenLastCalledWith(
+        'wi_1',
+        'user:default:alice',
+        expect.objectContaining({ resumedFromExecutionId: id }),
+      );
+    }
+  });
+
   it('a portal admin gets no extra access: relayed as that user, mctl-api 403 passes through (T5)', async () => {
     const c = fakeClient({
       getWorkItem: jest.fn().mockRejectedValue(new MctlApiError(403, 'not visible to you', 'forbidden')),
