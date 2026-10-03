@@ -30,6 +30,7 @@ COPY --chown=node:node plugins/tenant-backend/package.json plugins/tenant-backen
 COPY --chown=node:node plugins/oidc-provider-backend/package.json plugins/oidc-provider-backend/
 COPY --chown=node:node plugins/custom-domains-backend/package.json plugins/custom-domains-backend/
 COPY --chown=node:node plugins/proposals-backend/package.json plugins/proposals-backend/
+COPY --chown=node:node plugins/work-items-backend/package.json plugins/work-items-backend/
 
 RUN --mount=type=cache,target=/home/node/.cache/yarn,sharing=locked,uid=1000,gid=1000 \
     yarn install --immutable
