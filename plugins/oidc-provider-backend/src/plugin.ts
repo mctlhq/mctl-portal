@@ -94,6 +94,18 @@ export const oidcProviderPlugin = createBackendPlugin({
                   .first();
             return row?.role ? String(row.role) : null;
           },
+          async tenantExists(tenantName: string): Promise<boolean> {
+            const tenant = tenantName.toLowerCase();
+            const row = isPostgres
+              ? await dbClient('tenant_members')
+                  .withSchema(tmSchema)
+                  .whereRaw('LOWER(tenant_name) = ?', [tenant])
+                  .first()
+              : await dbClient('tenant_members')
+                  .whereRaw('LOWER(tenant_name) = ?', [tenant])
+                  .first();
+            return !!row;
+          },
         };
 
         // ── OIDC persistent store ────────────────────────────────────

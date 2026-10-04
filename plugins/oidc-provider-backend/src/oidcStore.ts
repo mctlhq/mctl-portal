@@ -4,6 +4,8 @@ import { LoggerService } from '@backstage/backend-plugin-api';
 /** A forward-auth session: valid for exactly one tenant, service and host. */
 export interface ForwardAuthSession {
   userId: string;
+  /** The portal session this was derived from; it dies with it. */
+  portalSessionId: string;
   tenant: string;
   service: string;
   host: string;
@@ -13,6 +15,7 @@ export interface ForwardAuthSession {
 /** A one-time code that establishes a ForwardAuthSession on its host. */
 export interface ForwardAuthCode {
   userId: string;
+  portalSessionId: string;
   tenant: string;
   service: string;
   host: string;
@@ -115,6 +118,7 @@ export class OidcStore {
       await createTable('oidc_forward_auth_codes', t => {
         t.string('code', 128).primary().notNullable();
         t.string('user_id', 128).notNullable();
+        t.string('portal_session_id', 128).notNullable();
         t.string('tenant', 128).notNullable();
         t.string('service', 128).notNullable();
         t.string('host', 256).notNullable();
@@ -129,6 +133,7 @@ export class OidcStore {
       await createTable('oidc_forward_auth_sessions', t => {
         t.string('session_id', 128).primary().notNullable();
         t.string('user_id', 128).notNullable();
+        t.string('portal_session_id', 128).notNullable().index();
         t.string('tenant', 128).notNullable();
         t.string('service', 128).notNullable();
         t.string('host', 256).notNullable();
@@ -245,6 +250,7 @@ export class OidcStore {
     await this.table('oidc_forward_auth_codes').insert({
       code,
       user_id: data.userId,
+      portal_session_id: data.portalSessionId,
       tenant: data.tenant,
       service: data.service,
       host: data.host,
@@ -264,6 +270,7 @@ export class OidcStore {
     if (deleted !== 1) return undefined;
     return {
       userId: row.user_id,
+      portalSessionId: row.portal_session_id,
       tenant: row.tenant,
       service: row.service,
       host: row.host,
@@ -280,6 +287,7 @@ export class OidcStore {
     await this.table('oidc_forward_auth_sessions').insert({
       session_id: sessionId,
       user_id: data.userId,
+      portal_session_id: data.portalSessionId,
       tenant: data.tenant,
       service: data.service,
       host: data.host,
@@ -292,6 +300,7 @@ export class OidcStore {
     if (!row) return undefined;
     return {
       userId: row.user_id,
+      portalSessionId: row.portal_session_id,
       tenant: row.tenant,
       service: row.service,
       host: row.host,

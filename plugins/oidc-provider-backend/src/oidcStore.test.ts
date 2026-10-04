@@ -70,6 +70,7 @@ describe('OidcStore legacy session invalidation', () => {
 describe('OidcStore forward-auth codes and sessions', () => {
   const code = {
     userId: 'mashkovd',
+    portalSessionId: 'portal-1',
     tenant: 'ovk',
     service: 'openclaw',
     host: 'ovk-openclaw.mctl.ai',
@@ -90,7 +91,7 @@ describe('OidcStore forward-auth codes and sessions', () => {
   it('round-trips a session with its binding', async () => {
     const { store, knex } = await freshStore();
     currentKnex = knex;
-    const session = { userId: 'u', tenant: 't', service: 's', host: 't-s.mctl.ai', expiresAt: 5 };
+    const session = { userId: 'u', portalSessionId: 'p', tenant: 't', service: 's', host: 't-s.mctl.ai', expiresAt: 5 };
     await store.saveForwardAuthSession('fs1', session);
     expect(await store.getForwardAuthSession('fs1')).toEqual(session);
     expect(await store.getForwardAuthSession('nope')).toBeUndefined();
@@ -102,7 +103,7 @@ describe('OidcStore forward-auth codes and sessions', () => {
     const past = Date.now() - 60_000;
     await store.saveForwardAuthCode('dead-code', { ...code, expiresAt: past });
     await store.saveForwardAuthSession('dead-session', {
-      userId: 'u', tenant: 't', service: 's', host: 'h', expiresAt: past,
+      userId: 'u', portalSessionId: 'p', tenant: 't', service: 's', host: 'h', expiresAt: past,
     });
     await store.cleanupExpired();
     expect(await store.consumeForwardAuthCode('dead-code')).toBeUndefined();

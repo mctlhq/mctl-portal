@@ -23,6 +23,16 @@ export function parseCookie(cookieHeader: string, name: string): string | undefi
 }
 
 /**
+ * The oidc_sessions lookup used by readOidcSessionUserId. Exported so the
+ * Postgres branch can be checked without a Postgres server.
+ */
+export function buildOidcSessionQuery(db: Knex, isPostgres: boolean, sessionId: string) {
+  return isPostgres
+    ? db('oidc_sessions').withSchema(OIDC_SCHEMA).where({ session_id: sessionId, host_only: true }).first()
+    : db('oidc_sessions').where({ session_id: sessionId, host_only: true }).first();
+}
+
+/**
  * Look up an active oidc_sessions row by session id, respecting the
  * oidc-provider Postgres schema and the expires_at timestamp. Rows without
  * host_only predate the host-only cookie and are never accepted.
@@ -40,10 +50,7 @@ export async function readOidcSessionUserId(
   if (!sessionId) {
     return undefined;
   }
-  const query = isPostgres
-    ? db('oidc_sessions').withSchema(OIDC_SCHEMA).where({ session_id: sessionId, host_only: true }).first()
-    : db('oidc_sessions').where({ session_id: sessionId, host_only: true }).first();
-  const row = await query;
+  const row = await buildOidcSessionQuery(db, isPostgres, sessionId);
   if (!row) {
     return undefined;
   }

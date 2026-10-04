@@ -1,5 +1,6 @@
 import knexLib, { Knex } from 'knex';
 import {
+  buildOidcSessionQuery,
   OIDC_SESSION_COOKIE,
   parseCookie,
   readOidcSessionUserId,
@@ -125,5 +126,18 @@ describe('readOidcSessionUserId', () => {
       host_only: false,
     });
     expect(await readOidcSessionUserId(cookie('s5'), knex, false, now)).toBeUndefined();
+  });
+});
+
+describe('buildOidcSessionQuery', () => {
+  it.each([
+    ['Postgres', 'pg', true, '"oidc-provider"."oidc_sessions"'],
+    ['SQLite', 'better-sqlite3', false, '`oidc_sessions`'],
+  ])('requires host_only on %s', (_name, client, isPostgres, table) => {
+    const knex = knexLib({ client, useNullAsDefault: true });
+    const { sql, bindings } = buildOidcSessionQuery(knex, isPostgres as boolean, 'sid').toSQL();
+    expect(sql).toMatch(/["`]host_only["`] = /);
+    expect(sql).toContain(`from ${table}`);
+    expect(bindings).toEqual(expect.arrayContaining(['sid', true]));
   });
 });

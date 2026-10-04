@@ -1,6 +1,6 @@
 import express from 'express';
 import { AddressInfo } from 'net';
-import { Server } from 'http';
+import http, { Server } from 'http';
 import knexLib, { Knex } from 'knex';
 import { KeyStore } from './keyStore';
 import { OidcStore } from './oidcStore';
@@ -10,7 +10,10 @@ import {
   FORWARD_AUTH_CALLBACK_PATH,
   FORWARD_AUTH_SESSION_COOKIE,
   FORWARD_AUTH_STATE_COOKIE,
+  LOGIN_STATE_COOKIE_PREFIX,
+  parseHostname,
   sanitizeReturnPath,
+  validateForwardAuthHosts,
 } from './router';
 import { OIDC_SESSION_COOKIE } from './sessionAuth';
 
@@ -38,10 +41,15 @@ const SIGN_IN_ENTRY_POINTS: Array<[string, string]> = [
     '/forward-auth/authorize?tenant=ovk&service=openclaw&host=ovk-openclaw.mctl.ai&state=0123456789abcdef',
   ],
 ];
-const ROLES: Record<string, string> = {
+const DEFAULT_ROLES: Record<string, string> = {
   'mashkovd/admins': 'owner',
   'mashkovd/ovk': 'member',
+  'mashkovd/labs': 'owner',
+  'mashkovd/claude': 'owner',
+  'mashkovd/a': 'owner',
 };
+let ROLES: Record<string, string>;
+let TENANTS: Set<string>;
 
 const realFetch = global.fetch;
 let server: Server;
@@ -55,6 +63,8 @@ beforeAll(() => {
 });
 
 beforeEach(async () => {
+  ROLES = { ...DEFAULT_ROLES };
+  TENANTS = new Set(['admins', 'ovk', 'labs', 'claude', 'a']);
   knex = knexLib({ client: 'better-sqlite3', connection: ':memory:', useNullAsDefault: true });
   const logger = { info: () => {}, debug: () => {}, warn: () => {}, error: () => {} } as any;
   store = new OidcStore(knex, logger, false);
@@ -65,6 +75,7 @@ beforeEach(async () => {
       getUserGroups: async () => [],
       userExists: async () => true,
       getUserRole: async (userId, tenant) => ROLES[`${userId}/${tenant}`] ?? null,
+      tenantExists: async tenant => TENANTS.has(tenant),
     },
     keyStore: {} as KeyStore,
     issuer: ISSUER,
@@ -72,11 +83,18 @@ beforeEach(async () => {
     githubClientId: 'gh-client',
     githubClientSecret: 'gh-secret',
     store,
-    forwardAuthHosts: [{ tenant: 'admins', service: 'temporal-web', host: 'temporal.mctl.ai' }],
+    forwardAuthHosts: [
+      { tenant: 'admins', service: 'temporal-web', host: 'temporal.mctl.ai' },
+      { tenant: 'labs', service: 'claude-remote', host: 'claude-remote.mctl.ai' },
+    ],
   });
   const app = express();
   app.use('/api/oidc-provider', router);
-  server = app.listen(0);
+  // Bind 127.0.0.1 explicitly: with the default dual-stack bind, another
+  // process can hold the same port on 127.0.0.1 and answer instead.
+  server = await new Promise<Server>(resolve => {
+    const listening = app.listen(0, '127.0.0.1', () => resolve(listening));
+  });
   base = `http://127.0.0.1:${(server.address() as AddressInfo).port}/api/oidc-provider`;
 });
 
@@ -86,8 +104,44 @@ afterEach(async () => {
   await knex.destroy();
 });
 
-function get(path: string, headers: Record<string, string> = {}): Promise<globalThis.Response> {
-  return realFetch(`${base}${path}`, { headers, redirect: 'manual' });
+interface TestResponse {
+  status: number;
+  text: string;
+  headers: { get(name: string): string | null; getSetCookie(): string[] };
+}
+
+// Requests are top-level browser navigations unless a test says otherwise.
+// Plain node:http, because fetch overwrites Sec-Fetch-Mode with "cors". No
+// agent, so a kept-alive socket can never reach a previous test's server.
+// An empty header value means "leave the header out".
+function get(path: string, headers: Record<string, string> = {}): Promise<TestResponse> {
+  const merged: Record<string, string> = { 'Sec-Fetch-Mode': 'navigate', ...headers };
+  const sent = Object.fromEntries(Object.entries(merged).filter(([, v]) => v !== ''));
+  return new Promise((resolve, reject) => {
+    http
+      .get(`${base}${path}`, { headers: sent, agent: false }, res => {
+        let text = '';
+        res.setEncoding('utf8');
+        res.on('data', chunk => {
+          text += chunk;
+        });
+        res.on('end', () =>
+          resolve({
+            status: res.statusCode!,
+            text,
+            headers: {
+              get: name => {
+                const v = res.headers[name.toLowerCase()];
+                if (v === undefined) return null;
+                return Array.isArray(v) ? v.join(', ') : String(v);
+              },
+              getSetCookie: () => res.headers['set-cookie'] ?? [],
+            },
+          }),
+        );
+      })
+      .on('error', reject);
+  });
 }
 
 async function portalSession(userId = 'mashkovd'): Promise<string> {
@@ -101,18 +155,22 @@ function forwardAuth(
   tenant: string,
   service: string,
   host: string,
-  opts: { uri?: string; cookie?: string } = {},
-): Promise<globalThis.Response> {
+  opts: { uri?: string; cookie?: string; headers?: Record<string, string> } = {},
+): Promise<TestResponse> {
   const headers: Record<string, string> = {
     'X-Forwarded-Host': host,
     'X-Forwarded-Uri': opts.uri ?? '/',
     'X-Forwarded-Proto': 'https',
+    ...opts.headers,
   };
   if (opts.cookie) headers.Cookie = opts.cookie;
-  return get(`/forward-auth?tenant=${tenant}&service=${service}`, headers);
+  return get(
+    `/forward-auth?tenant=${encodeURIComponent(tenant)}&service=${encodeURIComponent(service)}`,
+    headers,
+  );
 }
 
-function cookieValue(res: globalThis.Response, name: string): string | undefined {
+function cookieValue(res: TestResponse, name: string): string | undefined {
   const line = res.headers.getSetCookie().find(c => c.startsWith(`${name}=`));
   return line?.split(';')[0].slice(name.length + 1);
 }
@@ -122,6 +180,7 @@ function cookieValue(res: globalThis.Response, name: string): string | undefined
 async function signInToHost(tenant: string, service: string, host: string, uri = '/'): Promise<{
   sessionCookie: string;
   finalLocation: string;
+  portal: string;
 }> {
   const start = await forwardAuth(tenant, service, host, { uri });
   expect(start.status).toBe(302);
@@ -143,6 +202,7 @@ async function signInToHost(tenant: string, service: string, host: string, uri =
   return {
     sessionCookie: `${FORWARD_AUTH_SESSION_COOKIE}=${cookieValue(done, FORWARD_AUTH_SESSION_COOKIE)}`,
     finalLocation: done.headers.get('location')!,
+    portal,
   };
 }
 
@@ -174,15 +234,24 @@ describe('portal session cookie', () => {
     expect(start.status).toBe(302);
     const github = new URL(start.headers.get('location')!);
     expect(github.origin).toBe('https://github.com');
-    expect(start.headers.getSetCookie()).toEqual([]);
+    const githubState = github.searchParams.get('state')!;
+    const loginCookie = `${LOGIN_STATE_COOKIE_PREFIX}${githubState}`;
+    const startCookies = start.headers.getSetCookie();
+    expect(startCookies).toHaveLength(1);
+    expect(startCookies[0].startsWith(`${loginCookie}=1;`)).toBe(true);
+    expectHostOnly(startCookies[0]);
 
     mockGitHub();
-    const callback = await get(`/github/callback?code=gh-code&state=${github.searchParams.get('state')}`);
+    const callback = await get(`/github/callback?code=gh-code&state=${githubState}`, {
+      Cookie: `${loginCookie}=1`,
+    });
     expect(callback.status).toBe(302);
     const cookies = callback.headers.getSetCookie();
-    expect(cookies).toHaveLength(1);
+    expect(cookies).toHaveLength(2);
     expect(cookies[0].startsWith(`${OIDC_SESSION_COOKIE}=`)).toBe(true);
-    expectHostOnly(cookies[0]);
+    expect(cookies[1].startsWith(`${loginCookie}=;`)).toBe(true);
+    cookies.forEach(expectHostOnly);
+    expect(cookies.some(c => c.startsWith('oidc_session='))).toBe(false);
   });
 
   it.each(SIGN_IN_ENTRY_POINTS)(
@@ -431,5 +500,384 @@ describe('sanitizeReturnPath', () => {
     ]) {
       expect(sanitizeReturnPath(value)).toBe('/');
     }
+  });
+});
+
+async function startGitHubSignIn(path = DEX_AUTHORIZE): Promise<{ state: string; cookie: string }> {
+  const start = await get(path);
+  const state = new URL(start.headers.get('location')!).searchParams.get('state')!;
+  return { state, cookie: `${LOGIN_STATE_COOKIE_PREFIX}${state}=1` };
+}
+
+describe('GitHub sign-in is bound to the browser that started it', () => {
+  it('rejects a callback without the login state cookie (login CSRF)', async () => {
+    const { state } = await startGitHubSignIn();
+    mockGitHub('attacker');
+    const res = await get(`/github/callback?code=gh-code&state=${state}`);
+    expect(res.status).toBe(400);
+    expect(res.headers.getSetCookie()).toEqual([]);
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+
+  it('rejects a login state cookie for a different sign-in', async () => {
+    const first = await startGitHubSignIn();
+    const second = await startGitHubSignIn();
+    mockGitHub();
+    const res = await get(`/github/callback?code=gh-code&state=${first.state}`, { Cookie: second.cookie });
+    expect(res.status).toBe(400);
+  });
+
+  it('lets sign-ins started in parallel tabs both complete', async () => {
+    const first = await startGitHubSignIn();
+    const second = await startGitHubSignIn();
+    const jar = `${first.cookie}; ${second.cookie}`;
+    mockGitHub();
+    expect((await get(`/github/callback?code=a&state=${second.state}`, { Cookie: jar })).status).toBe(302);
+    expect((await get(`/github/callback?code=b&state=${first.state}`, { Cookie: jar })).status).toBe(302);
+  });
+});
+
+describe('protected host validation (no open redirect)', () => {
+  const codeCount = async () => Number((await knex('oidc_forward_auth_codes').count({ n: '*' }))[0].n);
+
+  const BAD_SERVICES = [
+    'x.evil.example/',
+    'x@evil.example/',
+    'x#',
+    'x?y',
+    'x.y',
+    'x\\evil.example',
+    'x%2fevil.example',
+    'x%40evil.example',
+    'x%23',
+    'x/',
+    '-x',
+    'x-',
+  ];
+
+  it.each(BAD_SERVICES)('authorize refuses service %j without issuing a code', async service => {
+    const portal = await portalSession();
+    for (const host of [`ovk-${service}.mctl.ai`, 'ovk-x.evil.example/.mctl.ai', 'evil.example']) {
+      const res = await get(
+        `/forward-auth/authorize?tenant=ovk&service=${encodeURIComponent(service)}&host=${encodeURIComponent(
+          host,
+        )}&state=0123456789abcdef`,
+        { Cookie: `${OIDC_SESSION_COOKIE}=${portal}` },
+      );
+      expect(res.status).toBe(400);
+    }
+    expect(await codeCount()).toBe(0);
+  });
+
+  it.each(BAD_SERVICES)('authorize refuses tenant %j without issuing a code', async tenant => {
+    const portal = await portalSession();
+    const res = await get(
+      `/forward-auth/authorize?tenant=${encodeURIComponent(tenant)}&service=openclaw&host=${encodeURIComponent(
+        `${tenant}-openclaw.mctl.ai`,
+      )}&state=0123456789abcdef`,
+      { Cookie: `${OIDC_SESSION_COOKIE}=${portal}` },
+    );
+    expect(res.status).toBe(400);
+    expect(await codeCount()).toBe(0);
+  });
+
+  const BAD_HOSTS = [
+    'ovk-openclaw.mctl.ai/',
+    'ovk-openclaw.mctl.ai/x',
+    'ovk-openclaw.mctl.ai:443',
+    'ovk-openclaw.mctl.ai:8443',
+    'user@ovk-openclaw.mctl.ai',
+    'evil.example@ovk-openclaw.mctl.ai',
+    'ovk-openclaw.mctl.ai#',
+    'ovk-openclaw.mctl.ai?',
+    'ovk-openclaw.mctl.ai\\',
+    'ovk-openclaw.mctl.ai%2f',
+    'ovk-openclaw%2emctl.ai',
+    'ovk-openclaw.mctl.ai.',
+    'ovk-openclaw.mctl.ai.evil.example',
+  ];
+
+  it.each(BAD_HOSTS)('authorize refuses host %j for a valid pair', async host => {
+    const portal = await portalSession();
+    const res = await get(
+      `/forward-auth/authorize?tenant=ovk&service=openclaw&host=${encodeURIComponent(host)}&state=0123456789abcdef`,
+      { Cookie: `${OIDC_SESSION_COOKIE}=${portal}` },
+    );
+    expect(res.status).toBe(400);
+    expect(await codeCount()).toBe(0);
+  });
+
+  it.each(BAD_HOSTS)('forward-auth refuses forwarded host %j', async host => {
+    const res = await forwardAuth('ovk', 'openclaw', host);
+    expect(res.status).toBe(403);
+    expect(res.headers.getSetCookie()).toEqual([]);
+  });
+
+  it.each(BAD_SERVICES)('forward-auth refuses service %j', async service => {
+    const res = await forwardAuth('ovk', service, `ovk-${service}.mctl.ai`);
+    expect([400, 403]).toContain(res.status);
+    expect(res.headers.getSetCookie()).toEqual([]);
+  });
+
+  it.each([
+    ['evil.example/', 'x'],
+    ['evil.example#', 'x'],
+    ['x@evil.example', 'x'],
+    ['ovk', 'x.evil.example/'],
+    ['ovk', 'x\\evil'],
+  ])('/tenant-login refuses tenant %j service %j before storing a returnTo', async (tenant, service) => {
+    const res = await get(
+      `/tenant-login?tenant=${encodeURIComponent(tenant)}&service=${encodeURIComponent(service)}`,
+    );
+    expect(res.status).toBe(400);
+    expect(res.text).toBe('Invalid tenant or service');
+    expect(res.headers.get('location')).toBeNull();
+    expect(await knex('oidc_pending_auths').count({ n: '*' })).toEqual([{ n: 0 }]);
+  });
+
+  it('accepts a host given in upper case and binds the lowercase hostname', async () => {
+    const { finalLocation } = await signInToHost('ovk', 'openclaw', 'OVK-OpenClaw.mctl.ai');
+    expect(finalLocation).toBe('https://ovk-openclaw.mctl.ai/');
+  });
+
+  it('refuses a canonical host that another existing tenant could own', async () => {
+    // tenant "a" + service "b-c" and tenant "a-b" + service "c" share a-b-c.mctl.ai
+    const portal = await portalSession();
+    const url = '/forward-auth/authorize?tenant=a&service=b-c&host=a-b-c.mctl.ai&state=0123456789abcdef';
+    TENANTS.add('a-b');
+    expect((await get(url, { Cookie: `${OIDC_SESSION_COOKIE}=${portal}` })).status).toBe(400);
+    TENANTS.delete('a-b');
+    expect((await get(url, { Cookie: `${OIDC_SESSION_COOKIE}=${portal}` })).status).toBe(302);
+  });
+
+  it('treats a configured alias as belonging only to its own pair', async () => {
+    // claude-remote.mctl.ai is also the canonical join of tenant "claude" + service "remote".
+    const portal = await portalSession();
+    const res = await get(
+      '/forward-auth/authorize?tenant=claude&service=remote&host=claude-remote.mctl.ai&state=0123456789abcdef',
+      { Cookie: `${OIDC_SESSION_COOKIE}=${portal}` },
+    );
+    expect(res.status).toBe(400);
+    expect((await forwardAuth('claude', 'remote', 'claude-remote.mctl.ai')).status).toBe(403);
+    expect((await forwardAuth('labs', 'claude-remote', 'claude-remote.mctl.ai')).status).toBe(302);
+  });
+});
+
+describe('parseHostname', () => {
+  it('accepts a plain hostname, lowercased', () => {
+    expect(parseHostname('Ovk-Openclaw.mctl.ai')).toBe('ovk-openclaw.mctl.ai');
+  });
+
+  it.each([
+    '', 'a.mctl.ai/', 'a.mctl.ai:443', 'u@a.mctl.ai', 'a.mctl.ai#x', 'a.mctl.ai?x', 'a.mctl.ai\\x',
+    'a%2emctl.ai', 'a.mctl.ai.', 'a b.mctl.ai',
+  ])('rejects %j', value => {
+    expect(parseHostname(value)).toBeNull();
+  });
+});
+
+describe('validateForwardAuthHosts', () => {
+  const ok = { tenant: 'admins', service: 'temporal-web', host: 'temporal.mctl.ai' };
+
+  it('accepts a well-formed list', () => {
+    expect(validateForwardAuthHosts([ok], ISSUER)).toEqual([ok]);
+  });
+
+  it.each([
+    ['a duplicate host', [ok, { ...ok, tenant: 'ovk' }]],
+    ['a host with a path', [{ ...ok, host: 'temporal.mctl.ai/x' }]],
+    ['a host outside the base domain', [{ ...ok, host: 'temporal.evil.example' }]],
+    ['the portal host', [{ ...ok, host: 'app.mctl.ai' }]],
+    ['an upper-case host', [{ ...ok, host: 'Temporal.mctl.ai' }]],
+    ['a non-label service', [{ ...ok, service: 'x.evil' }]],
+    ['a non-label tenant', [{ ...ok, tenant: 'a/b' }]],
+  ])('refuses %s', (_name, hosts) => {
+    expect(() => validateForwardAuthHosts(hosts as any, ISSUER)).toThrow();
+  });
+});
+
+describe('forward-auth sign-in is started only by navigations', () => {
+  it.each([
+    [{ 'Sec-Fetch-Mode': 'cors' }],
+    [{ 'Sec-Fetch-Mode': 'no-cors' }],
+    [{ 'Sec-Fetch-Mode': 'websocket' }],
+    [{ 'Sec-Fetch-Mode': '', Accept: 'application/json' }],
+    [{ 'Sec-Fetch-Mode': '', Accept: '*/*' }],
+  ])('answers %j with 401 and no cookie', async headers => {
+    const res = await forwardAuth('ovk', 'openclaw', 'ovk-openclaw.mctl.ai', { headers });
+    expect(res.status).toBe(401);
+    expect(res.headers.get('location')).toBeNull();
+    expect(res.headers.getSetCookie()).toEqual([]);
+  });
+
+  it('treats a request without Sec-Fetch-Mode that accepts HTML as a navigation', async () => {
+    const res = await forwardAuth('ovk', 'openclaw', 'ovk-openclaw.mctl.ai', {
+      headers: { 'Sec-Fetch-Mode': '', Accept: 'text/html,application/xhtml+xml' },
+    });
+    expect(res.status).toBe(302);
+  });
+
+  it('keeps an existing state cookie instead of overwriting it', async () => {
+    const state = '11111111-2222-3333-4444-555555555555';
+    const res = await forwardAuth('ovk', 'openclaw', 'ovk-openclaw.mctl.ai', {
+      cookie: `${FORWARD_AUTH_STATE_COOKIE}=${state}`,
+    });
+    expect(res.status).toBe(302);
+    expect(new URL(res.headers.get('location')!).searchParams.get('state')).toBe(state);
+    expect(res.headers.getSetCookie()).toEqual([]);
+  });
+
+  it('lets two tabs that started sign-in in parallel both complete', async () => {
+    const first = await forwardAuth('ovk', 'openclaw', 'ovk-openclaw.mctl.ai', { uri: '/one' });
+    const state = cookieValue(first, FORWARD_AUTH_STATE_COOKIE)!;
+    const jar = `${FORWARD_AUTH_STATE_COOKIE}=${state}`;
+    const second = await forwardAuth('ovk', 'openclaw', 'ovk-openclaw.mctl.ai', { uri: '/two', cookie: jar });
+    const portal = await portalSession();
+    for (const start of [second, first]) {
+      const issued = await get(`/forward-auth/authorize${new URL(start.headers.get('location')!).search}`, {
+        Cookie: `${OIDC_SESSION_COOKIE}=${portal}`,
+      });
+      const callback = new URL(issued.headers.get('location')!);
+      const done = await forwardAuth('ovk', 'openclaw', 'ovk-openclaw.mctl.ai', {
+        uri: `${callback.pathname}${callback.search}`,
+        cookie: jar,
+      });
+      expect(done.status).toBe(302);
+    }
+  });
+});
+
+describe('cookie-authenticated code minting needs a top-level navigation', () => {
+  it.each(['cors', 'no-cors', 'same-origin'])('/forward-auth/authorize refuses Sec-Fetch-Mode %s', async mode => {
+    const portal = await portalSession();
+    const res = await get(
+      '/forward-auth/authorize?tenant=ovk&service=openclaw&host=ovk-openclaw.mctl.ai&state=0123456789abcdef',
+      { Cookie: `${OIDC_SESSION_COOKIE}=${portal}`, 'Sec-Fetch-Mode': mode },
+    );
+    expect(res.status).toBe(403);
+    expect(await knex('oidc_forward_auth_codes').count({ n: '*' })).toEqual([{ n: 0 }]);
+  });
+
+  it.each(['cors', 'no-cors'])('Dex /authorize refuses Sec-Fetch-Mode %s', async mode => {
+    const portal = await portalSession();
+    const res = await get(DEX_AUTHORIZE, { Cookie: `${OIDC_SESSION_COOKIE}=${portal}`, 'Sec-Fetch-Mode': mode });
+    expect(res.status).toBe(403);
+    expect(await knex('oidc_codes').count({ n: '*' })).toEqual([{ n: 0 }]);
+  });
+});
+
+describe('forward-auth binding and lifetime', () => {
+  async function issueCode(tenant: string, service: string, host: string) {
+    const start = await forwardAuth(tenant, service, host);
+    const state = cookieValue(start, FORWARD_AUTH_STATE_COOKIE)!;
+    const issued = await get(`/forward-auth/authorize${new URL(start.headers.get('location')!).search}`, {
+      Cookie: `${OIDC_SESSION_COOKIE}=${await portalSession()}`,
+    });
+    const callback = new URL(issued.headers.get('location')!);
+    return { state, code: callback.searchParams.get('code')! };
+  }
+
+  const callbackUri = (code: string, state: string) =>
+    `${FORWARD_AUTH_CALLBACK_PATH}?code=${encodeURIComponent(code)}&state=${encodeURIComponent(state)}`;
+
+  it('rejects a code presented with a different state, even with a matching cookie', async () => {
+    const { code } = await issueCode('ovk', 'openclaw', 'ovk-openclaw.mctl.ai');
+    const other = '99999999-9999-9999-9999-999999999999';
+    const res = await forwardAuth('ovk', 'openclaw', 'ovk-openclaw.mctl.ai', {
+      uri: callbackUri(code, other),
+      cookie: `${FORWARD_AUTH_STATE_COOKIE}=${other}`,
+    });
+    expect(res.status).toBe(400);
+    expect(cookieValue(res, FORWARD_AUTH_SESSION_COOKIE)).toBeUndefined();
+  });
+
+  it('rejects a code for an alias redeemed on the canonical host of the same pair', async () => {
+    const { code, state } = await issueCode('admins', 'temporal-web', 'temporal.mctl.ai');
+    const res = await forwardAuth('admins', 'temporal-web', 'admins-temporal-web.mctl.ai', {
+      uri: callbackUri(code, state),
+      cookie: `${FORWARD_AUTH_STATE_COOKIE}=${state}`,
+    });
+    expect(res.status).toBe(400);
+    expect(cookieValue(res, FORWARD_AUTH_SESSION_COOKIE)).toBeUndefined();
+  });
+
+  it('rejects a code redeemed under another tenant and service on the same hostname', async () => {
+    // tenant "a" + service "b-c" and tenant "a-b" + service "c" share a-b-c.mctl.ai
+    const { code, state } = await issueCode('a', 'b-c', 'a-b-c.mctl.ai');
+    const res = await forwardAuth('a-b', 'c', 'a-b-c.mctl.ai', {
+      uri: callbackUri(code, state),
+      cookie: `${FORWARD_AUTH_STATE_COOKIE}=${state}`,
+    });
+    expect(res.status).toBe(400);
+    expect(cookieValue(res, FORWARD_AUTH_SESSION_COOKIE)).toBeUndefined();
+  });
+
+  it('redeems a code exactly once under concurrent callbacks', async () => {
+    const { code, state } = await issueCode('ovk', 'openclaw', 'ovk-openclaw.mctl.ai');
+    const opts = { uri: callbackUri(code, state), cookie: `${FORWARD_AUTH_STATE_COOKIE}=${state}` };
+    const results = await Promise.all(
+      Array.from({ length: 5 }, () => forwardAuth('ovk', 'openclaw', 'ovk-openclaw.mctl.ai', opts)),
+    );
+    expect(results.map(r => r.status).sort()).toEqual([302, 400, 400, 400, 400]);
+    expect(await knex('oidc_forward_auth_sessions').count({ n: '*' })).toEqual([{ n: 1 }]);
+  });
+
+  // Rows written directly, so each check is the only thing that differs.
+  async function hostSession(overrides: Record<string, unknown>): Promise<string> {
+    const portal = await portalSession();
+    const id = `host-${Math.random().toString(36).slice(2)}`;
+    await knex('oidc_forward_auth_sessions').insert({
+      session_id: id,
+      user_id: 'mashkovd',
+      portal_session_id: portal,
+      tenant: 'ovk',
+      service: 'openclaw',
+      host: 'ovk-openclaw.mctl.ai',
+      expires_at: Date.now() + 60_000,
+      ...overrides,
+    });
+    return `${FORWARD_AUTH_SESSION_COOKIE}=${id}`;
+  }
+
+  it('accepts a matching session row (control)', async () => {
+    const res = await forwardAuth('ovk', 'openclaw', 'ovk-openclaw.mctl.ai', { cookie: await hostSession({}) });
+    expect(res.status).toBe(200);
+  });
+
+  it.each([
+    ['tenant', { tenant: 'labs' }],
+    ['service', { service: 'other' }],
+    ['host', { host: 'other-openclaw.mctl.ai' }],
+    ['expiry', { expires_at: Date.now() - 1 }],
+    ['user (portal session belongs to someone else)', { user_id: 'someone-else' }],
+    ['portal session (deleted)', { portal_session_id: 'gone' }],
+  ])('rejects a session row whose %s does not match', async (_name, overrides) => {
+    const res = await forwardAuth('ovk', 'openclaw', 'ovk-openclaw.mctl.ai', {
+      cookie: await hostSession(overrides),
+    });
+    expect(res.status).toBe(302);
+    expect(res.headers.get('x-forwarded-user')).toBeNull();
+  });
+
+  it('re-checks tenant membership on every request', async () => {
+    const { sessionCookie } = await signInToHost('ovk', 'openclaw', 'ovk-openclaw.mctl.ai');
+    expect((await forwardAuth('ovk', 'openclaw', 'ovk-openclaw.mctl.ai', { cookie: sessionCookie })).status).toBe(200);
+    delete ROLES['mashkovd/ovk'];
+    const res = await forwardAuth('ovk', 'openclaw', 'ovk-openclaw.mctl.ai', { cookie: sessionCookie });
+    expect(res.status).toBe(403);
+    expect(res.headers.get('x-forwarded-user')).toBeNull();
+  });
+
+  it('expires a host session at its expiry time', async () => {
+    const { sessionCookie } = await signInToHost('ovk', 'openclaw', 'ovk-openclaw.mctl.ai');
+    await knex('oidc_forward_auth_sessions').update({ expires_at: Date.now() - 1 });
+    expect((await forwardAuth('ovk', 'openclaw', 'ovk-openclaw.mctl.ai', { cookie: sessionCookie })).status).toBe(302);
+  });
+
+  it('revokes host sessions when their portal session is deleted', async () => {
+    const { sessionCookie, portal } = await signInToHost('ovk', 'openclaw', 'ovk-openclaw.mctl.ai');
+    expect((await forwardAuth('ovk', 'openclaw', 'ovk-openclaw.mctl.ai', { cookie: sessionCookie })).status).toBe(200);
+    await knex('oidc_sessions').where({ session_id: portal }).delete();
+    expect((await forwardAuth('ovk', 'openclaw', 'ovk-openclaw.mctl.ai', { cookie: sessionCookie })).status).toBe(302);
   });
 });
