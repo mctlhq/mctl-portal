@@ -1,0 +1,46 @@
+{
+  "source": "mctlhq/mctl-gitops@582d5e8ebe436d803081f81d5b0450ab6ee5a3f5",
+  "note": "Every mctl:workflow:submit step in platform-gitops/backstage/templates/*/template.yaml, copied verbatim (input block only). Regenerate when a template is added or changed.",
+  "steps": [
+    {
+      "file": "platform-gitops/backstage/templates/delete-component/template.yaml",
+      "step": "trigger-delete",
+      "templateName": "retire-service",
+      "clusterScope": true,
+      "namespace": "${{ steps['parse-service'].output.entity.metadata.labels.team or steps['parse-service'].output.entity.spec.owner | replace('group:', '') }}",
+      "team_name": "${{ steps['parse-service'].output.entity.metadata.labels.team or steps['parse-service'].output.entity.spec.owner | replace('group:', '') }}"
+    },
+    {
+      "file": "platform-gitops/backstage/templates/deploy-component/template.yaml",
+      "step": "trigger-deploy",
+      "templateName": "deploy-service",
+      "clusterScope": true,
+      "namespace": "${{ parameters.teamName | parseEntityRef | pick('name') }}",
+      "team_name": "${{ parameters.teamName | parseEntityRef | pick('name') }}"
+    },
+    {
+      "file": "platform-gitops/backstage/templates/deploy-version/template.yaml",
+      "step": "deploy-version",
+      "templateName": "deploy-service",
+      "clusterScope": null,
+      "namespace": "${{ steps['fetch-service'].output.entity.metadata.labels.team or steps['fetch-service'].output.entity.spec.owner | replace('group:', '') }}",
+      "team_name": "${{ steps['fetch-service'].output.entity.metadata.labels.team or steps['fetch-service'].output.entity.spec.owner | replace('group:', '') }}"
+    },
+    {
+      "file": "platform-gitops/backstage/templates/provision-database/template.yaml",
+      "step": "trigger-provision",
+      "templateName": "provision-database",
+      "clusterScope": null,
+      "namespace": "${{ steps['fetch-service'].output.entity.metadata.labels.team or steps['fetch-service'].output.entity.spec.owner | replace('group:', '') }}",
+      "team_name": "${{ steps['fetch-service'].output.entity.metadata.labels.team or steps['fetch-service'].output.entity.spec.owner | replace('group:', '') }}"
+    },
+    {
+      "file": "platform-gitops/backstage/templates/update-component-config/template.yaml",
+      "step": "update-config",
+      "templateName": "deploy-service",
+      "clusterScope": null,
+      "namespace": "${{ steps['fetch-service'].output.entity.metadata.labels.team or steps['fetch-service'].output.entity.spec.owner | replace('group:', '') }}",
+      "team_name": "${{ steps['fetch-service'].output.entity.metadata.labels.team or steps['fetch-service'].output.entity.spec.owner | replace('group:', '') }}"
+    }
+  ]
+}

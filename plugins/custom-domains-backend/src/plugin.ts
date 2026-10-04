@@ -4,6 +4,7 @@ import {
 } from '@backstage/backend-plugin-api';
 import { createRouter } from './router';
 import { MctlApiDomainsClient } from './mctlApiClient';
+import { isPostgresClient } from '../../tenant-backend/src/membershipLookup';
 
 /**
  * Registers the plugin's HTTP auth policies. Only `/health` is public; every
@@ -49,7 +50,7 @@ export const customDomainsPlugin = createBackendPlugin({
       },
       async init({ logger, httpRouter, database, httpAuth, userInfo, config }) {
         const knex = await database.getClient();
-        const isPostgres = knex.client.config.client === 'pg';
+        const isPostgres = isPostgresClient(knex);
 
         const baseUrl =
           config.getOptionalString('customDomains.baseUrl') ?? DEFAULT_MCTL_API_BASE_URL;

@@ -3,6 +3,18 @@ import type { Knex } from 'knex';
 /** Postgres schema where tenant-backend owns the tenant_members table. */
 export const TENANT_MGMT_SCHEMA = 'tenant-management';
 
+// Knex accepts any of these client names for Postgres; production uses 'pg'.
+const POSTGRES_CLIENTS = new Set(['pg', 'postgres', 'postgresql']);
+
+/**
+ * Whether a Knex client talks to Postgres, and so needs withSchema() to
+ * reach another plugin's tables. Shared by every plugin that calls the
+ * lookups below, so they cannot disagree on which client names count.
+ */
+export function isPostgresClient(db: Knex): boolean {
+  return POSTGRES_CLIENTS.has(String(db.client?.config?.client));
+}
+
 /**
  * Read a single tenant_members row from the canonical
  * tenant-management schema. Intended for plugins other than

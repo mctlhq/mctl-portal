@@ -5,6 +5,7 @@ import {
 import { notificationService } from '@backstage/plugin-notifications-node';
 import { createRouter } from './router';
 import { RepoConnectionStore } from './store';
+import { isPostgresClient } from '../../tenant-backend/src/membershipLookup';
 
 /**
  * Registers the plugin's HTTP auth policies. Only `/callback` (GitHub's
@@ -49,7 +50,7 @@ export const githubAppConnectPlugin = createBackendPlugin({
         const webhookSecret = config.getOptionalString('githubAppConnect.webhookSecret');
 
         const knex = await database.getClient();
-        const isPostgres = knex.client.config.client === 'pg';
+        const isPostgres = isPostgresClient(knex);
         const store = new RepoConnectionStore(knex);
         await store.initialize();
         logger.info('repo_connections table initialized');

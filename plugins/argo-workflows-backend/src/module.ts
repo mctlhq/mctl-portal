@@ -25,7 +25,7 @@ export const scaffolderModuleArgoWorkflows = createBackendModule({
       },
       async init({ scaffolder, config, database }) {
         scaffolder.addActions(
-          createSubmitWorkflowAction({ config }),
+          createSubmitWorkflowAction({ config, database }),
           createRequireTeamAccessAction({ database }),
         );
       },

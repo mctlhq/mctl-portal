@@ -35,6 +35,8 @@ export interface RouterOptions {
   baseUrl: string;
   webhookSecret?: string;
   catalogClient?: { getEntities: (request: any) => Promise<any> };
+  // Unused while auto-deploy is disabled (see POST /webhook); kept so the
+  // plugin wiring does not change with it.
   scaffolderClient?: { createTask: (request: any) => Promise<any> };
   notifications?: NotificationService;
   httpAuth: HttpAuthService;
@@ -291,7 +293,7 @@ async function findInstallation(
 }
 
 export function createRouter(options: RouterOptions): Router {
-  const { logger, store, appSlug, appId, privateKey, baseUrl, webhookSecret, catalogClient, scaffolderClient, notifications, httpAuth, userInfo, db, isPostgres } = options;
+  const { logger, store, appSlug, appId, privateKey, baseUrl, webhookSecret, catalogClient, notifications, httpAuth, userInfo, db, isPostgres } = options;
   // Derive the state key from the full private key (full entropy) rather than
   // a low-entropy PEM-header prefix. 64 hex chars keeps the existing shape.
   //
@@ -1024,33 +1026,67 @@ export function createRouter(options: RouterOptions): Router {
     const tagName = payload.ref;
     logger.info(`Webhook: tag "${tagName}" created in ${repoFullName}`);
 
-    // Respond immediately (GitHub 10s timeout)
-    res.status(200).json({ accepted: true, repo: repoFullName, tag: tagName });
+    if (!catalogClient) {
+      logger.warn('Webhook: catalog client not available, skipping');
+      res.status(200).json({ accepted: true, repo: repoFullName, tag: tagName });
+      return;
+    }
 
-    // Async: look up component and trigger deploy or notify
+    // The catalog lookup is in-cluster and fast, so it runs before the reply
+    // (GitHub allows 10s): a refused auto-deploy is then visible in the
+    // App's delivery log, not only in ours.
+    let items: any[];
     try {
-      if (!catalogClient) {
-        logger.warn('Webhook: catalog client not available, skipping');
-        return;
-      }
-
-      // Find component with matching source-repo annotation
       const entities = await catalogClient.getEntities({
         filter: {
           kind: 'Component',
           'metadata.annotations.github.com/source-repo': repoFullName,
         },
       });
+      items = entities.items ?? [];
+    } catch (err) {
+      logger.error(`Webhook: catalog lookup failed for ${repoFullName}: ${err}`);
+      res.status(502).json({ error: 'Catalog lookup failed' });
+      return;
+    }
 
-      if (!entities.items || entities.items.length === 0) {
+    // "true"/"auto" asked for an immediate deploy; "confirm" = notify only;
+    // "false"/missing = skip.
+    const modeOf = (entity: any) => {
+      const autoDeploy = entity.metadata?.annotations?.['mctl.me/auto-deploy'];
+      return autoDeploy === 'true' || autoDeploy === 'auto' ? 'auto' : autoDeploy === 'confirm' ? 'confirm' : null;
+    };
+    const refOf = (entity: any) => `component:${entity.metadata.namespace || 'default'}/${entity.metadata.name}`;
+
+    // Auto-deploy is disabled pending a scoped design: a deploy needs an
+    // initiating user that mctl:workflow:submit can authorize, and a webhook
+    // has none. Refuse it here, where it is triggered, instead of creating a
+    // task that can only fail.
+    const autoRefused = items.filter(e => modeOf(e) === 'auto').map(refOf);
+    if (autoRefused.length > 0) {
+      logger.warn(
+        `Webhook: auto-deploy is disabled pending a scoped design; not deploying ${autoRefused.join(', ')} @ ${tagName}. Deploy it with the deploy-version template.`,
+      );
+      res.status(422).json({
+        error: 'Auto-deploy is disabled; deploy from the catalog',
+        components: autoRefused,
+        repo: repoFullName,
+        tag: tagName,
+      });
+    } else {
+      res.status(200).json({ accepted: true, repo: repoFullName, tag: tagName });
+    }
+
+    // Async: notify owners
+    try {
+      if (items.length === 0) {
         logger.info(`Webhook: no component found for repo ${repoFullName}, skipping`);
         return;
       }
 
-      for (const entity of entities.items) {
+      for (const entity of items) {
         const autoDeploy = entity.metadata?.annotations?.['mctl.me/auto-deploy'];
-        // "true"/"auto" = deploy immediately, "confirm" = notify only, "false"/missing = skip
-        const mode = autoDeploy === 'true' || autoDeploy === 'auto' ? 'auto' : autoDeploy === 'confirm' ? 'confirm' : null;
+        const mode = modeOf(entity);
         const entityRef = `component:${entity.metadata.namespace || 'default'}/${entity.metadata.name}`;
         const ownerRef = entity.spec?.owner as string | undefined;
 
@@ -1072,12 +1108,12 @@ export function createRouter(options: RouterOptions): Router {
           }
 
           const title = mode === 'auto'
-            ? `Auto-deploying ${name} → ${tagName}`
+            ? `Auto-deploy disabled: ${name} ${tagName} not deployed`
             : mode === 'confirm'
               ? `New version available: ${name} ${tagName}`
               : `New tag ${tagName} for ${name}`;
           const description = mode === 'auto'
-            ? `Tag ${tagName} pushed to ${repoFullName}. Deployment started automatically (mctl.me/auto-deploy: true).`
+            ? `Tag ${tagName} pushed to ${repoFullName}. Auto-deploy (mctl.me/auto-deploy) is disabled; deploy it from the catalog.`
             : mode === 'confirm'
               ? `Tag ${tagName} pushed to ${repoFullName}. Approve deployment from the catalog.`
               : `Tag ${tagName} was created in ${repoFullName}.`;
@@ -1090,11 +1126,11 @@ export function createRouter(options: RouterOptions): Router {
               payload: {
                 title,
                 description,
-                link: mode === 'confirm'
+                link: mode === 'confirm' || mode === 'auto'
                   ? `/create/templates/default/deploy-version?${new URLSearchParams({ serviceName: entityRef, gitTag: tagName }).toString()}`
                   : `/catalog/${ns}/component/${name}`,
                 topic: `deploy:${ns}/${name}`,
-                severity: mode === 'auto' ? 'normal' : 'low',
+                severity: mode === 'auto' ? 'high' : 'low',
               },
             });
             logger.info(`Webhook: notification sent for ${entityRef}@${tagName} to ${resolvedRecipient || 'broadcast'}`);
@@ -1110,29 +1146,10 @@ export function createRouter(options: RouterOptions): Router {
 
         if (mode === 'confirm') {
           logger.info(`Webhook: [CONFIRM] ${entityRef}@${tagName} ready to deploy — approve via Backstage UI`);
-          continue;
         }
-
-        // mode === 'auto': deploy immediately
-        if (!scaffolderClient) {
-          logger.warn('Webhook: scaffolder client not available, cannot auto-deploy');
-          continue;
-        }
-
-        logger.info(`Webhook: triggering deploy-version for ${entityRef} with tag ${tagName}`);
-
-        const task = await scaffolderClient.createTask({
-          templateRef: 'template:default/deploy-version',
-          values: {
-            serviceName: entityRef,
-            gitTag: tagName,
-          },
-        });
-
-        logger.info(`Webhook: scaffolder task created: ${task.id} for ${entityRef}@${tagName}`);
       }
     } catch (err) {
-      logger.error(`Webhook auto-deploy failed: ${err}`);
+      logger.error(`Webhook notification failed: ${err}`);
     }
   });
 
