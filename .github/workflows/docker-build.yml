@@ -1,0 +1,49 @@
+name: Docker build
+
+# Builds the production image on every PR so a broken Dockerfile fails review
+# instead of the release build (mctl-portal#139: 4.17.0 never shipped because a
+# new plugin was missing from the Dockerfile's workspace COPY list).
+# The image is never pushed; publishing stays in mctl-gitops release-deploy.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docker-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  workspace-copies:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Dockerfile copies every workspace manifest
+        run: scripts/check-dockerfile-workspaces.sh
+
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+
+      - name: Build image (no push)
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          file: Dockerfile
+          push: false
+          tags: mctl-portal:ci-${{ github.sha }}
+          cache-from: type=gha,scope=mctl-portal-image
+          cache-to: type=gha,scope=mctl-portal-image,mode=max
