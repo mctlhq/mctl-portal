@@ -1,4 +1,5 @@
 import type { Knex } from 'knex';
+import { parseEntityRef } from '@backstage/catalog-model';
 import { getTenantMember, isAdminUser } from '../../tenant-backend/src/membershipLookup';
 
 /**
@@ -7,8 +8,35 @@ import { getTenantMember, isAdminUser } from '../../tenant-backend/src/membershi
  */
 const TENANT_PARAMETERS = ['team_name', 'tenant_name'] as const;
 
+/**
+ * ClusterWorkflowTemplates a team member may run in their own team's
+ * namespace: the ones the portal's service templates submit (deploy,
+ * update config, deploy version, retire, provision database). Every other
+ * template, tenant-scoped or platform-wide, is admin-only through this
+ * action, whatever its parameters say.
+ */
+export const TEAM_WORKFLOW_TEMPLATES = new Set([
+  'deploy-service',
+  'retire-service',
+  'provision-database',
+]);
+
 // Roles allowed to change a tenant through a workflow. Viewers are read-only.
 const WRITE_ROLES = new Set(['developer', 'owner']);
+
+function initiatingUserId(userRef: string | undefined): string | undefined {
+  if (!userRef) {
+    return undefined;
+  }
+  try {
+    const ref = parseEntityRef(userRef);
+    return ref.kind.toLowerCase() === 'user' && ref.namespace === 'default'
+      ? ref.name.toLowerCase()
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
 
 /**
  * Decides whether the task's initiator may submit a workflow with these
@@ -16,10 +44,10 @@ const WRITE_ROLES = new Set(['developer', 'owner']);
  * token, so this is the only place where the initiating user is checked.
  *
  * Platform admins (owner role in the admins tenant) may submit anything.
- * Everyone else must be a developer or owner of every tenant the submission
- * names: the Argo namespace when it is not the default one, and the
- * team_name / tenant_name parameters. A submission that names no tenant at
- * all is platform-wide and therefore admin-only.
+ * Everyone else may only run one of TEAM_WORKFLOW_TEMPLATES, as a
+ * ClusterWorkflowTemplate, in the namespace of a team they are a developer
+ * or owner of, and every team_name / tenant_name parameter must name that
+ * same team. The default (control-plane) namespace is admin-only.
  *
  * Throws with a user-facing message when the submission is not allowed.
  */
@@ -27,16 +55,16 @@ export async function authorizeWorkflowSubmission(options: {
   db: Knex;
   isPostgres: boolean;
   userRef: string | undefined;
+  templateName: string;
+  clusterScope: boolean;
   namespace: string;
   defaultNamespace: string;
   parameters: Record<string, string | null | undefined> | undefined;
 }): Promise<void> {
-  const { db, isPostgres, userRef, namespace, defaultNamespace, parameters } = options;
+  const { db, isPostgres, userRef, templateName, clusterScope, namespace, defaultNamespace, parameters } =
+    options;
 
-  // Backstage user entity refs are "user:default/<username>"
-  const userId = userRef?.startsWith('user:default/')
-    ? userRef.slice('user:default/'.length).toLowerCase()
-    : undefined;
+  const userId = initiatingUserId(userRef);
   if (!userId) {
     throw new Error(
       'mctl:workflow:submit: no initiating user on this task — refusing to submit',
@@ -47,28 +75,26 @@ export async function authorizeWorkflowSubmission(options: {
     return;
   }
 
-  const tenants = new Set<string>();
-  if (namespace !== defaultNamespace) {
-    tenants.add(namespace);
+  const denied = (why: string) =>
+    new Error(`Access denied: "${userId}" is not a platform admin, and ${why}.`);
+
+  if (!clusterScope || !TEAM_WORKFLOW_TEMPLATES.has(templateName)) {
+    throw denied(`workflow "${templateName}" is not one a team may run`);
+  }
+  if (!namespace || namespace === defaultNamespace) {
+    throw denied(`namespace "${namespace}" is not a team namespace`);
   }
   for (const key of TENANT_PARAMETERS) {
     const value = parameters?.[key];
-    if (value !== undefined && value !== null) {
-      tenants.add(String(value).trim());
+    if (value !== undefined && value !== null && String(value).trim() !== namespace) {
+      throw denied(`${key} "${value}" does not match the team namespace "${namespace}"`);
     }
-  }
-  if (tenants.size === 0) {
-    throw new Error(
-      `Access denied: "${userId}" is not a platform admin, and this workflow does not target a team.`,
-    );
   }
 
-  for (const tenant of tenants) {
-    const member = tenant ? await getTenantMember(db, isPostgres, tenant, userId) : undefined;
-    if (!member || !WRITE_ROLES.has(member.role)) {
-      throw new Error(
-        `Access denied: "${userId}" is not a developer or owner of team "${tenant}" and is not a platform admin.`,
-      );
-    }
+  const member = await getTenantMember(db, isPostgres, namespace, userId);
+  if (!member || !WRITE_ROLES.has(member.role)) {
+    throw new Error(
+      `Access denied: "${userId}" is not a developer or owner of team "${namespace}" and is not a platform admin.`,
+    );
   }
 }

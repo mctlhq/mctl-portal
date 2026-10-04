@@ -8,6 +8,9 @@ function sleep(ms: number) {
   return new Promise(r => setTimeout(r, ms));
 }
 
+// Knex accepts any of these for Postgres; production config uses 'pg'.
+const POSTGRES_CLIENTS = new Set(['pg', 'postgres', 'postgresql']);
+
 const TERMINAL_PHASES = ['Succeeded', 'Failed', 'Error'];
 const PHASE_ICONS: Record<string, string> = {
   Succeeded: '✅',
@@ -45,8 +48,9 @@ function nodeLabel(type: string): string {
  *     token: <optional bearer token>
  *     namespace: argo-workflows
  *
- * The initiating user must be a platform admin or a developer/owner of
- * every team the submission targets (see authorizeWorkflowSubmission).
+ * The initiating user must be a platform admin, or a developer/owner
+ * running a team workflow in their own team's namespace (see
+ * authorizeWorkflowSubmission).
  */
 export function createSubmitWorkflowAction(options: {
   config: Config;
@@ -124,8 +128,10 @@ export function createSubmitWorkflowAction(options: {
       const db = await database.getClient();
       await authorizeWorkflowSubmission({
         db,
-        isPostgres: db.client.config.client === 'pg',
+        isPostgres: POSTGRES_CLIENTS.has(String(db.client.config.client)),
         userRef: ctx.user?.ref,
+        templateName,
+        clusterScope,
         namespace,
         defaultNamespace,
         parameters,
