@@ -1,10 +1,12 @@
 import type {
   CanvasLinkStatus,
+  EvidenceRef,
   ExecutionRequestRef,
   ExecutionRef,
   Observed,
   PortalWorkItem,
   SnapshotRef,
+  WorkItemEventRef,
 } from './types';
 
 /**
@@ -46,6 +48,10 @@ const RELAY_ALLOWLIST: { method: string; pattern: RegExp }[] = [
   { method: 'GET', pattern: new RegExp(`^/api/v1/work-items/${ID}/execution-requests(/${ID})?$`) },
   { method: 'POST', pattern: new RegExp(`^/api/v1/work-items/${ID}/execution-requests$`) },
   { method: 'POST', pattern: new RegExp(`^/api/v1/work-items/${ID}/(intents|surface-refs)$`) },
+  // Read-only history (mctl-api#436). `.../executions/{id}/snapshot` serves the
+  // snapshot bytes and is deliberately not here.
+  { method: 'GET', pattern: new RegExp(`^/api/v1/work-items/${ID}/(executions|snapshots|events|evidence)$`) },
+  { method: 'GET', pattern: new RegExp(`^/api/v1/work-items/${ID}/snapshots/${ID}$`) },
   { method: 'GET', pattern: new RegExp(`^/api/v1/human-input(/${ID})?$`) },
   { method: 'POST', pattern: new RegExp(`^/api/v1/human-input/${ID}/response$`) },
   { method: 'POST', pattern: /^\/api\/v1\/surface-identities\/redeem$/ },
@@ -99,13 +105,90 @@ function mapExecution(raw: unknown): ExecutionRef | undefined {
   };
 }
 
+const num = (v: unknown): number | undefined => (typeof v === 'number' && Number.isFinite(v) ? v : undefined);
+
+/** Metadata only: `produced_by` and `canonical_b64` are never read. */
 function mapSnapshot(raw: unknown): SnapshotRef | undefined {
   const r = obj(raw);
   const id = str(r?.id);
   const executionId = str(r?.execution_id);
   const contentHash = str(r?.content_hash);
-  if (!id || !executionId || !contentHash) return undefined;
-  return { id, executionId, contentHash };
+  if (!r || !id || !executionId || !contentHash) return undefined;
+  return {
+    id,
+    executionId,
+    contentHash,
+    executionSequence: num(r.execution_sequence),
+    strategy: str(r.strategy),
+    strategyVersion: str(r.strategy_version),
+    priorSnapshotId: str(r.prior_snapshot_id),
+    createdAt: str(r.created_at),
+  };
+}
+
+/**
+ * `envelope_b64`, `ingested_by*` and the derived `ref` (which carries engine
+ * identity) are never read.
+ */
+function mapEvidence(raw: unknown): EvidenceRef | undefined {
+  const r = obj(raw);
+  const id = str(r?.id);
+  if (!r || !id) return undefined;
+  return {
+    id,
+    executionId: str(r.execution_id),
+    contentHash: str(r.content_hash),
+    apiVersion: str(r.api_version),
+    createdAt: str(r.created_at),
+    primaryRefKind: str(r.primary_ref_kind),
+    primaryRefId: str(r.primary_ref_id),
+  };
+}
+
+/** `actor_principal`, `acting_principal`, `request_id` and `detail` are never read. */
+function mapEvent(raw: unknown): WorkItemEventRef | undefined {
+  const r = obj(raw);
+  const seq = num(r?.seq);
+  const kind = str(r?.kind);
+  if (!r || seq === undefined || !kind) return undefined;
+  return {
+    seq,
+    kind,
+    fromState: str(r.from_state),
+    toState: str(r.to_state),
+    surface: str(r.surface),
+    createdAt: str(r.created_at),
+  };
+}
+
+/**
+ * Maps every entry or nothing: one unrecognised entry makes the whole list
+ * unrecognised, because a silently shorter list would read as a complete one.
+ */
+function mapAll<T>(list: unknown, map: (raw: unknown) => T | undefined): T[] | undefined {
+  if (!Array.isArray(list)) return undefined;
+  const out: T[] = [];
+  for (const raw of list) {
+    const m = map(raw);
+    if (m === undefined) return undefined;
+    out.push(m);
+  }
+  return out;
+}
+
+/** A bounded evidence page; `truncated` means older envelopes exist. */
+export interface EvidencePage {
+  evidence: EvidenceRef[];
+  truncated: boolean;
+  limit?: number;
+}
+
+/** The history sections, each observed (or not) on its own. */
+export interface WorkItemHistory {
+  executions: Observed<ExecutionRef[]>;
+  snapshots: Observed<SnapshotRef[]>;
+  evidence: Observed<EvidencePage>;
+  events: Observed<WorkItemEventRef[]>;
 }
 
 export function toPortalExecutionRequest(raw: unknown): ExecutionRequestRef | undefined {
@@ -134,6 +217,7 @@ const NOT_VIA_RELAY: Observed<never> = { state: 'unknown', reason: 'not_availabl
 export function toPortalWorkItem(
   view: unknown,
   executionRequests: Observed<ExecutionRequestRef[]>,
+  history: WorkItemHistory,
   canvasLinks: { label: string; url: string }[] = [],
   canvasConfigured = false,
 ): PortalWorkItem {
@@ -156,6 +240,10 @@ export function toPortalWorkItem(
   else if (exec === null) canvas = 'no_execution';
   else canvas = 'unavailable';
 
+  const ev = history.evidence;
+  const evidence: Observed<EvidenceRef[]> = ev.state === 'unknown' ? ev : { ...ev, value: ev.value.evidence };
+  const evidenceTruncated = ev.state !== 'unknown' && ev.value.truncated ? { limit: ev.value.limit } : undefined;
+
   return {
     id,
     title: str(w.title) ?? '',
@@ -174,9 +262,11 @@ export function toPortalWorkItem(
     latestSnapshot:
       snap === undefined ? { state: 'unknown', reason: 'unrecognised_shape' } : { state: 'ok', value: snap },
     executionRequests,
-    executions: NOT_VIA_RELAY,
-    snapshots: NOT_VIA_RELAY,
-    evidence: NOT_VIA_RELAY,
+    executions: history.executions,
+    snapshots: history.snapshots,
+    evidence,
+    evidenceTruncated,
+    events: history.events,
     surfaces: NOT_VIA_RELAY,
     links,
     canvas,
@@ -310,32 +400,54 @@ export class MctlApiWorkItemsClient implements WorkItemsClient {
       throw new MctlApiError(502, 'mctl-api returned an empty body');
     }
 
-    let requests: Observed<ExecutionRequestRef[]>;
-    try {
-      const r = await this.request('GET', `${base}/execution-requests`, actor);
-      const list = obj(r.json)?.execution_requests;
-      requests = Array.isArray(list)
-        ? {
-            state: 'ok',
-            value: list.map(toPortalExecutionRequest).filter((x): x is ExecutionRequestRef => !!x),
-            observedAt: new Date().toISOString(),
-          }
-        : { state: 'unknown', reason: 'unrecognised_shape' };
-    } catch (err) {
-      // The item itself was readable; degrade only this section.
-      // Any upstream answer (403, 404, 429, 5xx, ...) degrades this section;
-      // only a non-MctlApiError (a plugin bug such as an allowlist violation)
-      // propagates.
-      if (err instanceof MctlApiError) {
-        requests = { state: 'unknown', reason: 'fetch_failed' };
-      } else {
-        throw err;
-      }
-    }
+    // Only the item read above is fatal; every section below degrades alone.
+    const [requests, executions, snapshots, evidence, events] = await Promise.all([
+      this.observe(`${base}/execution-requests`, actor, b => mapAll(b.execution_requests, toPortalExecutionRequest)),
+      this.observe(`${base}/executions`, actor, b => mapAll(b.executions, mapExecution)),
+      this.observe(`${base}/snapshots`, actor, b => mapAll(b.snapshots, mapSnapshot)),
+      this.observe(`${base}/evidence`, actor, (b): EvidencePage | undefined => {
+        const list = mapAll(b.evidence, mapEvidence);
+        // Without a readable `truncated` the page cannot be told complete.
+        if (!list || typeof b.truncated !== 'boolean') return undefined;
+        return { evidence: list, truncated: b.truncated, limit: num(b.limit) };
+      }),
+      this.observe(`${base}/events`, actor, b => mapAll(b.events, mapEvent)),
+    ]);
 
     // Canvas link candidates go through the mapper, so one filter governs
     // every link the browser receives.
-    return toPortalWorkItem(view.json, requests, this.canvasLinks(id, view.json), !!this.canvasTemplate);
+    return toPortalWorkItem(
+      view.json,
+      requests,
+      { executions, snapshots, evidence, events },
+      this.canvasLinks(id, view.json),
+      !!this.canvasTemplate,
+    );
+  }
+
+  /**
+   * One section read: a recognised 2xx body is ok (an empty list included), an
+   * unrecognised one is unknown, and any upstream answer (403, 404, 429, 5xx,
+   * ...) is fetch_failed. Only a non-MctlApiError (a plugin bug such as an
+   * allowlist violation) propagates.
+   */
+  private async observe<T>(
+    path: string,
+    actor: string,
+    read: (body: Record<string, unknown>) => T | undefined,
+  ): Promise<Observed<T>> {
+    let json: unknown;
+    try {
+      json = (await this.request('GET', path, actor)).json;
+    } catch (err) {
+      if (err instanceof MctlApiError) return { state: 'unknown', reason: 'fetch_failed' };
+      throw err;
+    }
+    const body = obj(json);
+    const value = body ? read(body) : undefined;
+    return value === undefined
+      ? { state: 'unknown', reason: 'unrecognised_shape' }
+      : { state: 'ok', value, observedAt: new Date().toISOString() };
   }
 
   private canvasLinks(id: string, view: unknown): { label: string; url: string }[] {

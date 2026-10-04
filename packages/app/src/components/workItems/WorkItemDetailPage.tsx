@@ -232,9 +232,80 @@ export const WorkItemDetailView = (props: {
       </Grid>
       <Grid item xs={12}>
         <Paper style={{ padding: 16 }}>
-          <ObservedSection title="All executions" data={item.executions} render={() => null} />
-          <ObservedSection title="ContextSnapshots" data={item.snapshots} render={() => null} />
-          <ObservedSection title="Evidence" data={item.evidence} render={() => null} />
+          <ObservedSection
+            title="All executions"
+            data={item.executions}
+            render={list => (
+              <ul>
+                {list.map(e => (
+                  <li key={e.id}>
+                    {e.id} · attempt {e.attempt ?? '?'} · {e.phase}
+                    {e.startedAt ? ` · started ${e.startedAt}` : ''}
+                    {e.endedAt ? ` · ended ${e.endedAt}` : ''}
+                    {e.resumedFromExecutionId ? ` · resumed from ${e.resumedFromExecutionId}` : ''}
+                  </li>
+                ))}
+              </ul>
+            )}
+          />
+          <ObservedSection
+            title="ContextSnapshots"
+            data={item.snapshots}
+            render={list => (
+              <ul>
+                {list.map(s => (
+                  <li key={s.id}>
+                    {s.id} · {s.executionId} · {s.contentHash}
+                    {s.strategy ? ` · ${s.strategy}${s.strategyVersion ? `@${s.strategyVersion}` : ''}` : ''}
+                    {s.priorSnapshotId ? ` · after ${s.priorSnapshotId}` : ''}
+                    {s.createdAt ? ` · ${s.createdAt}` : ''}
+                  </li>
+                ))}
+              </ul>
+            )}
+          />
+          <ObservedSection
+            title="Evidence"
+            data={item.evidence}
+            render={list => (
+              <>
+                {/* A clipped page must never read as the complete history. */}
+                {item.evidenceTruncated && (
+                  <Typography variant="caption" color="textSecondary" component="div">
+                    Showing the latest {item.evidenceTruncated.limit ?? list.length}; older evidence exists.
+                  </Typography>
+                )}
+                <ul>
+                  {list.map(e => (
+                    <li key={e.id}>
+                      {e.id}
+                      {e.primaryRefKind && e.primaryRefId ? ` · ${e.primaryRefKind} ${e.primaryRefId}` : ''}
+                      {e.contentHash ? ` · ${e.contentHash}` : ''}
+                      {e.createdAt ? ` · ${e.createdAt}` : ''}
+                    </li>
+                  ))}
+                </ul>
+              </>
+            )}
+          />
+          {item.events && (
+            <ObservedSection
+              title="Events"
+              data={item.events}
+              render={list => (
+                <ul>
+                  {list.map(e => (
+                    <li key={e.seq}>
+                      #{e.seq} · {e.kind}
+                      {e.fromState || e.toState ? ` · ${e.fromState ?? '?'} → ${e.toState ?? '?'}` : ''}
+                      {e.surface ? ` · via ${e.surface}` : ''}
+                      {e.createdAt ? ` · ${e.createdAt}` : ''}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            />
+          )}
           <ObservedSection title="Surfaces" data={item.surfaces} render={() => null} />
         </Paper>
       </Grid>

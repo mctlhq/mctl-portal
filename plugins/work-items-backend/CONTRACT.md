@@ -1,8 +1,9 @@
 # WorkItem contract consumed by this plugin
 
 Source: mctl-api `docs/work-context-contract.md` ("Surface relay (mctl-api#350)",
-"Execution requests (mctl-api#368)") and `internal/openapi/openapi.yaml`, as of
-mctl-api revision `7656351875a78989f65719908065e1206485ff57` (main, 2026-10-03).
+"Execution requests (mctl-api#368)"), `internal/openapi/openapi.yaml`, and for the
+history shapes `internal/workitems` and `internal/evidence`, as of mctl-api revision
+`768057717c66732b079bbd53ee160e78c0c5b151` (main, 2026-10-04).
 WorkItem runtime API: mctl-api#349. Delegated surface identity: mctl-api#350.
 
 ## Identity model
@@ -62,13 +63,18 @@ Rule (`toSurfaceActorId` in `src/router.ts`):
 - `POST /api/v1/work-items/{id}/intents`, `POST /api/v1/work-items/{id}/surface-refs`
 - `GET /api/v1/human-input[/{id}]`, `POST /api/v1/human-input/{id}/response`
 - `POST /api/v1/surface-identities/redeem` (surface principal itself, with the actor header)
+- Read-only history (mctl-api#436): `GET /api/v1/work-items/{id}/executions`,
+  `GET /api/v1/work-items/{id}/snapshots[/{snapshot_id}]`,
+  `GET /api/v1/work-items/{id}/events`, `GET /api/v1/work-items/{id}/evidence`
 
-NOT relay routes today: `GET /work-items/{id}/executions`, `/snapshots`,
-`/events`, `/evidence`, `/approvals`, and `POST /work-items/{id}/resume`. Sections
-that depend on them are rendered `{state:'unknown', reason:'not_available_via_relay'}`.
+NOT relay routes today: `GET /work-items/{id}/executions/{execution_id}/snapshot`
+(it serves the snapshot bytes), `/approvals`, any write method on a history path,
+and `POST /work-items/{id}/resume`. The surfaces section has no relay route and is
+rendered `{state:'unknown', reason:'not_available_via_relay'}`.
 This client only calls the routes it uses (`GET /work-items/{id}`,
-`GET|POST /work-items/{id}/execution-requests`, `POST /surface-identities/redeem`)
-and refuses anything outside the allowlist before any I/O. It does not create
+`GET|POST /work-items/{id}/execution-requests`, the four history lists,
+`POST /surface-identities/redeem`) and refuses anything outside the allowlist
+before any I/O. `GET .../snapshots/{snapshot_id}` is allowed but not called. It does not create
 work items (`POST /work-items` is on mctl-api's allowlist but not on this
 client's). A refused route is a bug in the plugin: it is logged and the browser
 gets a generic 502, never the internal path.
@@ -89,6 +95,44 @@ superseded_by, state_version, created_at, updated_at, completed_at}`,
 surface, execution_id, reason, created_at, updated_at, closed_at`. `claimed_by`,
 `requested_by` and idempotency keys are not forwarded.
 
+### History sections (mctl-api#436)
+
+`getWorkItem` reads the item first; only that read is fatal. It then reads
+`execution-requests` and the four history lists in parallel, and each becomes
+its own `Observed` section:
+
+- a 2xx body whose list is present and every entry is recognised -> `ok` (an
+  empty list is `ok` with `[]`, never unknown);
+- a missing or non-array list, or any unrecognised entry -> `unknown` /
+  `unrecognised_shape` (a list is mapped whole or not at all, so a dropped entry
+  can never make the history look shorter than it is);
+- any upstream error answer -> `unknown` / `fetch_failed`.
+
+mctl-api returns a relayed history read in the same body as a direct read, so
+the mapper is the allow-list:
+
+`GET /work-items/{id}/executions` -> `{executions: WorkItemExecution[]}`:
+`id, attempt, phase, started_at, ended_at, resumed_from_execution_id`. `engine` and
+`engine_ref` are not forwarded.
+
+`GET /work-items/{id}/snapshots` -> `{snapshots: ContextSnapshotSummary[]}`:
+`id, execution_id, content_hash, execution_sequence, strategy, strategy_version,
+prior_snapshot_id, created_at`. `produced_by` is not forwarded; `canonical_b64` is
+never read (a relayed single-snapshot read is metadata only anyway).
+
+`GET /work-items/{id}/evidence` -> `{evidence: Evidence[], truncated, limit}`, newest
+first: `id, execution_id, content_hash, api_version, created_at, primary_ref_kind,
+primary_ref_id`. `envelope_b64`, `ingested_by`, `ingested_by_principal_id` and the
+derived `ref` (which carries engine identity) are not forwarded. `truncated` must be
+a boolean or the section is `unrecognised_shape`; when it is true the portal sets
+`evidenceTruncated: {limit}` and the page says it shows only the latest `limit`.
+
+`GET /work-items/{id}/events` -> `{events: WorkItemEvent[]}`: `seq, kind, from_state,
+to_state, surface, created_at`. `actor_principal`, `acting_principal`, `request_id`
+and `detail` are not forwarded.
+
+### Execution request body
+
 `POST /work-items/{id}/execution-requests` body: `{kind, expected_state_version,
 resumed_from_execution_id?, intent_id?, idempotency_key?}`. `engine`, `engine_ref`,
 `execution_id` are refused by mctl-api (400 `execution_identity_not_accepted`) and are
@@ -98,9 +142,9 @@ never sent by this plugin. Errors pass through: 409 `state_version_conflict`,
 
 ## Known gaps
 
-- Read-only relay access to executions, snapshots (metadata), events and
-  evidence: mctlhq/mctl-api#436. Until then those sections stay
-  `not_available_via_relay`.
+- Relayed snapshot reads are metadata only: the portal cannot show a
+  snapshot's canonical bytes (`.../executions/{execution_id}/snapshot` is not a
+  relay route).
 - Human input is not wired in this PR. mctl-api already has what the portal
   needs: `GET /human-input?work_item_id=<id>&state=pending` and
   `POST /human-input/{request_id}/response` (`{request_hash, value, surface?}`)
