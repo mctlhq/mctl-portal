@@ -11,6 +11,7 @@ import type {
 import type { NotificationService } from '@backstage/plugin-notifications-node';
 import { getTenantMember, isAdminUser } from '../../tenant-backend/src/membershipLookup';
 import { RepoConnectionStore } from './store';
+import { isRepoBoundToTeam } from './bindingLookup';
 
 // Format guards for user-supplied identifiers that flow into GitHub API URLs
 // or GitOps repo file paths. Rejecting anything outside these shapes up
@@ -34,6 +35,12 @@ export interface RouterOptions {
   privateKey: string;
   baseUrl: string;
   webhookSecret?: string;
+  /**
+   * Subject of the external-access token (backend.auth.externalAccess) that
+   * may ask /repo-binding whether a repository is connected to a team. Unset:
+   * the route refuses everyone.
+   */
+  bindingCheckSubject?: string;
   catalogClient?: { getEntities: (request: any) => Promise<any> };
   // Unused while auto-deploy is disabled (see POST /webhook); kept so the
   // plugin wiring does not change with it.
@@ -352,7 +359,7 @@ export async function resolveBindableRepos(options: {
 }
 
 export function createRouter(options: RouterOptions): Router {
-  const { logger, store, appSlug, appId, privateKey, baseUrl, webhookSecret, catalogClient, notifications, httpAuth, userInfo, db, isPostgres } = options;
+  const { logger, store, appSlug, appId, privateKey, baseUrl, webhookSecret, bindingCheckSubject, catalogClient, notifications, httpAuth, userInfo, db, isPostgres } = options;
   // Derive the state key from the full private key (full entropy) rather than
   // a low-entropy PEM-header prefix. 64 hex chars keeps the existing shape.
   //
@@ -402,6 +409,36 @@ export function createRouter(options: RouterOptions): Router {
 
     const installUrl = `https://github.com/apps/${appSlug}/installations/new?state=${encodeURIComponent(state)}`;
     res.json({ url: installUrl, state });
+  });
+
+  // GET /repo-binding?team=<team>&repo=<owner/name> — for mctl-api's build
+  // gate: is the repository connected to the team by a verified binding?
+  // Only the configured external-access principal may ask.
+  router.get('/repo-binding', async (req: Request, res: Response) => {
+    let subject: string | undefined;
+    try {
+      const credentials = await httpAuth.credentials(req, { allow: ['service'] });
+      subject = (credentials.principal as { subject?: string }).subject;
+    } catch {
+      res.status(401).json({ error: 'Authentication required' });
+      return;
+    }
+    if (!bindingCheckSubject || subject !== `external:${bindingCheckSubject}`) {
+      res.status(403).json({ error: 'Not allowed' });
+      return;
+    }
+    const team = req.query.team;
+    const repo = req.query.repo;
+    if (typeof team !== 'string' || !TEAM_OR_SERVICE_RE.test(team)) {
+      res.status(400).json({ error: 'Missing or invalid param: team' });
+      return;
+    }
+    if (typeof repo !== 'string' || !REPO_FULL_NAME_RE.test(repo)) {
+      res.status(400).json({ error: 'Missing or invalid param: repo (owner/name)' });
+      return;
+    }
+    const bound = await isRepoBoundToTeam(db, isPostgres, team, repo);
+    res.json({ team, repo, bound });
   });
 
   // GET /popup-state?team=<team> — state for the repo picker's install popup.

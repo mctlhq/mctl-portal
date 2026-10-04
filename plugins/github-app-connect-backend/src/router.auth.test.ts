@@ -5,6 +5,10 @@ import express from 'express';
 import { AddressInfo } from 'net';
 import { auditAdminBypass, checkTeamAccess, createRouter, encryptState, RouterOptions } from './router';
 
+jest.mock('./bindingLookup', () => ({ isRepoBoundToTeam: jest.fn() }));
+// eslint-disable-next-line import/first
+import { isRepoBoundToTeam } from './bindingLookup';
+
 let fetchMock: jest.SpyInstance;
 
 beforeEach(() => {
@@ -79,11 +83,17 @@ function fakeDb(memberships: Record<string, { role: string }>): Knex {
 // when the header is absent.
 function fakeHttpAuth() {
   return {
-    async credentials(req: any) {
+    async credentials(req: any, opts?: { allow?: string[] }) {
+      const service = req.headers['x-test-service'];
+      if (service) {
+        if (opts?.allow && !opts.allow.includes('service')) throw new Error('service not allowed');
+        return { principal: { type: 'service', subject: service } };
+      }
       const userId = req.headers['x-test-user'];
       if (!userId) {
         throw new Error('no credentials on request');
       }
+      if (opts?.allow && !opts.allow.includes('user')) throw new Error('user not allowed');
       return { principal: { type: 'user', userEntityRef: `user:default/${userId}` } };
     },
   } as any;
@@ -831,5 +841,50 @@ describe('POST /webhook signature check', () => {
       await new Promise(r => server.close(r));
       fetchMock = jest.spyOn(globalThis, 'fetch');
     }
+  });
+});
+
+describe('GET /repo-binding', () => {
+  const bound = isRepoBoundToTeam as jest.Mock;
+
+  beforeEach(() => bound.mockReset().mockResolvedValue(true));
+
+  it('answers the configured external principal', async () => {
+    const { router } = buildRouter({}, {}, { bindingCheckSubject: 'mctl-api-repo-binding' });
+    const { status, body } = await dispatch(router, 'GET', '/repo-binding?team=labs&repo=acme/api', {
+      'x-test-service': 'external:mctl-api-repo-binding',
+    });
+    expect(status).toBe(200);
+    expect(body).toEqual({ team: 'labs', repo: 'acme/api', bound: true });
+    expect(bound).toHaveBeenCalledWith(expect.anything(), false, 'labs', 'acme/api');
+  });
+
+  it.each([
+    ['another external principal', { 'x-test-service': 'external:mctl-api' }, 403],
+    ['a plugin principal', { 'x-test-service': 'plugin:scaffolder' }, 403],
+    ['a signed-in user, even an admin', { 'x-test-user': 'root' }, 401],
+    ['no credentials', {}, 401],
+  ])('refuses %s', async (_label, headers, code) => {
+    const { router } = buildRouter({ 'admins:root': { role: 'owner' } }, {}, { bindingCheckSubject: 'mctl-api-repo-binding' });
+    const { status } = await dispatch(router, 'GET', '/repo-binding?team=labs&repo=acme/api', headers as any);
+    expect(status).toBe(code);
+    expect(bound).not.toHaveBeenCalled();
+  });
+
+  it('refuses everyone when no subject is configured', async () => {
+    const { router } = buildRouter({});
+    const { status } = await dispatch(router, 'GET', '/repo-binding?team=labs&repo=acme/api', {
+      'x-test-service': 'external:',
+    });
+    expect(status).toBe(403);
+  });
+
+  it.each(['team=../x&repo=acme/api', 'team=labs&repo=acme', 'team=labs&repo=../..'])('rejects malformed %s', async q => {
+    const { router } = buildRouter({}, {}, { bindingCheckSubject: 'mctl-api-repo-binding' });
+    const { status } = await dispatch(router, 'GET', `/repo-binding?${q}`, {
+      'x-test-service': 'external:mctl-api-repo-binding',
+    });
+    expect(status).toBe(400);
+    expect(bound).not.toHaveBeenCalled();
   });
 });

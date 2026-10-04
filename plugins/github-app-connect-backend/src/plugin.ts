@@ -48,6 +48,7 @@ export const githubAppConnectPlugin = createBackendPlugin({
         const privateKey = config.getString('githubAppConnect.privateKey');
         const baseUrl = config.getString('app.baseUrl');
         const webhookSecret = config.getOptionalString('githubAppConnect.webhookSecret');
+        const bindingCheckSubject = config.getOptionalString('githubAppConnect.bindingCheckSubject');
 
         const knex = await database.getClient();
         const isPostgres = isPostgresClient(knex);
@@ -110,6 +111,7 @@ export const githubAppConnectPlugin = createBackendPlugin({
           privateKey,
           baseUrl,
           webhookSecret,
+          bindingCheckSubject,
           catalogClient,
           scaffolderClient,
           notifications,
