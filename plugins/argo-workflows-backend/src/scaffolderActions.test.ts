@@ -20,8 +20,51 @@ jest.mock('./argoClient', () => ({
 // [.withSchema(...) on Postgres].where({ tenant_name, user_id }).first()
 const withSchema = jest.fn();
 
-function fakeDb(memberships: Record<string, string>, client = 'better-sqlite3'): Knex {
-  const db: any = jest.fn((_table: string) => {
+type Binding = { team_id: string; repo_full_name: string; created_by: string };
+
+// Also mirrors isRepoBoundToTeam's db('repo_connections')[.withSchema()]
+// .where({ team_id }).andWhereRaw(lower(repo) = ?).andWhere(<created_by
+// prefixes>).first().
+function fakeDb(
+  memberships: Record<string, string>,
+  client = 'better-sqlite3',
+  bindings: Binding[] | 'error' = [],
+): Knex {
+  const db: any = jest.fn((table: string) => {
+    if (table === 'repo_connections') {
+      const q: any = { prefixes: [] as string[] };
+      const b: any = {
+        withSchema: jest.fn().mockReturnThis(),
+        where(cond: { team_id: string }) {
+          q.team = cond.team_id;
+          return b;
+        },
+        andWhereRaw(_sql: string, [repo]: string[]) {
+          q.repo = repo;
+          return b;
+        },
+        andWhere(fn: (w: any) => void) {
+          const w: any = {
+            orWhere(_col: string, _op: string, pattern: string) {
+              q.prefixes.push(pattern.replace(/%$/, ''));
+              return w;
+            },
+          };
+          fn(w);
+          return b;
+        },
+        async first() {
+          if (bindings === 'error') throw new Error('connection refused');
+          return bindings.find(
+            r =>
+              r.team_id === q.team &&
+              r.repo_full_name.toLowerCase() === q.repo &&
+              q.prefixes.some((p: string) => r.created_by.startsWith(p)),
+          );
+        },
+      };
+      return b;
+    }
     const builder: any = {
       withSchema: withSchema.mockImplementation(() => builder),
       where(cond: { tenant_name: string; user_id: string }) {
@@ -222,5 +265,117 @@ describe('mctl:workflow:submit authorization', () => {
     await run('user:default/root', { templateName: 'mctl-agents-run', parameters: {} });
     await run('user:default/root', { templateName: 'create-tenant', parameters: { tenant_name: 'new' } });
     expect(submitWorkflow).toHaveBeenCalledTimes(3);
+  });
+});
+
+describe('mctl:workflow:submit build repository', () => {
+  // As the one-time migration leaves them: a reviewed pre-cutoff row, a
+  // verified newer row, an unverified row, and another team's row.
+  const BINDINGS: Binding[] = [
+    { team_id: 'labs', repo_full_name: 'mashkovd/kuptsi-v2', created_by: 'legacy:sync' },
+    { team_id: 'labs', repo_full_name: 'carol/tool', created_by: 'popup:carol' },
+    { team_id: 'labs', repo_full_name: 'victim-org/unverified', created_by: 'sync' },
+    { team_id: 'karabu', repo_full_name: 'karabu-org/private', created_by: 'sync:kim' },
+  ];
+  const PUBLIC = new Set(['openclaw/openclaw']);
+  let fetchSpy: jest.SpyInstance;
+  let publicAnswer: (repo: string) => { status: number; body: unknown };
+
+  function actionWith(bindings: Binding[] | 'error' = BINDINGS) {
+    return createSubmitWorkflowAction({
+      config: new ConfigReader({
+        argoWorkflows: { baseUrl: 'https://workflows.example.invalid', namespace: 'argo-workflows' },
+      }),
+      database: { getClient: async () => fakeDb(MEMBERSHIPS, undefined, bindings) } as any,
+    });
+  }
+
+  function deploy(user: string, team: string, repo: string, bindings?: Binding[] | 'error') {
+    const ctx: any = {
+      input: {
+        templateName: 'deploy-service',
+        waitForCompletion: false,
+        namespace: team,
+        parameters: { action: 'onboard', team_name: team, dockerfile_repo: repo },
+      },
+      user: { ref: user },
+      logger: { info: jest.fn(), warn: jest.fn(), error: jest.fn() },
+      output: jest.fn(),
+    };
+    return actionWith(bindings).handler(ctx);
+  }
+
+  beforeEach(() => {
+    publicAnswer = repo =>
+      PUBLIC.has(repo)
+        ? { status: 200, body: { private: false } }
+        : { status: 404, body: { message: 'Not Found' } };
+    fetchSpy = jest.spyOn(globalThis, 'fetch').mockImplementation(async (url: any) => {
+      const repo = String(url).replace('https://api.github.com/repos/', '');
+      const { status, body } = publicAnswer(repo);
+      return { status, ok: status < 300, json: async () => body } as any;
+    });
+  });
+  afterEach(() => fetchSpy.mockRestore());
+
+  it('still deploys a repo bound before the cutoff (legacy row after the migration)', async () => {
+    await deploy('user:default/carol', 'labs', 'mashkovd/kuptsi-v2');
+    expect(submitWorkflow).toHaveBeenCalledTimes(1);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it('deploys a repo bound by a verified flow', async () => {
+    await deploy('user:default/carol', 'labs', 'carol/tool');
+    expect(submitWorkflow).toHaveBeenCalledTimes(1);
+  });
+
+  it('refuses a private repo that is not connected to the team', async () => {
+    await expect(deploy('user:default/carol', 'labs', 'victim-org/secret')).rejects.toThrow(
+      /not connected to team "labs" and is not public/,
+    );
+    expect(submitWorkflow).not.toHaveBeenCalled();
+  });
+
+  it("refuses another team's connected repo", async () => {
+    await expect(deploy('user:default/carol', 'labs', 'karabu-org/private')).rejects.toThrow(/not connected/);
+    expect(submitWorkflow).not.toHaveBeenCalled();
+  });
+
+  it('ignores an unverified binding row', async () => {
+    await expect(deploy('user:default/carol', 'labs', 'victim-org/unverified')).rejects.toThrow(/not connected/);
+    expect(submitWorkflow).not.toHaveBeenCalled();
+  });
+
+  it('allows an unconnected repo that GitHub reports public', async () => {
+    await deploy('user:default/carol', 'labs', 'openclaw/openclaw');
+    expect(submitWorkflow).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ['rate-limited', { status: 403, body: { message: 'rate limit' } }],
+    ['erroring', { status: 502, body: {} }],
+    ['missing the private flag', { status: 200, body: {} }],
+    ['private', { status: 200, body: { private: true } }],
+    ['a non-200 answer whose body claims public', { status: 203, body: { private: false } }],
+  ])('refuses when the public check is %s', async (_label, answer) => {
+    publicAnswer = () => answer;
+    await expect(deploy('user:default/carol', 'labs', 'victim-org/secret')).rejects.toThrow(/not public/);
+    expect(submitWorkflow).not.toHaveBeenCalled();
+  });
+
+  it('refuses when the binding lookup fails', async () => {
+    await expect(deploy('user:default/carol', 'labs', 'carol/tool', 'error')).rejects.toThrow(/connection refused/);
+    expect(submitWorkflow).not.toHaveBeenCalled();
+  });
+
+  it.each(['../etc', 'owner', 'a/b/c', 'owner/..'])('refuses a malformed repo %p', async repo => {
+    await expect(deploy('user:default/carol', 'labs', repo)).rejects.toThrow(/not a GitHub repository name/);
+    expect(submitWorkflow).not.toHaveBeenCalled();
+  });
+
+  it('lets a platform admin build any repo', async () => {
+    await deploy('user:default/root', 'labs', 'victim-org/secret');
+    expect(submitWorkflow).toHaveBeenCalledTimes(1);
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 });

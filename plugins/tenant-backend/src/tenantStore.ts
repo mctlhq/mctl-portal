@@ -1,6 +1,9 @@
 import { DatabaseService, LoggerService } from '@backstage/backend-plugin-api';
 import { Tenant, TenantMember } from './types';
 
+/** Schema of github-app-connect's repo_connections table on Postgres. */
+const GITHUB_APP_CONNECT_SCHEMA = 'github-app-connect';
+
 /**
  * TenantStore: PostgreSQL-backed cache of tenant definitions.
  * Synced periodically from GitHub (platform-gitops/tenants/{name}/values.yaml).
@@ -87,9 +90,26 @@ export class TenantStore {
     return row ? rowToTenant(row) : undefined;
   }
 
-  /** Delete a tenant by name (used when tenant directory is removed from Git) */
+  /**
+   * Delete a tenant by name (used when tenant directory is removed from Git).
+   * Its GitHub repository connections go with it: they authorize builds for
+   * the team name, and a later tenant registered under the same name must
+   * not inherit them. A failed cleanup fails the delete, so the next sync
+   * retries it.
+   */
   async delete(name: string): Promise<void> {
     const knex = await this.db.getClient();
+    if (knex.client.config.client === 'pg') {
+      try {
+        await knex('repo_connections')
+          .withSchema(GITHUB_APP_CONNECT_SCHEMA)
+          .where({ team_id: name })
+          .delete();
+      } catch (err: any) {
+        // 42P01: github-app-connect never created its table, so there is nothing to clean.
+        if (err?.code !== '42P01') throw err;
+      }
+    }
     await knex('tenant_members').where({ tenant_name: name }).delete();
     await knex('tenants').where({ name }).delete();
   }

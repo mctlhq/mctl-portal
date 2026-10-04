@@ -34,13 +34,6 @@ export interface RouterOptions {
   privateKey: string;
   baseUrl: string;
   webhookSecret?: string;
-  /**
-   * OAuth client of the same GitHub App. When GitHub is set to request user
-   * authorization during installation, the callback carries a `code` that is
-   * exchanged with these to prove which GitHub user made the installation.
-   */
-  appClientId?: string;
-  appClientSecret?: string;
   catalogClient?: { getEntities: (request: any) => Promise<any> };
   // Unused while auto-deploy is disabled (see POST /webhook); kept so the
   // plugin wiring does not change with it.
@@ -285,35 +278,35 @@ async function findInstallation(
   return null;
 }
 
-type InstallationOwnerCheck = { ok: true } | { ok: false; reason: string };
+type InstallationAccess = { ok: true; repos: string[] } | { ok: false; reason: string };
+
+// Repository permissions that let a user read the repository.
+const READ_PERMISSIONS = new Set(['admin', 'maintain', 'write', 'triage', 'read']);
 
 /**
- * Decides whether `user` (the GitHub login of the Backstage user who minted
- * the install state) controls installation `installationId`. /callback is
- * reachable without Backstage credentials and installation ids are small
- * integers, so the id in the query proves nothing on its own.
+ * Decides which of `repos` (all reachable through installation
+ * `installationId`) the portal user `user` may bind. /callback is reachable
+ * without Backstage credentials and installation ids are small integers, so
+ * the id in the query proves nothing on its own.
  *
- * - An installation on the user's own account is theirs.
- * - Any other installation (an organization) needs GitHub's word for it: the
- *   OAuth `code` GitHub adds when user authorization during installation is
- *   enabled, exchanged for a user token that must belong to `user` and list
- *   the installation among those it can access.
+ * - An installation on the user's own GitHub account: all of its repos.
+ * - Any other installation (an organization): only the repos on which
+ *   GitHub reports at least read permission for the user. Membership of the
+ *   organization alone is not enough.
  *
- * Every failed or partial read refuses; nothing here falls back to allow.
+ * Every failed or unreadable answer refuses the whole binding, including a
+ * 403 because the App lacks the permission to answer.
  */
-export async function verifyInstallationOwner(options: {
+export async function resolveBindableRepos(options: {
   installationId: number;
   user: string;
-  code?: string;
+  repos: string[];
   appId: string;
   privateKey: string;
-  appClientId?: string;
-  appClientSecret?: string;
-}): Promise<InstallationOwnerCheck> {
-  const { installationId, user, code, appId, privateKey, appClientId, appClientSecret } = options;
-  const jwt = makeAppJwt(appId, privateKey);
+}): Promise<InstallationAccess> {
+  const { installationId, user, repos, appId, privateKey } = options;
   const instResp = await fetch(`https://api.github.com/app/installations/${installationId}`, {
-    headers: { Authorization: `Bearer ${jwt}`, Accept: 'application/vnd.github+json' },
+    headers: { Authorization: `Bearer ${makeAppJwt(appId, privateKey)}`, Accept: 'application/vnd.github+json' },
   });
   if (!instResp.ok) {
     return { ok: false, reason: `installation lookup failed (${instResp.status})` };
@@ -323,62 +316,43 @@ export async function verifyInstallationOwner(options: {
   if (!account?.login || !account.type) {
     return { ok: false, reason: 'installation has no account' };
   }
-  if (account.type === 'User' && account.login.toLowerCase() === user.toLowerCase()) {
-    return { ok: true };
+  if (account.type === 'User') {
+    return account.login.toLowerCase() === user.toLowerCase()
+      ? { ok: true, repos }
+      : { ok: false, reason: `installation belongs to another user (${account.login})` };
   }
 
-  if (!code || !appClientId || !appClientSecret) {
-    return {
-      ok: false,
-      reason: `installation belongs to ${account.type} ${account.login}; GitHub did not confirm the installing user`,
-    };
-  }
-  const tokenResp = await fetch('https://github.com/login/oauth/access_token', {
-    method: 'POST',
-    headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
-    body: JSON.stringify({ client_id: appClientId, client_secret: appClientSecret, code }),
-  });
-  const tokenBody = tokenResp.ok ? ((await tokenResp.json()) as { access_token?: string }) : {};
-  if (!tokenBody.access_token) {
-    return { ok: false, reason: 'user authorization code exchange failed' };
-  }
-  const userHeaders = {
-    Authorization: `Bearer ${tokenBody.access_token}`,
-    Accept: 'application/vnd.github+json',
-  };
-  const meResp = await fetch('https://api.github.com/user', { headers: userHeaders });
-  if (!meResp.ok) {
-    return { ok: false, reason: `user lookup failed (${meResp.status})` };
-  }
-  const me = (await meResp.json()) as { login?: string };
-  if (!me.login || me.login.toLowerCase() !== user.toLowerCase()) {
-    return { ok: false, reason: 'installing GitHub user does not match the portal user' };
-  }
-  // A failed page is a failed read, not a shorter list.
-  for (let page = 1; page <= 10; page++) {
-    const listResp = await fetch(
-      `https://api.github.com/user/installations?per_page=100&page=${page}`,
-      { headers: userHeaders },
+  const token = await getInstallationToken(installationId, appId, privateKey);
+  const bindable: string[] = [];
+  for (const repo of repos) {
+    if (!REPO_FULL_NAME_RE.test(repo)) {
+      return { ok: false, reason: `unexpected repository name ${repo}` };
+    }
+    const resp = await fetch(
+      `https://api.github.com/repos/${repo}/collaborators/${encodeURIComponent(user)}/permission`,
+      { headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json' } },
     );
-    if (!listResp.ok) {
-      return { ok: false, reason: `user installations lookup failed (${listResp.status})` };
+    if (resp.status === 404) {
+      continue; // GitHub's answer for a user without access to this repository
     }
-    const list = (await listResp.json()) as { installations?: Array<{ id: number }> };
-    if (!Array.isArray(list.installations)) {
-      return { ok: false, reason: 'malformed user installations response' };
+    if (!resp.ok) {
+      return { ok: false, reason: `permission check for ${repo} failed (${resp.status})` };
     }
-    if (list.installations.some(i => Number(i.id) === installationId)) {
-      return { ok: true };
+    const body = (await resp.json()) as { permission?: unknown };
+    if (typeof body.permission !== 'string') {
+      return { ok: false, reason: `malformed permission answer for ${repo}` };
     }
-    if (list.installations.length < 100) {
-      return { ok: false, reason: 'installation is not accessible to the installing user' };
+    if (READ_PERMISSIONS.has(body.permission)) {
+      bindable.push(repo);
     }
   }
-  return { ok: false, reason: 'too many user installations to verify' };
+  return bindable.length > 0
+    ? { ok: true, repos: bindable }
+    : { ok: false, reason: 'user has read access to none of the installation\'s repositories' };
 }
 
 export function createRouter(options: RouterOptions): Router {
-  const { logger, store, appSlug, appId, privateKey, baseUrl, webhookSecret, appClientId, appClientSecret, catalogClient, notifications, httpAuth, userInfo, db, isPostgres } = options;
+  const { logger, store, appSlug, appId, privateKey, baseUrl, webhookSecret, catalogClient, notifications, httpAuth, userInfo, db, isPostgres } = options;
   // Derive the state key from the full private key (full entropy) rather than
   // a low-entropy PEM-header prefix. 64 hex chars keeps the existing shape.
   //
@@ -502,12 +476,12 @@ export function createRouter(options: RouterOptions): Router {
   //
   // Reachable without Backstage credentials, so it only records a connection
   // when the encrypted state (minted by /install-url or /popup-state for an
-  // authenticated team member) names the team and user, and that user is
-  // shown to control the installation (verifyInstallationOwner). Without a
+  // authenticated team member) names the team and user, and only for the
+  // repositories that user may read (resolveBindableRepos). Without a
   // valid state, nothing is recorded: repos are connected from the portal,
   // where /repos/sync runs as the signed-in user.
   router.get('/callback', async (req: Request, res: Response) => {
-    const { installation_id, state: stateParam, code } = req.query;
+    const { installation_id, state: stateParam } = req.query;
     if (!installation_id) {
       res.status(400).json({ error: 'Missing installation_id' });
       return;
@@ -544,36 +518,44 @@ export function createRouter(options: RouterOptions): Router {
         ? `${baseUrl}/api/github-app-connect/popup-done`
         : `${baseUrl}/create?status=error&message=${encodeURIComponent(message)}`;
 
-    let ownerCheck: InstallationOwnerCheck;
+    let installationRepos: string[];
     try {
-      ownerCheck = await verifyInstallationOwner({
-        installationId: installId,
-        user,
-        code: typeof code === 'string' ? code : undefined,
-        appId,
-        privateKey,
-        appClientId,
-        appClientSecret,
-      });
-    } catch (err) {
-      ownerCheck = { ok: false, reason: `verification error: ${err}` };
-    }
-    if (!ownerCheck.ok) {
-      logger.warn(
-        `Installation ${installId} not recorded for team=${team} user=${user}: ${ownerCheck.reason}`,
-      );
-      res.redirect(failRedirect('Could not confirm that you control this GitHub App installation.'));
-      return;
-    }
-
-    let repos: string[];
-    try {
-      repos = await getInstallationRepos(installId, appId, privateKey);
+      installationRepos = await getInstallationRepos(installId, appId, privateKey);
     } catch (err) {
       logger.error(`Failed to list repos of installation ${installId}: ${err}`);
       res.redirect(failRedirect('Failed to read the installation. Please try again.'));
       return;
     }
+
+    let wanted = installationRepos;
+    if (!isPopup) {
+      const repo = stateData.repo;
+      if (typeof repo !== 'string' || typeof stateData.service !== 'string') {
+        res.status(400).json({ error: 'Invalid or expired state parameter' });
+        return;
+      }
+      wanted = installationRepos.filter(r => r.toLowerCase() === repo.toLowerCase());
+      if (wanted.length === 0) {
+        logger.warn(`Installation ${installId} does not have access to ${repo}`);
+        res.redirect(
+          failRedirect(`Installation does not have access to ${repo}. Please add the repository in GitHub App settings.`),
+        );
+        return;
+      }
+    }
+
+    let access: InstallationAccess;
+    try {
+      access = await resolveBindableRepos({ installationId: installId, user, repos: wanted, appId, privateKey });
+    } catch (err) {
+      access = { ok: false, reason: `verification error: ${err}` };
+    }
+    if (!access.ok) {
+      logger.warn(`Installation ${installId} not recorded for team=${team} user=${user}: ${access.reason}`);
+      res.redirect(failRedirect('Could not confirm that you can read these repositories.'));
+      return;
+    }
+    const repos = access.repos;
 
     const installation = await findInstallationById(installId);
     const accountType = installation?.account_type || 'unknown';
@@ -594,19 +576,8 @@ export function createRouter(options: RouterOptions): Router {
       return;
     }
 
-    const service = stateData.service;
-    const repo = stateData.repo;
-    if (typeof service !== 'string' || typeof repo !== 'string') {
-      res.status(400).json({ error: 'Invalid or expired state parameter' });
-      return;
-    }
-    if (!repos.some(r => r.toLowerCase() === repo.toLowerCase())) {
-      logger.warn(`Installation ${installId} does not have access to ${repo}`);
-      res.redirect(
-        failRedirect(`Installation does not have access to ${repo}. Please add the repository in GitHub App settings.`),
-      );
-      return;
-    }
+    const service = stateData.service as string;
+    const repo = repos[0];
     await store.upsert({
       team_id: team,
       service_id: service,

@@ -576,13 +576,13 @@ const STATE_SECRET = crypto.createHash('sha256').update(TEST_PRIVATE_KEY).digest
 
 type Account = { login: string; type: 'User' | 'Organization' };
 
+// permissions: "<repo>" -> GitHub's permission string, or an HTTP status to answer with.
 function bindingStub(options: {
   accounts: Record<number, Account>;
   repos?: string[];
-  oauthUser?: string;
-  userInstallations?: number[] | 'error';
+  permissions?: Record<string, string | number>;
 }) {
-  return async (url: string, init?: any) => {
+  return async (url: string) => {
     const inst = url.match(/\/app\/installations\/(\d+)$/);
     if (inst) {
       const account = options.accounts[Number(inst[1])];
@@ -597,25 +597,13 @@ function bindingStub(options: {
         json: async () => ({ repositories: (options.repos ?? []).map(full_name => ({ full_name })) }),
       };
     }
-    if (url === 'https://github.com/login/oauth/access_token') {
-      const body = JSON.parse(init?.body ?? '{}');
-      return body.code === 'good-code'
-        ? { ok: true, status: 200, json: async () => ({ access_token: 'user-token' }) }
-        : { ok: true, status: 200, json: async () => ({ error: 'bad_verification_code' }) };
-    }
-    if (url === 'https://api.github.com/user') {
-      return { ok: true, status: 200, json: async () => ({ login: options.oauthUser ?? 'carol' }) };
-    }
-    if (/\/user\/installations/.test(url)) {
-      const ids = options.userInstallations;
-      if (ids === 'error') {
-        return { ok: false, status: 502, json: async () => ({}) };
+    const perm = url.match(/\/repos\/([^/]+\/[^/]+)\/collaborators\/carol\/permission$/);
+    if (perm) {
+      const answer = options.permissions?.[perm[1]] ?? 404;
+      if (typeof answer === 'number') {
+        return { ok: answer < 300, status: answer, json: async () => ({ message: 'x' }) };
       }
-      return {
-        ok: true,
-        status: 200,
-        json: async () => ({ installations: (ids ?? []).map(id => ({ id })) }),
-      };
+      return { ok: true, status: 200, json: async () => (answer === 'malformed' ? {} : { permission: answer }) };
     }
     return githubFetchStub(url);
   };
@@ -624,9 +612,8 @@ function bindingStub(options: {
 const ACCOUNTS: Record<number, Account> = {
   11: { login: 'carol', type: 'User' },
   22: { login: 'victim-org', type: 'Organization' },
+  33: { login: 'mallory', type: 'User' },
 };
-
-const withOAuthClient = { appClientId: 'Iv1.test', appClientSecret: 'test-secret' };
 
 function popupState(team: string, user: string) {
   return encodeURIComponent(encryptState({ popup: true, team, user, nonce: 'n' }, STATE_SECRET));
@@ -658,9 +645,16 @@ describe('GET /callback binding', () => {
     );
   });
 
-  it("refuses another account's installation under a valid state when GitHub sent no code", async () => {
+  it("refuses another user's personal installation", async () => {
+    fetchMock.mockImplementation(bindingStub({ accounts: ACCOUNTS, repos: ['mallory/app'] }));
+    const { router, store } = buildRouter({});
+    await dispatch(router, 'GET', `/callback?installation_id=33&state=${popupState('nfc', 'carol')}`);
+    expect(store.upsert).not.toHaveBeenCalled();
+  });
+
+  it('refuses an organization installation whose repos the user cannot read', async () => {
     fetchMock.mockImplementation(bindingStub({ accounts: ACCOUNTS, repos: ['victim-org/private'] }));
-    const { router, store } = buildRouter({}, {}, withOAuthClient);
+    const { router, store } = buildRouter({});
     await dispatch(router, 'GET', `/callback?installation_id=22&state=${popupState('nfc', 'carol')}`);
     expect(store.upsert).not.toHaveBeenCalled();
   });
@@ -676,32 +670,36 @@ describe('GET /callback binding', () => {
     expect(store.upsert).not.toHaveBeenCalled();
   });
 
-  it('binds an organization installation when GitHub confirms the installing user can access it', async () => {
+  it('binds only the organization repos the user can read', async () => {
     fetchMock.mockImplementation(
-      bindingStub({ accounts: ACCOUNTS, repos: ['victim-org/private'], userInstallations: [5, 22] }),
+      bindingStub({
+        accounts: ACCOUNTS,
+        repos: ['victim-org/shared', 'victim-org/secret'],
+        permissions: { 'victim-org/shared': 'read', 'victim-org/secret': 'none' },
+      }),
     );
-    const { router, store } = buildRouter({}, {}, withOAuthClient);
-    await dispatch(router, 'GET', `/callback?installation_id=22&code=good-code&state=${popupState('nfc', 'carol')}`);
+    const { router, store } = buildRouter({});
+    await dispatch(router, 'GET', `/callback?installation_id=22&state=${popupState('nfc', 'carol')}`);
+    expect(store.upsert).toHaveBeenCalledTimes(1);
     expect(store.upsert).toHaveBeenCalledWith(
-      expect.objectContaining({ team_id: 'nfc', installation_id: 22, created_by: 'popup:carol' }),
+      expect.objectContaining({ team_id: 'nfc', repo_full_name: 'victim-org/shared', created_by: 'popup:carol' }),
     );
   });
 
   it.each([
-    ['the code does not exchange', { code: 'bad-code' }],
-    ['the GitHub user differs from the portal user', { oauthUser: 'mallory' }],
-    ['the installation is not among the user\'s installations', { userInstallations: [5] }],
-    ['listing the user\'s installations fails', { userInstallations: 'error' as const }],
-  ])('refuses an organization installation when %s', async (_label, variant: any) => {
+    ['the App may not read permissions (403)', 403],
+    ['GitHub errors (502)', 502],
+    ['the answer is malformed', 'malformed'],
+  ])('refuses the whole binding when %s', async (_label, answer) => {
     fetchMock.mockImplementation(
-      bindingStub({ accounts: ACCOUNTS, repos: ['victim-org/private'], userInstallations: [22], ...variant }),
+      bindingStub({
+        accounts: ACCOUNTS,
+        repos: ['victim-org/shared', 'victim-org/other'],
+        permissions: { 'victim-org/shared': 'write', 'victim-org/other': answer },
+      }),
     );
-    const { router, store } = buildRouter({}, {}, withOAuthClient);
-    await dispatch(
-      router,
-      'GET',
-      `/callback?installation_id=22&code=${variant.code ?? 'good-code'}&state=${popupState('nfc', 'carol')}`,
-    );
+    const { router, store } = buildRouter({});
+    await dispatch(router, 'GET', `/callback?installation_id=22&state=${popupState('nfc', 'carol')}`);
     expect(store.upsert).not.toHaveBeenCalled();
   });
 
@@ -779,13 +777,13 @@ describe('GET /repo-access without cross-team fallbacks', () => {
 });
 
 describe('POST /repos/sync carries over only verified bindings', () => {
-  it('drops installations bound by unverified legacy rows', async () => {
-    // carol has no personal installation; the only source would be the legacy row.
+  it('drops installations bound only by unverified rows', async () => {
+    // carol has no personal installation; the only source would be an unverified row.
     const stub = bindingStub({ accounts: ACCOUNTS, repos: ['victim-org/private'] });
-    fetchMock.mockImplementation(async (url: string, init?: any) =>
+    fetchMock.mockImplementation(async (url: string) =>
       /\/(users|orgs)\/carol\/installation$/.test(url)
         ? { ok: false, status: 404, json: async () => ({}) }
-        : stub(url, init),
+        : stub(url),
     );
     const { router, store } = buildRouter(
       { 'nfc:carol': { role: 'developer' } },

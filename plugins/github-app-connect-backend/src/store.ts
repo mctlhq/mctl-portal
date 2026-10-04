@@ -11,6 +11,23 @@ export interface RepoConnection {
   updated_at: string;
 }
 
+/**
+ * Prefixes of created_by values written by a verified binding flow. Rows
+ * without one were written before installations were verified and are not
+ * trusted (see migrateLegacyRows for the one-time exception).
+ */
+export const VERIFIED_CREATED_BY_PREFIXES = ['popup:', 'callback:', 'sync:', 'legacy:'];
+
+/**
+ * Rows created before this instant by the old, unverified flows were
+ * reviewed (2026-10-04: 25 rows, all bare 'sync', no popup/callback/
+ * auto-discovery rows) and are carried over as `legacy:<created_by>`.
+ * Anything without a verified prefix after it is not trusted.
+ */
+export const LEGACY_BINDING_CUTOFF = '2026-10-05T00:00:00.000Z';
+
+const TENANT_SCHEMA = 'tenant-management';
+
 export class RepoConnectionStore {
   constructor(private readonly db: Knex) {}
 
@@ -29,6 +46,31 @@ export class RepoConnectionStore {
         table.primary(['team_id', 'service_id', 'repo_full_name']);
       });
     }
+    await this.migrateLegacyRows();
+  }
+
+  /**
+   * One-time carry-over of reviewed pre-cutoff rows: marks them
+   * `legacy:<created_by>` so verified-only readers keep them. Only rows of
+   * teams that still exist as tenants are carried over; a row for a deleted
+   * tenant would otherwise pass its bindings to whoever registers the name
+   * next. Idempotent: marked rows no longer match.
+   */
+  async migrateLegacyRows(): Promise<number> {
+    const isPostgres = this.db.client.config.client === 'pg';
+    const query = this.db('repo_connections')
+      .whereNot('created_by', 'like', '%:%')
+      // An ISO string compares correctly both as a Postgres timestamp and as
+      // the ISO text SQLite stores.
+      .andWhere('created_at', '<', LEGACY_BINDING_CUTOFF);
+    if (isPostgres) {
+      // tenant-backend owns the tenants table in its own schema.
+      query.whereIn(
+        'team_id',
+        this.db.withSchema(TENANT_SCHEMA).select('name').from('tenants'),
+      );
+    }
+    return query.update({ created_by: this.db.raw("'legacy:' || created_by") });
   }
 
   async upsert(conn: Omit<RepoConnection, 'created_at' | 'updated_at'>): Promise<void> {
@@ -63,66 +105,52 @@ export class RepoConnectionStore {
     }
   }
 
+  // Readers only see rows written by a verified flow (VERIFIED_CREATED_BY_PREFIXES).
+  private verified(teamId?: string) {
+    const q = this.db('repo_connections').where(w => {
+      for (const prefix of VERIFIED_CREATED_BY_PREFIXES) {
+        w.orWhere('created_by', 'like', `${prefix}%`);
+      }
+    });
+    return teamId === undefined ? q : q.andWhere({ team_id: teamId });
+  }
+
   async find(
     teamId: string,
     serviceId: string,
     repoFullName: string,
   ): Promise<RepoConnection | undefined> {
-    return this.db('repo_connections')
-      .where({
-        team_id: teamId,
-        service_id: serviceId,
-        repo_full_name: repoFullName,
-      })
+    return this.verified(teamId)
+      .andWhere({ service_id: serviceId, repo_full_name: repoFullName })
       .first();
   }
 
   async findByRepo(repoFullName: string): Promise<RepoConnection[]> {
-    return this.db('repo_connections')
-      .where({ repo_full_name: repoFullName })
-      .select('*');
+    return this.verified().andWhere({ repo_full_name: repoFullName }).select('*');
   }
 
   async findByTeamAndRepo(teamId: string, repoFullName: string): Promise<RepoConnection | undefined> {
-    return this.db('repo_connections')
-      .where({ team_id: teamId, repo_full_name: repoFullName })
-      .first();
+    return this.verified(teamId).andWhere({ repo_full_name: repoFullName }).first();
   }
 
   /**
    * Installations bound to the team by a verified flow: the install callback
-   * with a portal-minted state (popup:<user>, callback:<user>) or a repo sync
-   * run as the signed-in user (sync:<user>). Rows written by earlier versions
-   * (plain 'sync', 'popup-install', 'github-callback', 'auto-discovery',
-   * 'direct-install') were not verified and are not carried over.
+   * with a portal-minted state (popup:<user>, callback:<user>), a repo sync
+   * run as the signed-in user (sync:<user>), or reviewed pre-cutoff rows
+   * (legacy:<created_by>). Other rows are ignored.
    */
   async findVerifiedInstallationsByTeam(teamId: string): Promise<number[]> {
-    const rows = await this.db('repo_connections')
-      .where({ team_id: teamId })
-      .andWhere(q =>
-        q
-          .where('created_by', 'like', 'popup:%')
-          .orWhere('created_by', 'like', 'callback:%')
-          .orWhere('created_by', 'like', 'sync:%'),
-      )
-      .distinct('installation_id')
-      .select('installation_id');
+    const rows = await this.verified(teamId).distinct('installation_id').select('installation_id');
     return rows.map(r => Number(r.installation_id));
   }
 
   async findAllInstallations(): Promise<number[]> {
-    const rows = await this.db('repo_connections')
-      .distinct('installation_id')
-      .select('installation_id');
+    const rows = await this.verified().distinct('installation_id').select('installation_id');
     return rows.map(r => Number(r.installation_id));
   }
 
   async findInstallationsByTeam(teamId: string): Promise<number[]> {
-    const rows = await this.db('repo_connections')
-      .where({ team_id: teamId })
-      .distinct('installation_id')
-      .select('installation_id');
-    return rows.map(r => Number(r.installation_id));
+    return this.findVerifiedInstallationsByTeam(teamId);
   }
 
   async delete(
