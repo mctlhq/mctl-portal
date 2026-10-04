@@ -3,13 +3,11 @@ import { DatabaseService } from '@backstage/backend-plugin-api';
 import { Config } from '@backstage/config';
 import { ArgoWorkflowsClient, WorkflowStatus } from './argoClient';
 import { authorizeWorkflowSubmission } from './workflowAuthorization';
+import { isPostgresClient } from '../../tenant-backend/src/membershipLookup';
 
 function sleep(ms: number) {
   return new Promise(r => setTimeout(r, ms));
 }
-
-// Knex accepts any of these for Postgres; production config uses 'pg'.
-const POSTGRES_CLIENTS = new Set(['pg', 'postgres', 'postgresql']);
 
 const TERMINAL_PHASES = ['Succeeded', 'Failed', 'Error'];
 const PHASE_ICONS: Record<string, string> = {
@@ -128,7 +126,7 @@ export function createSubmitWorkflowAction(options: {
       const db = await database.getClient();
       await authorizeWorkflowSubmission({
         db,
-        isPostgres: POSTGRES_CLIENTS.has(String(db.client.config.client)),
+        isPostgres: isPostgresClient(db),
         userRef: ctx.user?.ref,
         templateName,
         clusterScope,

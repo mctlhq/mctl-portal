@@ -5,6 +5,7 @@ import {
 import { KeyStore } from './keyStore';
 import { OidcStore } from './oidcStore';
 import { createRouter, ForwardAuthHost, OidcClient, MembershipLookup } from './router';
+import { isPostgresClient } from '../../tenant-backend/src/membershipLookup';
 
 export const oidcProviderPlugin = createBackendPlugin({
   pluginId: 'oidc-provider',
@@ -49,7 +50,7 @@ export const oidcProviderPlugin = createBackendPlugin({
         // plugin's schema is "tenant-management". We cross-query using
         // knex withSchema().
         const dbClient = await database.getClient();
-        const isPostgres = dbClient.client.config.client === 'pg';
+        const isPostgres = isPostgresClient(dbClient);
         const tmSchema = 'tenant-management';
 
         const membershipLookup: MembershipLookup = {

@@ -84,9 +84,11 @@ export async function authorizeWorkflowSubmission(options: {
   if (!namespace || namespace === defaultNamespace) {
     throw denied(`namespace "${namespace}" is not a team namespace`);
   }
+  // A blank team_name/tenant_name is absent, not a mismatch: the namespace
+  // membership check below applies either way.
   for (const key of TENANT_PARAMETERS) {
-    const value = parameters?.[key];
-    if (value !== undefined && value !== null && String(value).trim() !== namespace) {
+    const value = String(parameters?.[key] ?? '').trim();
+    if (value !== '' && value !== namespace) {
       throw denied(`${key} "${value}" does not match the team namespace "${namespace}"`);
     }
   }

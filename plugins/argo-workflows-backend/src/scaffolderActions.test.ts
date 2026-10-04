@@ -203,6 +203,15 @@ describe('mctl:workflow:submit authorization', () => {
     expect(withSchema).not.toHaveBeenCalled();
   });
 
+  it('treats a blank team_name as absent, so namespace membership still decides', async () => {
+    await run('user:default/carol', { namespace: 'labs', parameters: { team_name: '  ' } });
+    expect(submitWorkflow).toHaveBeenCalledTimes(1);
+    await expect(
+      run('user:default/carol', { namespace: 'karabu', parameters: { team_name: '' } }),
+    ).rejects.toThrow(/not a developer or owner of team "karabu"/);
+    expect(submitWorkflow).toHaveBeenCalledTimes(1);
+  });
+
   it('lets an owner deploy into their own team', async () => {
     await run('user:default/kim', deployInto('karabu'));
     expect(submitWorkflow).toHaveBeenCalledTimes(1);

@@ -1,6 +1,6 @@
 import { createTemplateAction } from '@backstage/plugin-scaffolder-node';
 import { DatabaseService } from '@backstage/backend-plugin-api';
-import { getTenantMember, isAdminUser } from '../../tenant-backend/src/membershipLookup';
+import { getTenantMember, isAdminUser, isPostgresClient } from '../../tenant-backend/src/membershipLookup';
 
 /**
  * Creates the `mctl:auth:requireTeamAccess` scaffolder action.
@@ -46,7 +46,7 @@ export function createRequireTeamAccessAction(options: {
       }
 
       const db = await database.getClient();
-      const isPostgres = db.client.config.client === 'pg';
+      const isPostgres = isPostgresClient(db);
 
       if (await isAdminUser(db, isPostgres, userId)) {
         return;

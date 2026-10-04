@@ -8,6 +8,7 @@ import {
   staticTokenProvider,
   VaultTokenProvider,
 } from './vaultAuth';
+import { isPostgresClient } from '../../tenant-backend/src/membershipLookup';
 
 export const vaultSecretsPlugin = createBackendPlugin({
   pluginId: 'vault-secrets',
@@ -61,7 +62,7 @@ export const vaultSecretsPlugin = createBackendPlugin({
         const backendBaseUrl = config.getString('backend.baseUrl');
 
         const db = await database.getClient();
-        const isPostgres = db.client.config.client === 'pg';
+        const isPostgres = isPostgresClient(db);
 
         const router = createRouter({
           logger,
