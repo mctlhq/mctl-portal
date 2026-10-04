@@ -43,6 +43,7 @@ async function freshDb(): Promise<Knex> {
     t.string('session_id').primary();
     t.string('user_id').notNullable();
     t.bigInteger('expires_at').notNullable();
+    t.boolean('host_only').notNullable().defaultTo(true);
   });
   return knex;
 }
@@ -97,5 +98,32 @@ describe('readOidcSessionUserId', () => {
       expires_at: now,
     });
     expect(await readOidcSessionUserId(cookie('s3'), knex, false, now)).toBeUndefined();
+  });
+
+  it('uses a __Host- prefixed cookie name', () => {
+    expect(OIDC_SESSION_COOKIE.startsWith('__Host-')).toBe(true);
+  });
+
+  it('ignores the legacy domain-wide oidc_session cookie', async () => {
+    const knex = await freshDb();
+    currentKnex = knex;
+    await knex('oidc_sessions').insert({
+      session_id: 's4',
+      user_id: 'mashkovd',
+      expires_at: now + 10_000,
+    });
+    expect(await readOidcSessionUserId('oidc_session=s4', knex, false, now)).toBeUndefined();
+  });
+
+  it('rejects a session row that predates host-only cookies', async () => {
+    const knex = await freshDb();
+    currentKnex = knex;
+    await knex('oidc_sessions').insert({
+      session_id: 's5',
+      user_id: 'mashkovd',
+      expires_at: now + 10_000,
+      host_only: false,
+    });
+    expect(await readOidcSessionUserId(cookie('s5'), knex, false, now)).toBeUndefined();
   });
 });

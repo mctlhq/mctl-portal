@@ -4,7 +4,7 @@ import {
 } from '@backstage/backend-plugin-api';
 import { KeyStore } from './keyStore';
 import { OidcStore } from './oidcStore';
-import { createRouter, OidcClient, MembershipLookup } from './router';
+import { createRouter, ForwardAuthHost, OidcClient, MembershipLookup } from './router';
 
 export const oidcProviderPlugin = createBackendPlugin({
   pluginId: 'oidc-provider',
@@ -28,6 +28,16 @@ export const oidcProviderPlugin = createBackendPlugin({
 
         const githubClientId = config.getString('oidcProvider.github.clientId');
         const githubClientSecret = config.getString('oidcProvider.github.clientSecret');
+
+        // Aliases of forward-auth protected hosts beyond the canonical
+        // <tenant>-<service> host (e.g. a friendly hostname).
+        const forwardAuthHosts: ForwardAuthHost[] = (
+          config.getOptionalConfigArray('oidcProvider.forwardAuth.hosts') ?? []
+        ).map(h => ({
+          tenant: h.getString('tenant').toLowerCase(),
+          service: h.getString('service').toLowerCase(),
+          host: h.getString('host').toLowerCase(),
+        }));
 
         // ── Signing keys ───────────────────────────────────────────────
         const keyStore = new KeyStore(logger);
@@ -100,6 +110,7 @@ export const oidcProviderPlugin = createBackendPlugin({
           githubClientId,
           githubClientSecret,
           store: oidcStore,
+          forwardAuthHosts,
         });
         httpRouter.use(router);
 

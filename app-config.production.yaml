@@ -216,3 +216,14 @@ oidcProvider:
       clientSecret: ${OIDC_CLIENT_SECRET}
       redirectUris:
         - ${OPS_DEX_CALLBACK_URL}
+  forwardAuth:
+    # Forward-auth protected hosts other than the canonical
+    # <tenant>-<service>.mctl.ai host. Each host gets its own host-only
+    # session, so every alias must be listed here explicitly.
+    hosts:
+      - tenant: admins
+        service: temporal-web
+        host: temporal.mctl.ai
+      - tenant: labs
+        service: claude-remote
+        host: claude-remote.mctl.ai
