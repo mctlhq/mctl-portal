@@ -3,9 +3,12 @@
 # from the yarn workspaces (packages/*, plugins/*). The Dockerfile copies each
 # workspace package.json before `yarn install --immutable`; a missing one makes
 # the image build fail with "Workspace not found" (mctl-portal#139, 4.17.0).
+#
+# Usage: check-dockerfile-workspaces.sh [ROOT]
+# ROOT defaults to the repository root; the self-test points it at fixtures.
 set -euo pipefail
 
-cd "$(dirname "$0")/.."
+cd "${1:-$(dirname "$0")/..}"
 dockerfile="Dockerfile"
 
 [ -f "$dockerfile" ] || { echo "::error::$dockerfile not found"; exit 1; }
