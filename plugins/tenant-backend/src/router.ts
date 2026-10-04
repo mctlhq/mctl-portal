@@ -103,9 +103,11 @@ export function staticTokenEquals(
  *   2. Backstage user credentials (browser sessions)
  *   3. Backstage service credentials (plugin-to-plugin)
  *
- * isAdmin is only true when the user has `owner` role in the `admins` tenant (verified in DB)
- * or when the caller is a Backstage service credential. The landing-page token is NOT admin:
- * it may create a tenant and check a name, nothing else.
+ * isAdmin is only true when the user has `owner` role in the `admins` tenant (verified in DB).
+ * The landing-page token is NOT admin: it may create a tenant and check a name, nothing else.
+ * A Backstage service credential is authenticated but carries no user and no admin role:
+ * no plugin calls these routes on its own behalf (scaffolder steps call on behalf of the
+ * initiating user), so a service credential here can only be a confused deputy.
  *
  * Group membership in `group:default/admins` alone is not sufficient — a developer/viewer
  * member of the admins team must NOT receive admin privileges.
@@ -178,7 +180,7 @@ async function resolveAuth(
     await httpAuth.credentials(req, { allow: ['service'] });
     return {
       authorized: true,
-      isAdmin: true,
+      isAdmin: false,
       isLanding: false,
       callerInfo: 'service',
       userId: undefined,
@@ -277,6 +279,11 @@ export function createRouter(opts: RouterOptions): Router {
       res.status(403).json({ error: 'Landing token cannot list tenants' });
       return;
     }
+    // The full list carries every tenant's contact email and quotas.
+    if (!auth.isAdmin) {
+      res.status(403).json({ error: 'Only admin users can list tenants' });
+      return;
+    }
     try {
       const tenants = await store.listAll();
       res.json({ tenants });
@@ -302,8 +309,11 @@ export function createRouter(opts: RouterOptions): Router {
         res.status(404).json({ error: `Tenant '${name}' not found` });
         return;
       }
-      // Landing page only needs existence for name-availability checks.
-      if (auth.isLanding) {
+      // Landing page and the tenant-name field only need existence for
+      // name-availability checks; full details are for members and admins.
+      const isMember =
+        !!auth.userId && !!(await store.getMemberByTenant(tenant.name, auth.userId));
+      if (!auth.isAdmin && !isMember) {
         res.json({ tenant: { name: tenant.name } });
         return;
       }

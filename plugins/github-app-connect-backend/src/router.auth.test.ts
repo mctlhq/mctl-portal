@@ -1,7 +1,9 @@
 import type { Knex } from 'knex';
 import type { Router } from 'express';
 import crypto from 'crypto';
-import { auditAdminBypass, checkTeamAccess, createRouter, RouterOptions } from './router';
+import express from 'express';
+import { AddressInfo } from 'net';
+import { auditAdminBypass, checkTeamAccess, createRouter, encryptState, RouterOptions } from './router';
 
 let fetchMock: jest.SpyInstance;
 
@@ -101,6 +103,8 @@ function fakeStore(overrides: Record<string, jest.Mock> = {}) {
     findAllInstallations: jest.fn().mockResolvedValue([]),
     find: jest.fn().mockResolvedValue(undefined),
     findByRepo: jest.fn().mockResolvedValue([]),
+    findByTeamAndRepo: jest.fn().mockResolvedValue(undefined),
+    findVerifiedInstallationsByTeam: jest.fn().mockResolvedValue([]),
     upsert: jest.fn().mockResolvedValue(undefined),
     deleteByTeam: jest.fn().mockResolvedValue(0),
     ...overrides,
@@ -339,19 +343,78 @@ describe('POST /repos/sync', () => {
 });
 
 describe('GET /repo-tags', () => {
+  const connected = { installation_id: 777, team_id: 'nfc', repo_full_name: 'acme/private-api' };
+
   it('returns 401 with no credentials', async () => {
     const { router } = buildRouter({});
-    const { status } = await dispatch(router, 'GET', '/repo-tags?repo=mctlhq/mctl-web');
+    const { status } = await dispatch(router, 'GET', '/repo-tags?team=nfc&repo=mctlhq/mctl-web');
     expect(status).toBe(401);
   });
 
-  it('serves any authenticated user regardless of team membership (no team param exists)', async () => {
+  it('returns 403 for an authenticated non-member of the team', async () => {
     const { router } = buildRouter({});
-    const { status, body } = await dispatch(router, 'GET', '/repo-tags?repo=mctlhq/mctl-web', {
+    const { status } = await dispatch(router, 'GET', '/repo-tags?team=nfc&repo=mctlhq/mctl-web', {
       'x-test-user': 'someone-with-no-tenant-membership',
+    });
+    expect(status).toBe(403);
+  });
+
+  it('returns 400 without a team', async () => {
+    const { router } = buildRouter({ 'nfc:carol': { role: 'viewer' } });
+    const { status } = await dispatch(router, 'GET', '/repo-tags?repo=mctlhq/mctl-web', {
+      'x-test-user': 'carol',
+    });
+    expect(status).toBe(400);
+  });
+
+  it("reads a repo connected to the caller's team with that connection's installation", async () => {
+    const { router } = buildRouter(
+      { 'nfc:carol': { role: 'viewer' } },
+      { findByTeamAndRepo: jest.fn().mockResolvedValue(connected) },
+    );
+    const { status, body } = await dispatch(router, 'GET', '/repo-tags?team=nfc&repo=acme/private-api', {
+      'x-test-user': 'carol',
     });
     expect(status).toBe(200);
     expect(body).toEqual({ tags: ['v1.2.3'] });
+    const calls = fetchMock.mock.calls.map(c => String(c[0]));
+    expect(calls).toContain('https://api.github.com/app/installations/777/access_tokens');
+  });
+
+  it('refuses a private repo not connected to the team and never mints an App token', async () => {
+    fetchMock.mockImplementation(async (url: string) =>
+      /\/repos\/acme\/private-api$/.test(url)
+        ? { ok: true, status: 200, json: async () => ({ private: true }) }
+        : githubFetchStub(url),
+    );
+    const { router } = buildRouter({ 'nfc:carol': { role: 'viewer' } });
+    const { status } = await dispatch(router, 'GET', '/repo-tags?team=nfc&repo=acme/private-api', {
+      'x-test-user': 'carol',
+    });
+    expect(status).toBe(404);
+    const calls = fetchMock.mock.calls.map(c => String(c[0]));
+    expect(calls.some(u => /\/access_tokens$/.test(u) || /\/app\/installations/.test(u))).toBe(false);
+  });
+
+  it('reads a public repo not connected to the team without App credentials', async () => {
+    const { router } = buildRouter({ 'nfc:carol': { role: 'viewer' } });
+    const { status, body } = await dispatch(router, 'GET', '/repo-tags?team=nfc&repo=mctlhq/mctl-web', {
+      'x-test-user': 'carol',
+    });
+    expect(status).toBe(200);
+    expect(body).toEqual({ tags: ['v1.2.3'] });
+    const calls = fetchMock.mock.calls.map(c => String(c[0]));
+    expect(calls.some(u => /\/access_tokens$/.test(u))).toBe(false);
+  });
+
+  it('lets a platform admin read through the repo owner\'s installation', async () => {
+    const { router } = buildRouter({ 'admins:root': { role: 'owner' } });
+    const { status } = await dispatch(router, 'GET', '/repo-tags?team=nfc&repo=acme/private-api', {
+      'x-test-user': 'root',
+    });
+    expect(status).toBe(200);
+    const calls = fetchMock.mock.calls.map(c => String(c[0]));
+    expect(calls).toContain('https://api.github.com/app/installations/555/access_tokens');
   });
 
   // Regression tests for REPO_FULL_NAME_RE: charset injection AND the
@@ -367,20 +430,20 @@ describe('GET /repo-tags', () => {
     'owner/repo?x=1',
     'owner',
   ])('returns 400 for malformed repo param %s', async repo => {
-    const { router } = buildRouter({});
+    const { router } = buildRouter({ 'nfc:carol': { role: 'viewer' } });
     const { status } = await dispatch(
       router,
       'GET',
-      `/repo-tags?repo=${encodeURIComponent(repo)}`,
-      { 'x-test-user': 'someone' },
+      `/repo-tags?team=nfc&repo=${encodeURIComponent(repo)}`,
+      { 'x-test-user': 'carol' },
     );
     expect(status).toBe(400);
   });
 
   it('still accepts a dotted but legitimate repo name', async () => {
-    const { router } = buildRouter({});
-    const { status } = await dispatch(router, 'GET', `/repo-tags?repo=${encodeURIComponent('mctlhq/a.b.c')}`, {
-      'x-test-user': 'someone',
+    const { router } = buildRouter({ 'nfc:carol': { role: 'viewer' } });
+    const { status } = await dispatch(router, 'GET', `/repo-tags?team=nfc&repo=${encodeURIComponent('mctlhq/a.b.c')}`, {
+      'x-test-user': 'carol',
     });
     expect(status).toBe(200);
   });
@@ -501,4 +564,274 @@ describe('unaffected routes stay reachable without Backstage credentials', () =>
   // lightweight dispatch harness does not implement. Its HMAC gate is
   // unchanged by this proposal and remains listed unauthenticated by
   // registerAuthPolicies (see plugin.test.ts).
+});
+
+// ── Installation binding ────────────────────────────────────────────────────
+// /callback is unauthenticated and installation ids are small integers, so a
+// connection may only be recorded for a portal-minted state whose user is
+// shown to control the installation. Each test below names the old behaviour
+// it would have accepted.
+
+const STATE_SECRET = crypto.createHash('sha256').update(TEST_PRIVATE_KEY).digest('hex');
+
+type Account = { login: string; type: 'User' | 'Organization' };
+
+function bindingStub(options: {
+  accounts: Record<number, Account>;
+  repos?: string[];
+  oauthUser?: string;
+  userInstallations?: number[] | 'error';
+}) {
+  return async (url: string, init?: any) => {
+    const inst = url.match(/\/app\/installations\/(\d+)$/);
+    if (inst) {
+      const account = options.accounts[Number(inst[1])];
+      return account
+        ? { ok: true, status: 200, json: async () => ({ id: Number(inst[1]), account }) }
+        : { ok: false, status: 404, json: async () => ({}) };
+    }
+    if (/\/installation\/repositories/.test(url)) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ repositories: (options.repos ?? []).map(full_name => ({ full_name })) }),
+      };
+    }
+    if (url === 'https://github.com/login/oauth/access_token') {
+      const body = JSON.parse(init?.body ?? '{}');
+      return body.code === 'good-code'
+        ? { ok: true, status: 200, json: async () => ({ access_token: 'user-token' }) }
+        : { ok: true, status: 200, json: async () => ({ error: 'bad_verification_code' }) };
+    }
+    if (url === 'https://api.github.com/user') {
+      return { ok: true, status: 200, json: async () => ({ login: options.oauthUser ?? 'carol' }) };
+    }
+    if (/\/user\/installations/.test(url)) {
+      const ids = options.userInstallations;
+      if (ids === 'error') {
+        return { ok: false, status: 502, json: async () => ({}) };
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ installations: (ids ?? []).map(id => ({ id })) }),
+      };
+    }
+    return githubFetchStub(url);
+  };
+}
+
+const ACCOUNTS: Record<number, Account> = {
+  11: { login: 'carol', type: 'User' },
+  22: { login: 'victim-org', type: 'Organization' },
+};
+
+const withOAuthClient = { appClientId: 'Iv1.test', appClientSecret: 'test-secret' };
+
+function popupState(team: string, user: string) {
+  return encodeURIComponent(encryptState({ popup: true, team, user, nonce: 'n' }, STATE_SECRET));
+}
+
+describe('GET /callback binding', () => {
+  it('records nothing for a plain popup:<team> state (old code bound any installation to that team)', async () => {
+    fetchMock.mockImplementation(bindingStub({ accounts: ACCOUNTS, repos: ['victim-org/private'] }));
+    const { router, store } = buildRouter({});
+    const { body } = await dispatch(router, 'GET', '/callback?installation_id=22&state=popup:nfc');
+    expect(body.redirect).toMatch(/popup-done$/);
+    expect(store.upsert).not.toHaveBeenCalled();
+  });
+
+  it('records nothing for a direct install without state (old code stored every repo)', async () => {
+    fetchMock.mockImplementation(bindingStub({ accounts: ACCOUNTS, repos: ['victim-org/private'] }));
+    const { router, store } = buildRouter({});
+    await dispatch(router, 'GET', '/callback?installation_id=22&setup_action=install');
+    expect(store.upsert).not.toHaveBeenCalled();
+  });
+
+  it("binds the state user's own installation to the state's team", async () => {
+    fetchMock.mockImplementation(bindingStub({ accounts: ACCOUNTS, repos: ['carol/app'] }));
+    const { router, store } = buildRouter({});
+    const { body } = await dispatch(router, 'GET', `/callback?installation_id=11&state=${popupState('nfc', 'carol')}`);
+    expect(body.redirect).toMatch(/popup-done$/);
+    expect(store.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({ team_id: 'nfc', repo_full_name: 'carol/app', installation_id: 11, created_by: 'popup:carol' }),
+    );
+  });
+
+  it("refuses another account's installation under a valid state when GitHub sent no code", async () => {
+    fetchMock.mockImplementation(bindingStub({ accounts: ACCOUNTS, repos: ['victim-org/private'] }));
+    const { router, store } = buildRouter({}, {}, withOAuthClient);
+    await dispatch(router, 'GET', `/callback?installation_id=22&state=${popupState('nfc', 'carol')}`);
+    expect(store.upsert).not.toHaveBeenCalled();
+  });
+
+  it('refuses an install-url state replayed with a victim installation that can see the repo', async () => {
+    fetchMock.mockImplementation(bindingStub({ accounts: ACCOUNTS, repos: ['victim-org/private'] }));
+    const { router, store } = buildRouter({});
+    const state = encodeURIComponent(
+      encryptState({ team: 'nfc', service: 'api', repo: 'victim-org/private', user: 'carol', nonce: 'n' }, STATE_SECRET),
+    );
+    const { body } = await dispatch(router, 'GET', `/callback?installation_id=22&state=${state}`);
+    expect(body.redirect).toMatch(/status=error/);
+    expect(store.upsert).not.toHaveBeenCalled();
+  });
+
+  it('binds an organization installation when GitHub confirms the installing user can access it', async () => {
+    fetchMock.mockImplementation(
+      bindingStub({ accounts: ACCOUNTS, repos: ['victim-org/private'], userInstallations: [5, 22] }),
+    );
+    const { router, store } = buildRouter({}, {}, withOAuthClient);
+    await dispatch(router, 'GET', `/callback?installation_id=22&code=good-code&state=${popupState('nfc', 'carol')}`);
+    expect(store.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({ team_id: 'nfc', installation_id: 22, created_by: 'popup:carol' }),
+    );
+  });
+
+  it.each([
+    ['the code does not exchange', { code: 'bad-code' }],
+    ['the GitHub user differs from the portal user', { oauthUser: 'mallory' }],
+    ['the installation is not among the user\'s installations', { userInstallations: [5] }],
+    ['listing the user\'s installations fails', { userInstallations: 'error' as const }],
+  ])('refuses an organization installation when %s', async (_label, variant: any) => {
+    fetchMock.mockImplementation(
+      bindingStub({ accounts: ACCOUNTS, repos: ['victim-org/private'], userInstallations: [22], ...variant }),
+    );
+    const { router, store } = buildRouter({}, {}, withOAuthClient);
+    await dispatch(
+      router,
+      'GET',
+      `/callback?installation_id=22&code=${variant.code ?? 'good-code'}&state=${popupState('nfc', 'carol')}`,
+    );
+    expect(store.upsert).not.toHaveBeenCalled();
+  });
+
+  it('refuses when the installation cannot be looked up', async () => {
+    fetchMock.mockImplementation(bindingStub({ accounts: {}, repos: ['carol/app'] }));
+    const { router, store } = buildRouter({});
+    await dispatch(router, 'GET', `/callback?installation_id=11&state=${popupState('nfc', 'carol')}`);
+    expect(store.upsert).not.toHaveBeenCalled();
+  });
+
+  it('rejects a state that does not decrypt', async () => {
+    const { router, store } = buildRouter({});
+    const { status } = await dispatch(router, 'GET', '/callback?installation_id=11&state=deadbeef:00');
+    expect(status).toBe(400);
+    expect(store.upsert).not.toHaveBeenCalled();
+  });
+});
+
+describe('GET /popup-state', () => {
+  it('returns 401 with no credentials and 403 for a non-member', async () => {
+    const { router } = buildRouter({});
+    expect((await dispatch(router, 'GET', '/popup-state?team=nfc')).status).toBe(401);
+    expect((await dispatch(router, 'GET', '/popup-state?team=nfc', { 'x-test-user': 'bob' })).status).toBe(403);
+  });
+
+  it('mints a state bound to the team and the calling user', async () => {
+    const { router } = buildRouter({ 'nfc:carol': { role: 'developer' } });
+    const { status, body } = await dispatch(router, 'GET', '/popup-state?team=nfc', { 'x-test-user': 'carol' });
+    expect(status).toBe(200);
+    const { decryptState } = jest.requireActual('./router');
+    expect(decryptState(body.state, STATE_SECRET)).toMatchObject({ popup: true, team: 'nfc', user: 'carol' });
+    expect(body.url).toContain(encodeURIComponent(body.state));
+  });
+});
+
+describe('GET /repo-access without cross-team fallbacks', () => {
+  it("does not report another team's connection for the same repo (old code returned it)", async () => {
+    fetchMock.mockImplementation(bindingStub({ accounts: ACCOUNTS, repos: ['victim-org/private'] }));
+    const { router } = buildRouter(
+      { 'nfc:carol': { role: 'viewer' } },
+      {
+        findByRepo: jest.fn().mockResolvedValue([
+          { team_id: 'karabu', service_id: '_auto', repo_full_name: 'victim-org/private', installation_id: 22 },
+        ]),
+      },
+    );
+    const { body } = await dispatch(router, 'GET', '/repo-access?team=nfc&service=api&repo=victim-org/private', {
+      'x-test-user': 'carol',
+    });
+    expect(body.status).not.toBe('connected');
+  });
+
+  it("does not bind a repo through its owner's installation (old code auto-saved it)", async () => {
+    fetchMock.mockImplementation(bindingStub({ accounts: ACCOUNTS, repos: ['mctlhq/api'] }));
+    const { router, store } = buildRouter({ 'nfc:carol': { role: 'viewer' } });
+    await dispatch(router, 'GET', '/repo-access?team=nfc&service=api&repo=mctlhq/api', { 'x-test-user': 'carol' });
+    expect(store.upsert).not.toHaveBeenCalled();
+  });
+
+  it("reports the team's own connection", async () => {
+    fetchMock.mockImplementation(bindingStub({ accounts: ACCOUNTS, repos: ['carol/app'] }));
+    const { router } = buildRouter(
+      { 'nfc:carol': { role: 'viewer' } },
+      {
+        findByTeamAndRepo: jest.fn().mockResolvedValue({
+          team_id: 'nfc', service_id: '_auto', repo_full_name: 'carol/app', installation_id: 11,
+        }),
+      },
+    );
+    const { body } = await dispatch(router, 'GET', '/repo-access?team=nfc&service=api&repo=carol/app', {
+      'x-test-user': 'carol',
+    });
+    expect(body).toEqual({ status: 'connected', method: 'github_app', installation_id: 11 });
+  });
+});
+
+describe('POST /repos/sync carries over only verified bindings', () => {
+  it('drops installations bound by unverified legacy rows', async () => {
+    // carol has no personal installation; the only source would be the legacy row.
+    const stub = bindingStub({ accounts: ACCOUNTS, repos: ['victim-org/private'] });
+    fetchMock.mockImplementation(async (url: string, init?: any) =>
+      /\/(users|orgs)\/carol\/installation$/.test(url)
+        ? { ok: false, status: 404, json: async () => ({}) }
+        : stub(url, init),
+    );
+    const { router, store } = buildRouter(
+      { 'nfc:carol': { role: 'developer' } },
+      {
+        findInstallationsByTeam: jest.fn().mockResolvedValue([22]),
+        findVerifiedInstallationsByTeam: jest.fn().mockResolvedValue([]),
+      },
+    );
+    const { body } = await dispatch(router, 'POST', '/repos/sync?team=nfc&user=carol', { 'x-test-user': 'carol' });
+    expect(body.repos).not.toContain('victim-org/private');
+    expect(store.upsert).not.toHaveBeenCalledWith(expect.objectContaining({ installation_id: 22 }));
+  });
+
+  it('keeps verified bindings and records the syncing user', async () => {
+    fetchMock.mockImplementation(bindingStub({ accounts: ACCOUNTS, repos: ['victim-org/private'] }));
+    const { router, store } = buildRouter(
+      { 'nfc:carol': { role: 'developer' } },
+      { findVerifiedInstallationsByTeam: jest.fn().mockResolvedValue([22]) },
+    );
+    const { body } = await dispatch(router, 'POST', '/repos/sync?team=nfc&user=carol', { 'x-test-user': 'carol' });
+    expect(body.repos).toContain('victim-org/private');
+    expect(store.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({ installation_id: 22, created_by: 'sync:carol' }),
+    );
+  });
+});
+
+describe('POST /webhook signature check', () => {
+  it('answers 401, not 500, for a signature of the wrong length', async () => {
+    const { router } = buildRouter({}, {}, { webhookSecret: 'whsec' });
+    const app = express();
+    app.use(router);
+    const server = app.listen(0, '127.0.0.1');
+    await new Promise(r => server.once('listening', r));
+    try {
+      const { port } = server.address() as AddressInfo;
+      fetchMock.mockRestore();
+      const res = await fetch(`http://127.0.0.1:${port}/webhook`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-hub-signature-256': 'sha256=short' },
+        body: '{}',
+      });
+      expect(res.status).toBe(401);
+    } finally {
+      await new Promise(r => server.close(r));
+      fetchMock = jest.spyOn(globalThis, 'fetch');
+    }
+  });
 });

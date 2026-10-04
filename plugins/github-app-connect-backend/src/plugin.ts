@@ -48,6 +48,13 @@ export const githubAppConnectPlugin = createBackendPlugin({
         const privateKey = config.getString('githubAppConnect.privateKey');
         const baseUrl = config.getString('app.baseUrl');
         const webhookSecret = config.getOptionalString('githubAppConnect.webhookSecret');
+        // OAuth client of the same App (integrations.github[].apps[]), used to
+        // confirm who installed it on an organization. See verifyInstallationOwner.
+        const appConfig = (config.getOptionalConfigArray('integrations.github') ?? [])
+          .flatMap(host => host.getOptionalConfigArray('apps') ?? [])
+          .find(app => String(app.getOptional('appId')) === appId);
+        const appClientId = appConfig?.getOptionalString('clientId');
+        const appClientSecret = appConfig?.getOptionalString('clientSecret');
 
         const knex = await database.getClient();
         const isPostgres = isPostgresClient(knex);
@@ -110,6 +117,8 @@ export const githubAppConnectPlugin = createBackendPlugin({
           privateKey,
           baseUrl,
           webhookSecret,
+          appClientId,
+          appClientSecret,
           catalogClient,
           scaffolderClient,
           notifications,

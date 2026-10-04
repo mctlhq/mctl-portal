@@ -83,6 +83,33 @@ export class RepoConnectionStore {
       .select('*');
   }
 
+  async findByTeamAndRepo(teamId: string, repoFullName: string): Promise<RepoConnection | undefined> {
+    return this.db('repo_connections')
+      .where({ team_id: teamId, repo_full_name: repoFullName })
+      .first();
+  }
+
+  /**
+   * Installations bound to the team by a verified flow: the install callback
+   * with a portal-minted state (popup:<user>, callback:<user>) or a repo sync
+   * run as the signed-in user (sync:<user>). Rows written by earlier versions
+   * (plain 'sync', 'popup-install', 'github-callback', 'auto-discovery',
+   * 'direct-install') were not verified and are not carried over.
+   */
+  async findVerifiedInstallationsByTeam(teamId: string): Promise<number[]> {
+    const rows = await this.db('repo_connections')
+      .where({ team_id: teamId })
+      .andWhere(q =>
+        q
+          .where('created_by', 'like', 'popup:%')
+          .orWhere('created_by', 'like', 'callback:%')
+          .orWhere('created_by', 'like', 'sync:%'),
+      )
+      .distinct('installation_id')
+      .select('installation_id');
+    return rows.map(r => Number(r.installation_id));
+  }
+
   async findAllInstallations(): Promise<number[]> {
     const rows = await this.db('repo_connections')
       .distinct('installation_id')

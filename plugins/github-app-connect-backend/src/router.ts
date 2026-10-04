@@ -34,6 +34,13 @@ export interface RouterOptions {
   privateKey: string;
   baseUrl: string;
   webhookSecret?: string;
+  /**
+   * OAuth client of the same GitHub App. When GitHub is set to request user
+   * authorization during installation, the callback carries a `code` that is
+   * exchanged with these to prove which GitHub user made the installation.
+   */
+  appClientId?: string;
+  appClientSecret?: string;
   catalogClient?: { getEntities: (request: any) => Promise<any> };
   // Unused while auto-deploy is disabled (see POST /webhook); kept so the
   // plugin wiring does not change with it.
@@ -110,20 +117,6 @@ async function requireTeamAccess(
     return { ok: false, status: 401, error: 'Authentication required' };
   }
   return checkTeamAccess(db, isPostgres, team, userId);
-}
-
-// For routes with no team to scope against (/repo-tags): any authenticated
-// Backstage user is allowed, no membership check.
-async function requireAuthenticatedUser(
-  req: Request,
-  httpAuth: HttpAuthService,
-  userInfo: UserInfoService,
-): Promise<{ ok: true; userId: string } | { ok: false; status: number; error: string }> {
-  const userId = await resolveCallerUserId(req, httpAuth, userInfo);
-  if (!userId) {
-    return { ok: false, status: 401, error: 'Authentication required' };
-  }
-  return { ok: true, userId };
 }
 
 /**
@@ -292,8 +285,100 @@ async function findInstallation(
   return null;
 }
 
+type InstallationOwnerCheck = { ok: true } | { ok: false; reason: string };
+
+/**
+ * Decides whether `user` (the GitHub login of the Backstage user who minted
+ * the install state) controls installation `installationId`. /callback is
+ * reachable without Backstage credentials and installation ids are small
+ * integers, so the id in the query proves nothing on its own.
+ *
+ * - An installation on the user's own account is theirs.
+ * - Any other installation (an organization) needs GitHub's word for it: the
+ *   OAuth `code` GitHub adds when user authorization during installation is
+ *   enabled, exchanged for a user token that must belong to `user` and list
+ *   the installation among those it can access.
+ *
+ * Every failed or partial read refuses; nothing here falls back to allow.
+ */
+export async function verifyInstallationOwner(options: {
+  installationId: number;
+  user: string;
+  code?: string;
+  appId: string;
+  privateKey: string;
+  appClientId?: string;
+  appClientSecret?: string;
+}): Promise<InstallationOwnerCheck> {
+  const { installationId, user, code, appId, privateKey, appClientId, appClientSecret } = options;
+  const jwt = makeAppJwt(appId, privateKey);
+  const instResp = await fetch(`https://api.github.com/app/installations/${installationId}`, {
+    headers: { Authorization: `Bearer ${jwt}`, Accept: 'application/vnd.github+json' },
+  });
+  if (!instResp.ok) {
+    return { ok: false, reason: `installation lookup failed (${instResp.status})` };
+  }
+  const installation = (await instResp.json()) as { account?: { login?: string; type?: string } };
+  const account = installation.account;
+  if (!account?.login || !account.type) {
+    return { ok: false, reason: 'installation has no account' };
+  }
+  if (account.type === 'User' && account.login.toLowerCase() === user.toLowerCase()) {
+    return { ok: true };
+  }
+
+  if (!code || !appClientId || !appClientSecret) {
+    return {
+      ok: false,
+      reason: `installation belongs to ${account.type} ${account.login}; GitHub did not confirm the installing user`,
+    };
+  }
+  const tokenResp = await fetch('https://github.com/login/oauth/access_token', {
+    method: 'POST',
+    headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+    body: JSON.stringify({ client_id: appClientId, client_secret: appClientSecret, code }),
+  });
+  const tokenBody = tokenResp.ok ? ((await tokenResp.json()) as { access_token?: string }) : {};
+  if (!tokenBody.access_token) {
+    return { ok: false, reason: 'user authorization code exchange failed' };
+  }
+  const userHeaders = {
+    Authorization: `Bearer ${tokenBody.access_token}`,
+    Accept: 'application/vnd.github+json',
+  };
+  const meResp = await fetch('https://api.github.com/user', { headers: userHeaders });
+  if (!meResp.ok) {
+    return { ok: false, reason: `user lookup failed (${meResp.status})` };
+  }
+  const me = (await meResp.json()) as { login?: string };
+  if (!me.login || me.login.toLowerCase() !== user.toLowerCase()) {
+    return { ok: false, reason: 'installing GitHub user does not match the portal user' };
+  }
+  // A failed page is a failed read, not a shorter list.
+  for (let page = 1; page <= 10; page++) {
+    const listResp = await fetch(
+      `https://api.github.com/user/installations?per_page=100&page=${page}`,
+      { headers: userHeaders },
+    );
+    if (!listResp.ok) {
+      return { ok: false, reason: `user installations lookup failed (${listResp.status})` };
+    }
+    const list = (await listResp.json()) as { installations?: Array<{ id: number }> };
+    if (!Array.isArray(list.installations)) {
+      return { ok: false, reason: 'malformed user installations response' };
+    }
+    if (list.installations.some(i => Number(i.id) === installationId)) {
+      return { ok: true };
+    }
+    if (list.installations.length < 100) {
+      return { ok: false, reason: 'installation is not accessible to the installing user' };
+    }
+  }
+  return { ok: false, reason: 'too many user installations to verify' };
+}
+
 export function createRouter(options: RouterOptions): Router {
-  const { logger, store, appSlug, appId, privateKey, baseUrl, webhookSecret, catalogClient, notifications, httpAuth, userInfo, db, isPostgres } = options;
+  const { logger, store, appSlug, appId, privateKey, baseUrl, webhookSecret, appClientId, appClientSecret, catalogClient, notifications, httpAuth, userInfo, db, isPostgres } = options;
   // Derive the state key from the full private key (full entropy) rather than
   // a low-entropy PEM-header prefix. 64 hex chars keeps the existing shape.
   //
@@ -309,6 +394,17 @@ export function createRouter(options: RouterOptions): Router {
     decryptState(token, stateSecret);
 
   const router = Router_();
+
+  async function findInstallationById(
+    installationId: number,
+  ): Promise<{ id: number; account_type: string } | null> {
+    const resp = await fetch(`https://api.github.com/app/installations/${installationId}`, {
+      headers: { Authorization: `Bearer ${makeAppJwt(appId, privateKey)}`, Accept: 'application/vnd.github+json' },
+    });
+    if (!resp.ok) return null;
+    const data = (await resp.json()) as { id: number; account?: { type?: string } };
+    return { id: data.id, account_type: (data.account?.type ?? 'unknown').toLowerCase() };
+  }
 
   // GET /install-url — returns GitHub App install URL with encrypted state
   router.get('/install-url', async (req: Request, res: Response) => {
@@ -326,12 +422,36 @@ export function createRouter(options: RouterOptions): Router {
     auditAdminBypass(logger, '/install-url', team as string, auth, service as string);
 
     const state = encryptState(
-      { team, service, repo, nonce: crypto.randomBytes(8).toString('hex') },
+      { team, service, repo, user: auth.userId, nonce: crypto.randomBytes(8).toString('hex') },
       stateSecret,
     );
 
     const installUrl = `https://github.com/apps/${appSlug}/installations/new?state=${encodeURIComponent(state)}`;
     res.json({ url: installUrl, state });
+  });
+
+  // GET /popup-state?team=<team> — state for the repo picker's install popup.
+  // Binds the popup's callback to this team and to the calling user.
+  router.get('/popup-state', async (req: Request, res: Response) => {
+    const team = req.query.team as string | undefined;
+    if (!team || !TEAM_OR_SERVICE_RE.test(team)) {
+      res.status(400).json({ error: 'Missing or invalid param: team' });
+      return;
+    }
+    const auth = await requireTeamAccess(req, httpAuth, userInfo, db, isPostgres, team);
+    if (!auth.ok) {
+      res.status(auth.status).json({ error: auth.error });
+      return;
+    }
+    auditAdminBypass(logger, '/popup-state', team, auth);
+    const state = encryptState(
+      { popup: true, team, user: auth.userId, nonce: crypto.randomBytes(8).toString('hex') },
+      stateSecret,
+    );
+    res.json({
+      state,
+      url: `https://github.com/apps/${appSlug}/installations/new?state=${encodeURIComponent(state)}`,
+    });
   });
 
   // GET /popup-done — shown inside popup after GitHub App install
@@ -378,134 +498,125 @@ export function createRouter(options: RouterOptions): Router {
 </html>`);
   });
 
-  // GET /callback — GitHub redirects here after App installation
-  // Handles three flows:
-  //   1. state=popup (from GitHubRepoPicker) — auto-discover repos, close popup
-  //   2. With encrypted state param (from install-url) — binds to specific team/service/repo
-  //   3. Without state (direct install from GitHub) — auto-discovers repos
+  // GET /callback — GitHub redirects here after App installation.
+  //
+  // Reachable without Backstage credentials, so it only records a connection
+  // when the encrypted state (minted by /install-url or /popup-state for an
+  // authenticated team member) names the team and user, and that user is
+  // shown to control the installation (verifyInstallationOwner). Without a
+  // valid state, nothing is recorded: repos are connected from the portal,
+  // where /repos/sync runs as the signed-in user.
   router.get('/callback', async (req: Request, res: Response) => {
-    const { installation_id, state: stateParam, setup_action } = req.query;
+    const { installation_id, state: stateParam, code } = req.query;
     if (!installation_id) {
       res.status(400).json({ error: 'Missing installation_id' });
       return;
     }
-
     const installId = Number(installation_id);
+    if (!Number.isSafeInteger(installId) || installId <= 0) {
+      res.status(400).json({ error: 'Invalid installation_id' });
+      return;
+    }
 
-    // Flow 1: Popup mode (from GitHubRepoPicker) — state=popup or state=popup:teamName
-    if (stateParam?.toString().startsWith('popup')) {
-      const popupTeam = stateParam.toString().split(':')[1] || '_auto';
-      try {
-        const repos = await getInstallationRepos(installId, appId, privateKey);
-        logger.info(
-          `Popup installation ${installId} (team=${popupTeam}) — repos: ${repos.join(', ') || 'none'}`,
-        );
-        for (const repoFullName of repos) {
-          const owner = repoFullName.split('/')[0];
-          const installation = await findInstallation(owner, appId, privateKey);
-          await store.upsert({
-            team_id: popupTeam,
-            service_id: '_auto',
-            repo_full_name: repoFullName,
-            installation_id: installId,
-            account_type: installation?.account_type || 'unknown',
-            created_by: 'popup-install',
-          });
-        }
-      } catch (err) {
-        logger.error(`Failed to process popup installation: ${err}`);
+    const rawState = typeof stateParam === 'string' ? stateParam : undefined;
+    // Legacy plain "popup[:team]" states carried no proof; treat them, and a
+    // direct install from GitHub, as "installed, connect from the portal".
+    if (!rawState || rawState === 'popup' || rawState.startsWith('popup:')) {
+      logger.info(`Installation ${installId} callback without portal state; nothing recorded`);
+      res.redirect(
+        rawState
+          ? `${baseUrl}/api/github-app-connect/popup-done`
+          : `${baseUrl}/create?status=connected&message=${encodeURIComponent('GitHub App installed. Connect repositories from the portal repository picker.')}`,
+      );
+      return;
+    }
+
+    const stateData = decodeState(rawState);
+    const team = stateData?.team;
+    const user = stateData?.user;
+    if (!stateData || typeof team !== 'string' || typeof user !== 'string') {
+      res.status(400).json({ error: 'Invalid or expired state parameter' });
+      return;
+    }
+    const isPopup = stateData.popup === true;
+    const failRedirect = (message: string) =>
+      isPopup
+        ? `${baseUrl}/api/github-app-connect/popup-done`
+        : `${baseUrl}/create?status=error&message=${encodeURIComponent(message)}`;
+
+    let ownerCheck: InstallationOwnerCheck;
+    try {
+      ownerCheck = await verifyInstallationOwner({
+        installationId: installId,
+        user,
+        code: typeof code === 'string' ? code : undefined,
+        appId,
+        privateKey,
+        appClientId,
+        appClientSecret,
+      });
+    } catch (err) {
+      ownerCheck = { ok: false, reason: `verification error: ${err}` };
+    }
+    if (!ownerCheck.ok) {
+      logger.warn(
+        `Installation ${installId} not recorded for team=${team} user=${user}: ${ownerCheck.reason}`,
+      );
+      res.redirect(failRedirect('Could not confirm that you control this GitHub App installation.'));
+      return;
+    }
+
+    let repos: string[];
+    try {
+      repos = await getInstallationRepos(installId, appId, privateKey);
+    } catch (err) {
+      logger.error(`Failed to list repos of installation ${installId}: ${err}`);
+      res.redirect(failRedirect('Failed to read the installation. Please try again.'));
+      return;
+    }
+
+    const installation = await findInstallationById(installId);
+    const accountType = installation?.account_type || 'unknown';
+
+    if (isPopup) {
+      for (const repoFullName of repos) {
+        await store.upsert({
+          team_id: team,
+          service_id: '_auto',
+          repo_full_name: repoFullName,
+          installation_id: installId,
+          account_type: accountType,
+          created_by: `popup:${user}`,
+        });
       }
+      logger.info(`Popup installation ${installId} (team=${team}, user=${user}) — ${repos.length} repo(s)`);
       res.redirect(`${baseUrl}/api/github-app-connect/popup-done`);
       return;
     }
 
-    // Flow 2: With encrypted state param (from install-url)
-    if (stateParam) {
-      const stateData = decodeState(stateParam as string);
-      if (!stateData) {
-        res.status(400).json({ error: 'Invalid or expired state parameter' });
-        return;
-      }
-
-      const { team, service, repo } = stateData as {
-        team: string;
-        service: string;
-        repo: string;
-      };
-
-      // Verify the installation has access to the requested repo
-      try {
-        const repos = await getInstallationRepos(installId, appId, privateKey);
-        const hasAccess = repos.some(
-          r => r.toLowerCase() === (repo as string).toLowerCase(),
-        );
-
-        if (!hasAccess) {
-          logger.warn(
-            `Installation ${installId} does not have access to ${repo}`,
-          );
-          res.redirect(
-            `${baseUrl}/create?status=error&message=${encodeURIComponent(`Installation does not have access to ${repo}. Please add the repository in GitHub App settings.`)}`,
-          );
-          return;
-        }
-      } catch (err) {
-        logger.error(`Failed to verify installation repos: ${err}`);
-      }
-
-      const owner = (repo as string).split('/')[0];
-      const installation = await findInstallation(owner, appId, privateKey);
-      const accountType = installation?.account_type || 'unknown';
-
-      await store.upsert({
-        team_id: team as string,
-        service_id: service as string,
-        repo_full_name: repo as string,
-        installation_id: installId,
-        account_type: accountType,
-        created_by: 'github-callback',
-      });
-
-      logger.info(
-        `Repo connection saved: ${team}/${service} → ${repo} (installation ${installId})`,
-      );
-
+    const service = stateData.service;
+    const repo = stateData.repo;
+    if (typeof service !== 'string' || typeof repo !== 'string') {
+      res.status(400).json({ error: 'Invalid or expired state parameter' });
+      return;
+    }
+    if (!repos.some(r => r.toLowerCase() === repo.toLowerCase())) {
+      logger.warn(`Installation ${installId} does not have access to ${repo}`);
       res.redirect(
-        `${baseUrl}/create?status=connected&repo=${encodeURIComponent(repo as string)}`,
+        failRedirect(`Installation does not have access to ${repo}. Please add the repository in GitHub App settings.`),
       );
       return;
     }
-
-    // Flow 3: Direct install from GitHub (no state) — auto-discover repos
-    try {
-      const repos = await getInstallationRepos(installId, appId, privateKey);
-      logger.info(
-        `Direct App installation ${installId} (action: ${setup_action}) — accessible repos: ${repos.join(', ') || 'none'}`,
-      );
-
-      // Store connections for all accessible repos (generic team/service)
-      for (const repoFullName of repos) {
-        const owner = repoFullName.split('/')[0];
-        const installation = await findInstallation(owner, appId, privateKey);
-        await store.upsert({
-          team_id: '_auto',
-          service_id: '_auto',
-          repo_full_name: repoFullName,
-          installation_id: installId,
-          account_type: installation?.account_type || 'unknown',
-          created_by: 'direct-install',
-        });
-      }
-
-      res.redirect(
-        `${baseUrl}/create?status=connected&message=${encodeURIComponent(`GitHub App installed successfully. ${repos.length} repo(s) connected.`)}`,
-      );
-    } catch (err) {
-      logger.error(`Failed to process direct installation: ${err}`);
-      res.redirect(
-        `${baseUrl}/create?status=error&message=${encodeURIComponent('Failed to process installation. Please try again.')}`,
-      );
-    }
+    await store.upsert({
+      team_id: team,
+      service_id: service,
+      repo_full_name: repo,
+      installation_id: installId,
+      account_type: accountType,
+      created_by: `callback:${user}`,
+    });
+    logger.info(`Repo connection saved: ${team}/${service} → ${repo} (installation ${installId}, user ${user})`);
+    res.redirect(`${baseUrl}/create?status=connected&repo=${encodeURIComponent(repo)}`);
   });
 
   // GET /repo-access — check if a repo is accessible via App or PAT
@@ -523,18 +634,12 @@ export function createRouter(options: RouterOptions): Router {
     }
     auditAdminBypass(logger, '/repo-access', team as string, auth, service as string);
 
-    // Check if we have a stored connection (exact match or any match by repo)
-    let connection = await store.find(
-      team as string,
-      service as string,
-      repo as string,
-    );
-    if (!connection) {
-      const allConns = await store.findByRepo(repo as string);
-      if (allConns.length > 0) {
-        connection = allConns[0];
-      }
-    }
+    // Only this team's own connections count. Another team's connection for
+    // the same repo, or an installation on the repo owner, says nothing about
+    // whether this team may use the repo.
+    const connection =
+      (await store.find(team as string, service as string, repo as string)) ??
+      (await store.findByTeamAndRepo(team as string, repo as string));
 
     if (connection) {
       // Verify the installation still has access
@@ -561,33 +666,6 @@ export function createRouter(options: RouterOptions): Router {
         );
       } catch (err) {
         logger.warn(`Failed to verify installation: ${err}`);
-      }
-    }
-
-    // Check if App is installed on the repo owner
-    const owner = (repo as string).split('/')[0];
-    const installation = await findInstallation(owner, appId, privateKey);
-    if (installation) {
-      const repos = await getInstallationRepos(installation.id, appId, privateKey);
-      const hasAccess = repos.some(
-        r => r.toLowerCase() === (repo as string).toLowerCase(),
-      );
-      if (hasAccess) {
-        // Auto-save connection
-        await store.upsert({
-          team_id: team as string,
-          service_id: service as string,
-          repo_full_name: repo as string,
-          installation_id: installation.id,
-          account_type: installation.account_type,
-          created_by: 'auto-discovery',
-        });
-        res.json({
-          status: 'connected',
-          method: 'github_app',
-          installation_id: installation.id,
-        });
-        return;
       }
     }
 
@@ -758,8 +836,9 @@ export function createRouter(options: RouterOptions): Router {
         });
       }
 
-      // Also preserve existing DB entries added via popup callback (org installs for non-admins)
-      const existingIds = await store.findInstallationsByTeam(team);
+      // Also preserve installations bound to this team by verified flows
+      // (popup/callback with a portal-minted state, or another member's sync)
+      const existingIds = await store.findVerifiedInstallationsByTeam(team);
       // We'll merge: new sync results + existing popup-added entries
       // But first fetch repos from discovered installations
 
@@ -807,7 +886,7 @@ export function createRouter(options: RouterOptions): Router {
           repo_full_name: entry.repo,
           installation_id: entry.instId,
           account_type: entry.account_type,
-          created_by: 'sync',
+          created_by: `sync:${auth.userId.toLowerCase()}`,
         });
       }
 
@@ -821,10 +900,12 @@ export function createRouter(options: RouterOptions): Router {
     }
   });
 
-  // GET /repo-tags?repo=owner/name
-  // Returns semver tags from a GitHub repository (newest first)
+  // GET /repo-tags?team=<team>&repo=owner/name
+  // Returns tags of a repository connected to the team (or of a public
+  // repository), newest first. Platform admins may read any repository the
+  // App can see.
   router.get('/repo-tags', async (req: Request, res: Response) => {
-    const { repo: repoFullName } = req.query;
+    const { repo: repoFullName, team } = req.query;
     if (!repoFullName || typeof repoFullName !== 'string') {
       res.status(400).json({ error: 'Missing required param: repo (owner/name)' });
       return;
@@ -833,65 +914,54 @@ export function createRouter(options: RouterOptions): Router {
       res.status(400).json({ error: 'Invalid repo parameter, expected format owner/name' });
       return;
     }
+    if (!team || typeof team !== 'string' || !TEAM_OR_SERVICE_RE.test(team)) {
+      res.status(400).json({ error: 'Missing or invalid param: team' });
+      return;
+    }
 
-    const auth = await requireAuthenticatedUser(req, httpAuth, userInfo);
+    const auth = await requireTeamAccess(req, httpAuth, userInfo, db, isPostgres, team);
     if (!auth.ok) {
       res.status(auth.status).json({ error: auth.error });
       return;
     }
+    auditAdminBypass(logger, '/repo-tags', team, auth);
 
     try {
-      const [owner] = repoFullName.split('/');
-      // Try owner's installation first, then fall back to all installations
-      let installation = await findInstallation(owner, appId, privateKey);
-      if (!installation) {
-        // Owner may not have the app installed — try all installations
-        const jwt = makeAppJwt(appId, privateKey);
-        const instResp = await fetch(
-          'https://api.github.com/app/installations?per_page=100',
-          { headers: { Authorization: `Bearer ${jwt}`, Accept: 'application/vnd.github+json' } },
-        );
-        if (instResp.ok) {
-          const installations = (await instResp.json()) as Array<{ id: number; account: { type: string } }>;
-          for (const inst of installations) {
-            const token = await getInstallationToken(inst.id, appId, privateKey);
-            const check = await fetch(
-              `https://api.github.com/repos/${repoFullName}`,
-              { headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json' } },
-            );
-            if (check.ok) {
-              installation = { id: inst.id, account_type: inst.account.type };
-              break;
-            }
-          }
+      let installationId: number | undefined;
+      const connection = await store.findByTeamAndRepo(team, repoFullName);
+      if (connection) {
+        installationId = Number(connection.installation_id);
+      } else if (auth.viaAdminBypass) {
+        const [owner] = repoFullName.split('/');
+        installationId = (await findInstallation(owner, appId, privateKey))?.id;
+      }
+
+      const headers: Record<string, string> = { Accept: 'application/vnd.github+json' };
+      if (installationId !== undefined) {
+        headers.Authorization = `Bearer ${await getInstallationToken(installationId, appId, privateKey)}`;
+      } else {
+        // Not connected to the team: only a public repository may be read,
+        // and without the App's credentials.
+        const pub = await fetch(`https://api.github.com/repos/${repoFullName}`, { headers });
+        const pubData = pub.ok ? ((await pub.json()) as { private?: boolean }) : undefined;
+        if (!pubData || pubData.private !== false) {
+          res.status(404).json({ error: 'Repository is not connected to this team' });
+          return;
         }
       }
-      if (!installation) {
-        res.status(404).json({ error: 'No GitHub App installation with access to this repo' });
-        return;
-      }
-      const token = await getInstallationToken(installation.id, appId, privateKey);
 
       // Fetch up to 100 tags
       const resp = await fetch(
         `https://api.github.com/repos/${repoFullName}/tags?per_page=100`,
-        {
-          headers: {
-            Authorization: `Bearer ${token}`,
-            Accept: 'application/vnd.github+json',
-          },
-        },
+        { headers },
       );
-
       if (!resp.ok) {
-        res.json({ tags: [] });
+        res.status(502).json({ error: `Failed to fetch repo tags (${resp.status})` });
         return;
       }
 
       const data = (await resp.json()) as Array<{ name: string }>;
-      const tags = data.map(t => t.name);
-
-      res.json({ tags });
+      res.json({ tags: data.map(t => t.name) });
     } catch (err) {
       logger.error(`Failed to fetch repo tags: ${err}`);
       res.status(500).json({ error: 'Failed to fetch repo tags' });
@@ -1008,7 +1078,10 @@ export function createRouter(options: RouterOptions): Router {
 
     const rawBody = Buffer.isBuffer(req.body) ? req.body : Buffer.from(JSON.stringify(req.body));
     const expected = 'sha256=' + crypto.createHmac('sha256', webhookSecret).update(rawBody).digest('hex');
-    if (!crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected))) {
+    const provided = Buffer.from(signature);
+    const wanted = Buffer.from(expected);
+    // timingSafeEqual throws on a length mismatch, which used to surface as a 500.
+    if (provided.length !== wanted.length || !crypto.timingSafeEqual(provided, wanted)) {
       res.status(401).json({ error: 'Invalid signature' });
       return;
     }
