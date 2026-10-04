@@ -49,9 +49,9 @@ const RELAY_ALLOWLIST: { method: string; pattern: RegExp }[] = [
   { method: 'POST', pattern: new RegExp(`^/api/v1/work-items/${ID}/execution-requests$`) },
   { method: 'POST', pattern: new RegExp(`^/api/v1/work-items/${ID}/(intents|surface-refs)$`) },
   // Read-only history (mctl-api#436). `.../executions/{id}/snapshot` serves the
-  // snapshot bytes and is deliberately not here.
+  // snapshot bytes and is deliberately not here; `.../snapshots/{id}` is left
+  // out until something calls it with its own mapper.
   { method: 'GET', pattern: new RegExp(`^/api/v1/work-items/${ID}/(executions|snapshots|events|evidence)$`) },
-  { method: 'GET', pattern: new RegExp(`^/api/v1/work-items/${ID}/snapshots/${ID}$`) },
   { method: 'GET', pattern: new RegExp(`^/api/v1/human-input(/${ID})?$`) },
   { method: 'POST', pattern: new RegExp(`^/api/v1/human-input/${ID}/response$`) },
   { method: 'POST', pattern: /^\/api\/v1\/surface-identities\/redeem$/ },
@@ -128,20 +128,25 @@ function mapSnapshot(raw: unknown): SnapshotRef | undefined {
 
 /**
  * `envelope_b64`, `ingested_by*` and the derived `ref` (which carries engine
- * identity) are never read.
+ * identity) are never read. mctl-api refuses evidence with neither an
+ * execution id nor a runtime context id, so the primary ref is always set;
+ * `execution_id` alone may be blank.
  */
 function mapEvidence(raw: unknown): EvidenceRef | undefined {
   const r = obj(raw);
   const id = str(r?.id);
-  if (!r || !id) return undefined;
+  const contentHash = str(r?.content_hash);
+  const primaryRefKind = str(r?.primary_ref_kind);
+  const primaryRefId = str(r?.primary_ref_id);
+  if (!r || !id || !contentHash || !primaryRefKind || !primaryRefId) return undefined;
   return {
     id,
     executionId: str(r.execution_id),
-    contentHash: str(r.content_hash),
+    contentHash,
     apiVersion: str(r.api_version),
     createdAt: str(r.created_at),
-    primaryRefKind: str(r.primary_ref_kind),
-    primaryRefId: str(r.primary_ref_id),
+    primaryRefKind,
+    primaryRefId,
   };
 }
 

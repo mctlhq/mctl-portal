@@ -26,11 +26,11 @@ export interface SnapshotRef {
 export interface EvidenceRef {
   id: string;
   executionId?: string;
-  contentHash?: string;
+  contentHash: string;
   apiVersion?: string;
   createdAt?: string;
-  primaryRefKind?: string;
-  primaryRefId?: string;
+  primaryRefKind: string;
+  primaryRefId: string;
 }
 
 export interface WorkItemEventRef {
@@ -74,6 +74,7 @@ export interface WorkItem {
   evidence: Observed<EvidenceRef[]>;
   /** Set when mctl-api clipped the evidence page to the latest `limit`. */
   evidenceTruncated?: { limit?: number };
+  /** Optional only to tolerate an older backend; absent renders as unknown. */
   events?: Observed<WorkItemEventRef[]>;
   /** Not observable through the surface relay today. */
   surfaces: Observed<unknown[]>;

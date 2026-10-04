@@ -19,7 +19,10 @@ import useAsync from 'react-use/esm/useAsync';
 import { useParams } from 'react-router-dom';
 import { WorkItemsApi, WorkItemsApiError } from './api';
 import { ObservedSection } from './ObservedSection';
-import { WorkItem } from './types';
+import { Observed, WorkItem, WorkItemEventRef } from './types';
+
+/** A backend that did not report events: unknown, never an empty history. */
+const EVENTS_NOT_REPORTED: Observed<WorkItemEventRef[]> = { state: 'unknown', reason: 'not_reported' };
 
 type NextAction = {
   label: string;
@@ -267,45 +270,44 @@ export const WorkItemDetailView = (props: {
           <ObservedSection
             title="Evidence"
             data={item.evidence}
+            // A clipped page must never read as the complete history, even
+            // when the page itself is empty.
+            notice={
+              item.evidenceTruncated && (
+                <Typography variant="caption" color="textSecondary" component="div">
+                  {item.evidenceTruncated.limit === undefined
+                    ? 'Older evidence exists.'
+                    : `Showing the latest ${item.evidenceTruncated.limit}; older evidence exists.`}
+                </Typography>
+              )
+            }
             render={list => (
-              <>
-                {/* A clipped page must never read as the complete history. */}
-                {item.evidenceTruncated && (
-                  <Typography variant="caption" color="textSecondary" component="div">
-                    Showing the latest {item.evidenceTruncated.limit ?? list.length}; older evidence exists.
-                  </Typography>
-                )}
-                <ul>
-                  {list.map(e => (
-                    <li key={e.id}>
-                      {e.id}
-                      {e.primaryRefKind && e.primaryRefId ? ` · ${e.primaryRefKind} ${e.primaryRefId}` : ''}
-                      {e.contentHash ? ` · ${e.contentHash}` : ''}
-                      {e.createdAt ? ` · ${e.createdAt}` : ''}
-                    </li>
-                  ))}
-                </ul>
-              </>
+              <ul>
+                {list.map(e => (
+                  <li key={e.id}>
+                    {e.id} · {e.primaryRefKind} {e.primaryRefId} · {e.contentHash}
+                    {e.createdAt ? ` · ${e.createdAt}` : ''}
+                  </li>
+                ))}
+              </ul>
             )}
           />
-          {item.events && (
-            <ObservedSection
-              title="Events"
-              data={item.events}
-              render={list => (
-                <ul>
-                  {list.map(e => (
-                    <li key={e.seq}>
-                      #{e.seq} · {e.kind}
-                      {e.fromState || e.toState ? ` · ${e.fromState ?? '?'} → ${e.toState ?? '?'}` : ''}
-                      {e.surface ? ` · via ${e.surface}` : ''}
-                      {e.createdAt ? ` · ${e.createdAt}` : ''}
-                    </li>
-                  ))}
-                </ul>
-              )}
-            />
-          )}
+          <ObservedSection
+            title="Events"
+            data={item.events ?? EVENTS_NOT_REPORTED}
+            render={list => (
+              <ul>
+                {list.map(e => (
+                  <li key={e.seq}>
+                    #{e.seq} · {e.kind}
+                    {e.fromState || e.toState ? ` · ${e.fromState ?? '?'} → ${e.toState ?? '?'}` : ''}
+                    {e.surface ? ` · via ${e.surface}` : ''}
+                    {e.createdAt ? ` · ${e.createdAt}` : ''}
+                  </li>
+                ))}
+              </ul>
+            )}
+          />
           <ObservedSection title="Surfaces" data={item.surfaces} render={() => null} />
         </Paper>
       </Grid>

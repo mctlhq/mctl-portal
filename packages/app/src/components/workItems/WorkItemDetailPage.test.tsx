@@ -118,12 +118,28 @@ describe('WorkItemDetailView', () => {
   it('says when the evidence page is clipped', () => {
     render(
       <WorkItemDetailView
-        item={item({ evidence: { state: 'ok', value: [{ id: 'ev_2' }] }, evidenceTruncated: { limit: 1 } })}
+        item={item({
+          evidence: { state: 'ok', value: [{ id: 'ev_2', contentHash: 'sha256:cc', primaryRefKind: 'work', primaryRefId: 'we_1' }] },
+          evidenceTruncated: { limit: 1 },
+        })}
         api={api()}
         onReload={jest.fn()}
       />,
     );
     expect(screen.getByTestId('section-Evidence').textContent).toContain('Showing the latest 1; older evidence exists.');
+  });
+
+  it('says a clipped evidence page is clipped even when it is empty', () => {
+    render(
+      <WorkItemDetailView
+        item={item({ evidence: { state: 'ok', value: [] }, evidenceTruncated: { limit: 0 } })}
+        api={api()}
+        onReload={jest.fn()}
+      />,
+    );
+    const text = screen.getByTestId('section-Evidence').textContent;
+    expect(text).toContain('Showing the latest 0; older evidence exists.');
+    expect(text).toContain('None');
   });
 
   it('shows an unreadable history section as unknown, not empty', () => {
@@ -136,7 +152,13 @@ describe('WorkItemDetailView', () => {
     );
     expect(screen.getByTestId('section-All executions').textContent).toContain('Unknown');
     expect(screen.getByTestId('section-All executions').textContent).not.toContain('None');
-    expect(screen.queryByTestId('section-Events')).toBeNull();
+  });
+
+  it('shows events as unknown, never absent, when the backend did not report them', () => {
+    render(<WorkItemDetailView item={item({ events: undefined })} api={api()} onReload={jest.fn()} />);
+    const text = screen.getByTestId('section-Events').textContent;
+    expect(text).toContain('Unknown');
+    expect(text).not.toContain('None');
   });
 
   it('shows the link form and no data on link_required (T10)', () => {

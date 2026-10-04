@@ -344,6 +344,9 @@ describe('MctlApiWorkItemsClient (T4)', () => {
       ['evidence', 'evidence', { evidence: [] }],
       ['evidence', 'evidence', { evidence: [], truncated: 'no' }],
       ['evidence', 'evidence', { evidence: [{ content_hash: 'sha256:bb' }], truncated: false }],
+      ['evidence', 'evidence', { evidence: [{ id: 'ev_1', primary_ref_kind: 'work', primary_ref_id: 'we_1' }], truncated: false }],
+      ['evidence', 'evidence', { evidence: [{ id: 'ev_1', content_hash: 'sha256:bb' }], truncated: false }],
+      ['evidence', 'evidence', { evidence: [{ id: 'ev_1', content_hash: 'sha256:bb', primary_ref_kind: 'runtime' }], truncated: false }],
       ['events', 'events', { events: [{ seq: '1', kind: 'created' }] }],
       ['events', 'events', null],
     ];
@@ -352,6 +355,17 @@ describe('MctlApiWorkItemsClient (T4)', () => {
       const w = await client().getWorkItem('wi_abc', 'u');
       expect(w[k]).toEqual({ state: 'unknown', reason: 'unrecognised_shape' });
     }
+  });
+
+  it('reads runtime-only evidence, whose execution_id is blank', async () => {
+    const runtimeOnly = { id: 'ev_2', content_hash: 'sha256:cc', execution_id: '', primary_ref_kind: 'runtime', primary_ref_id: 'ex-0123456789abcdef' };
+    route({ evidence: () => jsonResp(200, { evidence: [runtimeOnly], truncated: false, limit: 50 }) });
+    const w = await client().getWorkItem('wi_abc', 'u');
+    expect(w.evidence).toEqual({
+      state: 'ok',
+      observedAt: expect.any(String),
+      value: [{ id: 'ev_2', contentHash: 'sha256:cc', primaryRefKind: 'runtime', primaryRefId: 'ex-0123456789abcdef' }],
+    });
   });
 
   it('marks a clipped evidence page as clipped', async () => {
@@ -373,9 +387,11 @@ describe('MctlApiWorkItemsClient (T4)', () => {
 
   it('only allows relay routes', () => {
     expect(isRelayAllowed('GET', '/api/v1/work-items/wi_1')).toBe(true);
-    for (const sub of ['executions', 'snapshots', 'events', 'evidence', 'snapshots/cs_1']) {
+    for (const sub of ['executions', 'snapshots', 'events', 'evidence']) {
       expect(isRelayAllowed('GET', `/api/v1/work-items/wi_1/${sub}`)).toBe(true);
     }
+    // Not called by anything yet, so not allowed.
+    expect(isRelayAllowed('GET', '/api/v1/work-items/wi_1/snapshots/cs_1')).toBe(false);
     // Serves the snapshot bytes: not a relay route.
     expect(isRelayAllowed('GET', '/api/v1/work-items/wi_1/executions/we_1/snapshot')).toBe(false);
     expect(isRelayAllowed('GET', '/api/v1/work-items/wi_1/executions/we_1')).toBe(false);
@@ -394,6 +410,7 @@ describe('MctlApiWorkItemsClient (T4)', () => {
     };
     for (const [method, p] of [
       ['GET', '/api/v1/work-items/wi_1/executions/we_1/snapshot'],
+      ['GET', '/api/v1/work-items/wi_1/snapshots/cs_1'],
       ['POST', '/api/v1/work-items/wi_1/executions'],
       ['POST', '/api/v1/work-items/wi_1/executions/we_1/snapshot'],
       ['GET', '/api/v1/work-items/wi_1/approvals'],

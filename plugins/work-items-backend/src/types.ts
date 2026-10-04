@@ -34,13 +34,15 @@ export interface SnapshotRef {
 /** A stored execution-evidence envelope's identity, without the envelope. */
 export interface EvidenceRef {
   id: string;
+  /** Blank for evidence joined only to a runtime context; see primaryRef*. */
   executionId?: string;
-  contentHash?: string;
+  contentHash: string;
   apiVersion?: string;
   createdAt?: string;
   /** `work` (a work-item execution) or `runtime` (an ADR 011 `ex-` context). */
-  primaryRefKind?: string;
-  primaryRefId?: string;
+  primaryRefKind: string;
+  /** For `runtime`, an opaque ADR 011 `ex-` context id, never an engine run. */
+  primaryRefId: string;
 }
 
 /** One lifecycle event. Principals, request ids and `detail` are not forwarded. */
@@ -92,7 +94,7 @@ export interface PortalWorkItem {
    * then holds the latest `limit` envelopes, not all of them.
    */
   evidenceTruncated?: { limit?: number };
-  events?: Observed<WorkItemEventRef[]>;
+  events: Observed<WorkItemEventRef[]>;
   /** Not observable through the surface relay today. */
   surfaces: Observed<unknown[]>;
   links: { label: string; url: string }[];

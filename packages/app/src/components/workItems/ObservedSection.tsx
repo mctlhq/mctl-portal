@@ -10,8 +10,10 @@ export function ObservedSection<T>(props: {
   title: string;
   data: Observed<T>;
   render: (value: T) => ReactNode;
+  /** Shown whenever the section was observed, even when its list is empty. */
+  notice?: ReactNode;
 }) {
-  const { title, data, render } = props;
+  const { title, data, render, notice } = props;
   let body: ReactNode;
   if (data.state === 'unknown') {
     body = (
@@ -28,6 +30,7 @@ export function ObservedSection<T>(props: {
             Stale since {data.observedAt}
           </Typography>
         )}
+        {notice}
         {isEmpty ? <Typography variant="body2">None</Typography> : render(data.value)}
       </>
     );

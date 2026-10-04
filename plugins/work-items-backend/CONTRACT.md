@@ -64,8 +64,8 @@ Rule (`toSurfaceActorId` in `src/router.ts`):
 - `GET /api/v1/human-input[/{id}]`, `POST /api/v1/human-input/{id}/response`
 - `POST /api/v1/surface-identities/redeem` (surface principal itself, with the actor header)
 - Read-only history (mctl-api#436): `GET /api/v1/work-items/{id}/executions`,
-  `GET /api/v1/work-items/{id}/snapshots[/{snapshot_id}]`,
-  `GET /api/v1/work-items/{id}/events`, `GET /api/v1/work-items/{id}/evidence`
+  `GET /api/v1/work-items/{id}/snapshots`, `GET /api/v1/work-items/{id}/events`,
+  `GET /api/v1/work-items/{id}/evidence`
 
 NOT relay routes today: `GET /work-items/{id}/executions/{execution_id}/snapshot`
 (it serves the snapshot bytes), `/approvals`, any write method on a history path,
@@ -74,7 +74,9 @@ rendered `{state:'unknown', reason:'not_available_via_relay'}`.
 This client only calls the routes it uses (`GET /work-items/{id}`,
 `GET|POST /work-items/{id}/execution-requests`, the four history lists,
 `POST /surface-identities/redeem`) and refuses anything outside the allowlist
-before any I/O. `GET .../snapshots/{snapshot_id}` is allowed but not called. It does not create
+before any I/O. mctl-api also relays `GET /work-items/{id}/snapshots/{snapshot_id}`
+(metadata only), but nothing here calls it, so it stays off this client's
+allowlist until a caller and its mapper land together. It does not create
 work items (`POST /work-items` is on mctl-api's allowlist but not on this
 client's). A refused route is a bug in the plugin: it is logged and the browser
 gets a generic 502, never the internal path.
@@ -109,7 +111,13 @@ its own `Observed` section:
 - any upstream error answer -> `unknown` / `fetch_failed`.
 
 mctl-api returns a relayed history read in the same body as a direct read, so
-the mapper is the allow-list:
+the mapper is the allow-list.
+
+Completeness: `executions`, `snapshots` and `events` return the item's full list
+(mctl-api `Store.Executions`, `Store.Snapshots` and `Store.Events` select every row
+of the item, with no limit), so an `ok` section is the whole history. Only
+evidence is paged; see `truncated` below. If mctl-api ever bounds one of the three,
+it must carry a completeness signal and this mapper must treat it like evidence.
 
 `GET /work-items/{id}/executions` -> `{executions: WorkItemExecution[]}`:
 `id, attempt, phase, started_at, ended_at, resumed_from_execution_id`. `engine` and
@@ -122,7 +130,14 @@ never read (a relayed single-snapshot read is metadata only anyway).
 
 `GET /work-items/{id}/evidence` -> `{evidence: Evidence[], truncated, limit}`, newest
 first: `id, execution_id, content_hash, api_version, created_at, primary_ref_kind,
-primary_ref_id`. `envelope_b64`, `ingested_by`, `ingested_by_principal_id` and the
+primary_ref_id`. `id`, `content_hash`, `primary_ref_kind` and `primary_ref_id` are
+required; a row without one makes the section `unrecognised_shape`. `execution_id`
+is optional: it is blank for evidence joined only to a runtime context, and
+mctl-api refuses evidence with neither id, so the primary ref is always set.
+`primary_ref_id` is forwarded on purpose: for kind `work` it is the work-item
+execution id (`we_...`), and for kind `runtime` an opaque ADR 011 execution-context
+id (`ex-` + 16 hex). Neither names an engine or an engine run; engine names and
+`engine_ref` are never forwarded. `envelope_b64`, `ingested_by`, `ingested_by_principal_id` and the
 derived `ref` (which carries engine identity) are not forwarded. `truncated` must be
 a boolean or the section is `unrecognised_shape`; when it is true the portal sets
 `evidenceTruncated: {limit}` and the page says it shows only the latest `limit`.
