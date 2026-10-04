@@ -115,7 +115,6 @@ export const WorkItemDetailView = (props: {
     item.executionRequests.state === 'unknown'
       ? []
       : item.executionRequests.value.filter(r => r.state === 'pending' || r.state === 'claimed');
-  const exec = item.latestExecution.state === 'unknown' ? undefined : item.latestExecution.value;
 
   const runAction = async (a: PendingAction) => {
     // One request per confirmed action: the dialog is locked while it is in
@@ -217,15 +216,16 @@ export const WorkItemDetailView = (props: {
             data={item.latestSnapshot}
             render={s => s && <Typography variant="body2">{s.id} · {s.contentHash}</Typography>}
           />
-          {item.links.length > 0 ? (
-            item.links.map(l => (
-              <MuiLink key={l.url} href={l.url} target="_blank" rel="noopener noreferrer">
-                {l.label}
-              </MuiLink>
-            ))
-          ) : (
+          {item.links.map(l => (
+            <MuiLink key={l.url} href={l.url} target="_blank" rel="noopener noreferrer">
+              {l.label}
+            </MuiLink>
+          ))}
+          {/* Only a configured canvas that could not be linked is a failure;
+              an unset template or no execution renders nothing. */}
+          {item.links.length === 0 && item.canvas === 'unavailable' && (
             <Typography variant="body2" color="textSecondary">
-              {exec ? 'Canvas unavailable' : ''}
+              Canvas unavailable
             </Typography>
           )}
         </Paper>

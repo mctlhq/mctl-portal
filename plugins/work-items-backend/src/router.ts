@@ -202,12 +202,24 @@ export function createRouter(options: RouterOptions): Router {
       return;
     }
     if (
-      (b.idempotencyKey !== undefined &&
-        (typeof b.idempotencyKey !== 'string' || !IDEMPOTENCY_KEY.test(b.idempotencyKey))) ||
-      (b.resumedFromExecutionId !== undefined &&
-        (typeof b.resumedFromExecutionId !== 'string' || !EXECUTION_ID.test(b.resumedFromExecutionId)))
+      b.idempotencyKey !== undefined &&
+      (typeof b.idempotencyKey !== 'string' || !IDEMPOTENCY_KEY.test(b.idempotencyKey))
     ) {
-      res.status(400).json({ error: 'idempotencyKey or resumedFromExecutionId is malformed' });
+      res.status(400).json({ error: 'idempotencyKey is malformed' });
+      return;
+    }
+    if (
+      b.resumedFromExecutionId !== undefined &&
+      (typeof b.resumedFromExecutionId !== 'string' || !EXECUTION_ID.test(b.resumedFromExecutionId))
+    ) {
+      res.status(400).json({ error: 'resumedFromExecutionId is malformed' });
+      return;
+    }
+    // Refused rather than dropped: a dropped intentId would still answer 201,
+    // for a request with no intent association. mctl-api's bound is a positive
+    // int64 (internal/workitems/execution_requests.go).
+    if (b.intentId !== undefined && !(Number.isSafeInteger(b.intentId) && b.intentId > 0)) {
+      res.status(400).json({ error: 'intentId must be a positive integer' });
       return;
     }
     if (!requireConfigured(res)) return;
@@ -215,10 +227,9 @@ export function createRouter(options: RouterOptions): Router {
       const result = await workItems.createExecutionRequest(id, caller.actor, {
         kind: b.kind,
         expectedStateVersion: b.expectedStateVersion,
-        resumedFromExecutionId:
-          typeof b.resumedFromExecutionId === 'string' ? b.resumedFromExecutionId : undefined,
-        intentId: Number.isInteger(b.intentId) ? b.intentId : undefined,
-        idempotencyKey: typeof b.idempotencyKey === 'string' ? b.idempotencyKey : undefined,
+        resumedFromExecutionId: b.resumedFromExecutionId,
+        intentId: b.intentId,
+        idempotencyKey: b.idempotencyKey,
       });
       res.status(result.replay ? 200 : 201).json({ executionRequest: result.executionRequest });
     } catch (err) {

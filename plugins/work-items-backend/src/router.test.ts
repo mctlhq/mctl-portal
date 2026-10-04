@@ -227,19 +227,29 @@ describe('work-items router', () => {
     expect((await post('/work-items/wi_1/execution-requests', { kind: 'bogus' })).status).toBe(400);
   });
 
-  it('400s a malformed idempotencyKey or resumedFromExecutionId with no upstream call', async () => {
+  it('400s a malformed idempotencyKey, resumedFromExecutionId or intentId, naming the field, with no upstream call', async () => {
     const c = fakeClient();
     await start(c, { actionsEnabled: true });
-    for (const extra of [
-      { idempotencyKey: 'a\r\nb' },
-      { idempotencyKey: 'x'.repeat(129) },
-      { idempotencyKey: '' },
-      { idempotencyKey: 42 },
-      { resumedFromExecutionId: 'we_1\r\nX: y' },
-      { resumedFromExecutionId: 'x'.repeat(129) },
-    ]) {
+    const cases: [Record<string, unknown>, string][] = [
+      [{ idempotencyKey: 'a\r\nb' }, 'idempotencyKey is malformed'],
+      [{ idempotencyKey: 'x'.repeat(129) }, 'idempotencyKey is malformed'],
+      [{ idempotencyKey: '' }, 'idempotencyKey is malformed'],
+      [{ idempotencyKey: 42 }, 'idempotencyKey is malformed'],
+      [{ resumedFromExecutionId: 'we_1\r\nX: y' }, 'resumedFromExecutionId is malformed'],
+      [{ resumedFromExecutionId: 'x'.repeat(129) }, 'resumedFromExecutionId is malformed'],
+      // A number would stringify to "42" and pass the pattern; the type check refuses it.
+      [{ resumedFromExecutionId: 42 }, 'resumedFromExecutionId is malformed'],
+      [{ intentId: '5' }, 'intentId must be a positive integer'],
+      [{ intentId: 5.5 }, 'intentId must be a positive integer'],
+      [{ intentId: null }, 'intentId must be a positive integer'],
+      [{ intentId: 0 }, 'intentId must be a positive integer'],
+      [{ intentId: -1 }, 'intentId must be a positive integer'],
+      [{ intentId: 2 ** 53 }, 'intentId must be a positive integer'],
+    ];
+    for (const [extra, error] of cases) {
       const res = await post('/work-items/wi_1/execution-requests', { kind: 'resume', expectedStateVersion: 1, ...extra });
       expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({ error });
     }
     expect(c.createExecutionRequest).not.toHaveBeenCalled();
     const ok = await post('/work-items/wi_1/execution-requests', {
@@ -247,8 +257,14 @@ describe('work-items router', () => {
       expectedStateVersion: 1,
       idempotencyKey: 'portal-0b6f2c1e-7d3a-4c55-9a1e-2f6b8e9d0c11',
       resumedFromExecutionId: 'we_0b6f2c1e-7d3a-4c55-9a1e-2f6b8e9d0c11',
+      intentId: 7,
     });
     expect(ok.status).toBe(201);
+    expect(c.createExecutionRequest).toHaveBeenLastCalledWith(
+      'wi_1',
+      'user:default:alice',
+      expect.objectContaining({ intentId: 7 }),
+    );
   });
 
   it('treats resumedFromExecutionId as opaque: any bounded safe id is forwarded unchanged', async () => {

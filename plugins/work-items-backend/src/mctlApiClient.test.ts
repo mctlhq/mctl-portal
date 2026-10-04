@@ -72,6 +72,18 @@ describe('toPortalWorkItem', () => {
       { label: 'path', url: '/canvas/we_1' },
     ]);
   });
+
+  it('says why there is no canvas link, so an unset template is not a failure', () => {
+    const noExec = { ...VIEW, latest_execution: null };
+    expect(toPortalWorkItem(VIEW, unknownReq).canvas).toBe('not_configured');
+    expect(toPortalWorkItem(noExec, unknownReq).canvas).toBe('not_configured');
+    expect(toPortalWorkItem(noExec, unknownReq, [], true).canvas).toBe('no_execution');
+    expect(toPortalWorkItem(VIEW, unknownReq, [], true).canvas).toBe('unavailable');
+    expect(toPortalWorkItem(VIEW, unknownReq, [{ label: 'c', url: '//evil.example/x' }], true).canvas).toBe('unavailable');
+    const unreadable = { ...VIEW, latest_execution: { phase: 'Running' } };
+    expect(toPortalWorkItem(unreadable, unknownReq, [], true).canvas).toBe('unavailable');
+    expect(toPortalWorkItem(VIEW, unknownReq, [{ label: 'c', url: '/canvas/we_1' }], true).canvas).toBe('ok');
+  });
 });
 
 describe('MctlApiWorkItemsClient (T4)', () => {
@@ -105,11 +117,15 @@ describe('MctlApiWorkItemsClient (T4)', () => {
       new MctlApiWorkItemsClient({ baseUrl: 'http://api.test', surfaceToken: 't', executionCanvasUrlTemplate: tpl });
     const ok = { execution_requests: [] };
     fetchMock.mockResolvedValueOnce(jsonResp(200, VIEW)).mockResolvedValueOnce(jsonResp(200, ok));
-    expect((await mk('/canvas/{executionId}?wi={workItemId}').getWorkItem('wi_abc', 'u')).links).toEqual([
-      { label: 'Execution Canvas', url: '/canvas/we_1?wi=wi_abc' },
-    ]);
+    const built = await mk('/canvas/{executionId}?wi={workItemId}').getWorkItem('wi_abc', 'u');
+    expect(built.links).toEqual([{ label: 'Execution Canvas', url: '/canvas/we_1?wi=wi_abc' }]);
+    expect(built.canvas).toBe('ok');
     fetchMock.mockResolvedValueOnce(jsonResp(200, VIEW)).mockResolvedValueOnce(jsonResp(200, ok));
-    expect((await mk('//evil.example/{executionId}').getWorkItem('wi_abc', 'u')).links).toEqual([]);
+    const refused = await mk('//evil.example/{executionId}').getWorkItem('wi_abc', 'u');
+    expect(refused.links).toEqual([]);
+    expect(refused.canvas).toBe('unavailable');
+    fetchMock.mockResolvedValueOnce(jsonResp(200, VIEW)).mockResolvedValueOnce(jsonResp(200, ok));
+    expect((await client().getWorkItem('wi_abc', 'u')).canvas).toBe('not_configured');
   });
 
   it('degrades only the execution-requests section on any upstream error, including 429', async () => {

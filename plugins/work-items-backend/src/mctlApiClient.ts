@@ -1,4 +1,11 @@
-import type { ExecutionRequestRef, ExecutionRef, Observed, PortalWorkItem, SnapshotRef } from './types';
+import type {
+  CanvasLinkStatus,
+  ExecutionRequestRef,
+  ExecutionRef,
+  Observed,
+  PortalWorkItem,
+  SnapshotRef,
+} from './types';
 
 /**
  * Client for the mctl-api WorkItem runtime API (mctl-api#349), reached as the
@@ -128,6 +135,7 @@ export function toPortalWorkItem(
   view: unknown,
   executionRequests: Observed<ExecutionRequestRef[]>,
   canvasLinks: { label: string; url: string }[] = [],
+  canvasConfigured = false,
 ): PortalWorkItem {
   const v = obj(view);
   const w = obj(v?.work_item);
@@ -141,6 +149,12 @@ export function toPortalWorkItem(
 
   const exec = v.latest_execution === null ? null : mapExecution(v.latest_execution);
   const snap = v.latest_snapshot === null ? null : mapSnapshot(v.latest_snapshot);
+  const links = canvasLinks.filter(l => isSafeLink(l.url));
+  let canvas: CanvasLinkStatus;
+  if (links.length > 0) canvas = 'ok';
+  else if (!canvasConfigured) canvas = 'not_configured';
+  else if (exec === null) canvas = 'no_execution';
+  else canvas = 'unavailable';
 
   return {
     id,
@@ -164,7 +178,8 @@ export function toPortalWorkItem(
     snapshots: NOT_VIA_RELAY,
     evidence: NOT_VIA_RELAY,
     surfaces: NOT_VIA_RELAY,
-    links: canvasLinks.filter(l => isSafeLink(l.url)),
+    links,
+    canvas,
   };
 }
 
@@ -320,7 +335,7 @@ export class MctlApiWorkItemsClient implements WorkItemsClient {
 
     // Canvas link candidates go through the mapper, so one filter governs
     // every link the browser receives.
-    return toPortalWorkItem(view.json, requests, this.canvasLinks(id, view.json));
+    return toPortalWorkItem(view.json, requests, this.canvasLinks(id, view.json), !!this.canvasTemplate);
   }
 
   private canvasLinks(id: string, view: unknown): { label: string; url: string }[] {

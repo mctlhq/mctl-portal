@@ -57,4 +57,20 @@ export interface PortalWorkItem {
   evidence: Observed<unknown[]>;
   surfaces: Observed<unknown[]>;
   links: { label: string; url: string }[];
+  /**
+   * Why the Execution Canvas link is, or is not, in `links`, so the UI never
+   * reports a feature that was never turned on as a failure:
+   * - `ok`: the link is in `links`;
+   * - `not_configured`: `workItems.executionCanvasUrlTemplate` is unset;
+   * - `no_execution`: the item has no execution to link to;
+   * - `unavailable`: configured, but the latest execution was unreadable or
+   *   the built URL was refused by the link filter.
+   */
+  canvas: CanvasLinkStatus;
 }
+
+export type CanvasLinkStatus =
+  | 'ok'
+  | 'not_configured'
+  | 'no_execution'
+  | 'unavailable';
