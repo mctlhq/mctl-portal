@@ -5,7 +5,34 @@ import { v4 as uuid } from 'uuid';
 import { LoggerService } from '@backstage/backend-plugin-api';
 import { KeyStore } from './keyStore';
 import { OidcStore } from './oidcStore';
-import { parseCookie } from './sessionAuth';
+import { OIDC_SESSION_COOKIE, parseCookie } from './sessionAuth';
+
+/** Session cookie of a forward-auth protected host (host-only on that host). */
+export const FORWARD_AUTH_SESSION_COOKIE = '__Host-mctl_forward_auth';
+
+/** Short-lived cookie binding a forward-auth sign-in to the browser that started it. */
+export const FORWARD_AUTH_STATE_COOKIE = '__Host-mctl_forward_auth_state';
+
+/** Path on a protected host that receives the one-time code. */
+export const FORWARD_AUTH_CALLBACK_PATH = '/.mctl-auth/callback';
+
+/**
+ * Prefix of the cookie binding a GitHub sign-in to the browser that started
+ * it. The full name carries the OAuth state, so sign-ins started in parallel
+ * tabs do not overwrite each other.
+ */
+export const LOGIN_STATE_COOKIE_PREFIX = '__Host-oidc_login_';
+
+const FORWARD_AUTH_CODE_TTL_MS = 60 * 1000;
+const FORWARD_AUTH_STATE_MAX_AGE_SECONDS = 10 * 60;
+const LOGIN_STATE_MAX_AGE_SECONDS = 10 * 60;
+const STATE_RE = /^[A-Za-z0-9-]{16,128}$/;
+
+// Tenant and service names as they appear in hostnames: one lowercase DNS
+// label each (the vault-secrets SLUG_RE shape, minus a trailing hyphen), so
+// <tenant>-<service>.<base domain> is always a plain hostname. Exported for
+// unit testing.
+export const NAME_RE = /^[a-z0-9]([a-z0-9-]{0,29}[a-z0-9])?$/;
 
 /** Registered OIDC client (ArgoCD Dex, Argo Workflows, etc.) */
 export interface OidcClient {
@@ -19,6 +46,17 @@ export interface MembershipLookup {
   getUserGroups(userId: string): Promise<string[]>;
   userExists(userId: string): Promise<boolean>;
   getUserRole(userId: string, tenantName: string): Promise<string | null>;
+  tenantExists(tenantName: string): Promise<boolean>;
+}
+
+/**
+ * A host protected by /forward-auth in addition to the canonical
+ * <tenant>-<service>.<base domain> host, e.g. a friendly alias.
+ */
+export interface ForwardAuthHost {
+  tenant: string;
+  service: string;
+  host: string;
 }
 
 export interface RouterOptions {
@@ -30,11 +68,13 @@ export interface RouterOptions {
   githubClientId: string;
   githubClientSecret: string;
   store: OidcStore;
+  forwardAuthHosts?: ForwardAuthHost[];
 }
 
 export function createRouter(options: RouterOptions): Router {
   const { logger, membership, keyStore, issuer, clients, githubClientId, githubClientSecret, store } = options;
   const router = Router_();
+  const forwardAuthHosts = validateForwardAuthHosts(options.forwardAuthHosts ?? [], issuer);
 
   // Body parsers for token (urlencoded) endpoint
   router.use(express.json());
@@ -55,8 +95,15 @@ export function createRouter(options: RouterOptions): Router {
     return clients.find(c => c.clientId === clientId);
   }
 
-  function buildGitHubAuthRedirect(returnTo: string): Promise<string> {
+  // Also binds the GitHub state to this browser with a host-only cookie, so
+  // a callback URL started by someone else cannot sign this browser in to
+  // their account (login CSRF).
+  function buildGitHubAuthRedirect(res: Response, returnTo: string): Promise<string> {
     const githubState = uuid();
+    appendSetCookie(
+      res,
+      buildHostOnlyCookie(`${LOGIN_STATE_COOKIE_PREFIX}${githubState}`, '1', LOGIN_STATE_MAX_AGE_SECONDS),
+    );
     return store
       .savePendingAuth(githubState, returnTo, Date.now() + 10 * 60 * 1000)
       .then(() => {
@@ -69,44 +116,10 @@ export function createRouter(options: RouterOptions): Router {
       });
   }
 
-  function deriveCookieDomain(urlValue: string): string | null {
-    try {
-      const host = new URL(urlValue).hostname.toLowerCase();
-      if (host === 'localhost' || /^\d+\.\d+\.\d+\.\d+$/.test(host)) {
-        return null;
-      }
-      if (host.endsWith('.mctl.ai')) {
-        return '.mctl.ai';
-      }
-      if (host.endsWith('.mctl.me')) {
-        return '.mctl.me';
-      }
-      return null;
-    } catch {
-      return null;
-    }
-  }
-
-  function buildSessionCookie(sessionId: string, returnTo: string): string {
-    const domain = deriveCookieDomain(returnTo);
-    const parts = [
-      `oidc_session=${sessionId}`,
-      'Path=/',
-      'HttpOnly',
-      'Secure',
-      domain ? 'SameSite=None' : 'SameSite=Lax',
-      'Max-Age=28800',
-    ];
-    if (domain) {
-      parts.push(`Domain=${domain}`);
-    }
-    return parts.join('; ');
-  }
-
   function readSessionCookie(
     req: Request,
   ): Promise<{ sessionId: string; userId: string; expiresAt: number } | undefined> {
-    const sessionId = parseCookie(req.headers.cookie ?? '', 'oidc_session');
+    const sessionId = parseCookie(req.headers.cookie ?? '', OIDC_SESSION_COOKIE);
     if (!sessionId) {
       return Promise.resolve(undefined);
     }
@@ -129,23 +142,90 @@ export function createRouter(options: RouterOptions): Router {
     return null;
   }
 
-  function buildTenantServiceUrl(tenant: string, service: string): string | null {
-    if (!tenant || !service) {
+  function buildTenantServiceHost(tenant: string, service: string): string | null {
+    if (!NAME_RE.test(tenant) || !NAME_RE.test(service)) {
       return null;
     }
     const baseDomain = deriveTenantBaseDomain();
     if (!baseDomain) {
       return null;
     }
-    return `https://${tenant}-${service}.${baseDomain}/`;
+    return `${tenant}-${service}.${baseDomain}`.toLowerCase();
   }
 
-  function buildBrowserLoginUrl(returnTo: string): string {
-    const url = new URL(issuer);
-    url.pathname = `${url.pathname.replace(/\/$/, '')}/login`;
-    url.search = '';
-    url.searchParams.set('returnTo', returnTo);
-    return url.toString();
+  function buildTenantServiceUrl(tenant: string, service: string): string | null {
+    const host = buildTenantServiceHost(tenant, service);
+    return host ? `https://${host}/` : null;
+  }
+
+  // A forward-auth host is registered for exactly one tenant and service:
+  // an alias configured under oidcProvider.forwardAuth.hosts belongs only to
+  // its configured pair, and any other host only to the pair whose
+  // canonical <tenant>-<service> join it is. Returns the parsed hostname, or
+  // null when rawHost is not a plain hostname registered to the pair. Codes
+  // and sessions are only ever issued for and bound to that parsed host, so
+  // a browser can never be sent to, or a credential bound to, a host the
+  // tenant/service pair does not own.
+  function resolveForwardAuthHost(tenant: string, service: string, rawHost: string): string | null {
+    const host = parseHostname(rawHost);
+    if (!host) {
+      return null;
+    }
+    const alias = forwardAuthHosts.find(h => h.host === host);
+    if (alias) {
+      return alias.tenant === tenant && alias.service === service ? host : null;
+    }
+    return host === buildTenantServiceHost(tenant, service) ? host : null;
+  }
+
+  // <tenant>-<service> joins are ambiguous: tenant "a" + service "b-c" and
+  // tenant "a-b" + service "c" share a-b-c.<base domain>. Before a code is
+  // sent to a canonical host, make sure no other existing tenant could be
+  // the owner of that hostname.
+  async function isAmbiguousCanonicalHost(tenant: string, service: string, host: string): Promise<boolean> {
+    if (forwardAuthHosts.some(h => h.host === host)) {
+      return false;
+    }
+    const label = `${tenant}-${service}`;
+    for (let i = label.indexOf('-'); i !== -1; i = label.indexOf('-', i + 1)) {
+      const otherTenant = label.slice(0, i);
+      const otherService = label.slice(i + 1);
+      if (otherTenant === tenant || !NAME_RE.test(otherTenant) || !NAME_RE.test(otherService)) {
+        continue;
+      }
+      if (await membership.tenantExists(otherTenant)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  function readForwardAuthSession(
+    req: Request,
+    binding: { tenant: string; service: string; host: string },
+  ): Promise<{ userId: string } | undefined> {
+    const sessionId = parseCookie(req.headers.cookie ?? '', FORWARD_AUTH_SESSION_COOKIE);
+    if (!sessionId) {
+      return Promise.resolve(undefined);
+    }
+    return store.getForwardAuthSession(sessionId).then(async session => {
+      if (
+        !session ||
+        session.expiresAt <= Date.now() ||
+        session.tenant !== binding.tenant ||
+        session.service !== binding.service ||
+        session.host !== binding.host
+      ) {
+        return undefined;
+      }
+      // A host session lives only as long as the portal session it was
+      // derived from: deleting that row revokes every host session too.
+      const portal = await store.getSession(session.portalSessionId);
+      if (!portal || portal.expiresAt <= Date.now() || portal.userId !== session.userId) {
+        return undefined;
+      }
+      return { userId: session.userId };
+    });
   }
 
   function summarizeUrlHost(urlValue: string): string {
@@ -223,10 +303,15 @@ export function createRouter(options: RouterOptions): Router {
       return;
     }
 
-    // Check session cookie
+    // Check session cookie. Lax is no CSRF boundary between *.mctl.ai
+    // hosts, so the cookie only mints a code for a top-level navigation.
     const session = await readSessionCookie(req);
 
     if (session && session.expiresAt > Date.now()) {
+      if (!isNavigationRequest(req)) {
+        res.status(403).json({ error: 'access_denied', error_description: 'Navigation required' });
+        return;
+      }
       // User already authenticated — issue authorization code immediately
       const code = uuid();
       await store.saveCode(code, {
@@ -245,7 +330,7 @@ export function createRouter(options: RouterOptions): Router {
 
     // No session — start GitHub OAuth flow.
     // Store the original /authorize URL so we can return to it after GitHub callback.
-    res.redirect(await buildGitHubAuthRedirect(req.originalUrl));
+    res.redirect(await buildGitHubAuthRedirect(res, req.originalUrl));
   });
 
   // ── Browser Login Helper ───────────────────────────────────────────
@@ -270,13 +355,15 @@ export function createRouter(options: RouterOptions): Router {
     if (returnTo !== rawReturnTo) {
       logger.warn(`[OIDC] /login rejected disallowed returnTo host=${summarizeUrlHost(rawReturnTo)}`);
     }
+    // The portal session cookie is host-only: it is never re-issued here for
+    // a returnTo on another host. A forward-auth protected returnTo gets its
+    // own host-bound session through /forward-auth/authorize instead.
     const session = await readSessionCookie(req);
     if (session && session.expiresAt > Date.now()) {
-      res.setHeader('Set-Cookie', buildSessionCookie(session.sessionId, returnTo));
       res.redirect(returnTo);
       return;
     }
-    res.redirect(await buildGitHubAuthRedirect(returnTo));
+    res.redirect(await buildGitHubAuthRedirect(res, returnTo));
   });
 
   // ── Browser Tenant Login Helper ───────────────────────────────────
@@ -293,6 +380,10 @@ export function createRouter(options: RouterOptions): Router {
       res.status(400).send('Missing tenant or service');
       return;
     }
+    if (!NAME_RE.test(tenant) || !NAME_RE.test(service)) {
+      res.status(400).send('Invalid tenant or service');
+      return;
+    }
 
     const tenantUrl = buildTenantServiceUrl(tenant, service);
     if (!tenantUrl) {
@@ -307,12 +398,11 @@ export function createRouter(options: RouterOptions): Router {
         res.status(403).send('Access denied');
         return;
       }
-      res.setHeader('Set-Cookie', buildSessionCookie(session.sessionId, tenantUrl));
       res.redirect(tenantUrl);
       return;
     }
 
-    res.redirect(await buildGitHubAuthRedirect(tenantUrl));
+    res.redirect(await buildGitHubAuthRedirect(res, tenantUrl));
   });
 
   // ── OpenAI Codex OAuth Callback ───────────────────────────────────
@@ -380,6 +470,12 @@ export function createRouter(options: RouterOptions): Router {
 
     if (!code || !state) {
       res.status(400).send('Missing code or state');
+      return;
+    }
+
+    const loginStateCookie = `${LOGIN_STATE_COOKIE_PREFIX}${state}`;
+    if (!STATE_RE.test(state) || parseCookie(req.headers.cookie ?? '', loginStateCookie) !== '1') {
+      res.status(400).send('This sign-in was not started in this browser. Please try again.');
       return;
     }
 
@@ -451,8 +547,12 @@ export function createRouter(options: RouterOptions): Router {
     logger.info(`[OIDC] GitHub OAuth login: ${githubLogin}`);
 
     // Set session cookie and redirect back to original /authorize URL
-    // /authorize will now see the session and issue the auth code to Dex
-    res.setHeader('Set-Cookie', buildSessionCookie(sessionId, pending.returnTo));
+    // /authorize will now see the session and issue the auth code to Dex.
+    // The cookie is host-only on the portal whatever returnTo points at.
+    res.setHeader('Set-Cookie', [
+      buildHostOnlyCookie(OIDC_SESSION_COOKIE, sessionId, 28800),
+      buildHostOnlyCookie(loginStateCookie, '', 0),
+    ]);
     res.redirect(pending.returnTo);
   });
 
@@ -560,30 +660,86 @@ export function createRouter(options: RouterOptions): Router {
   // ── Traefik ForwardAuth ────────────────────────────────────────────
   // GET /forward-auth?tenant=<tenant>&service=<service>
   //
-  // Validates the shared OIDC session cookie and returns trusted identity
-  // headers that upstream services can consume in trusted-proxy mode.
+  // Called by Traefik for every request to a protected host, with the
+  // browser's Cookie header and X-Forwarded-Host / X-Forwarded-Uri describing
+  // that request. The portal session cookie is host-only and never reaches a
+  // protected host; each protected host has its own session cookie instead,
+  // bound to that exact tenant, service and host, and established by a
+  // one-time code:
+  //
+  //   1. no valid host session -> 302 to /forward-auth/authorize on the
+  //      portal, with a state cookie set on the protected host;
+  //   2. the portal (with its own session) redirects back to
+  //      https://<host>/.mctl-auth/callback?code=...&state=...;
+  //   3. that request is answered here as well: the code is redeemed and the
+  //      host session cookie set. It never reaches the upstream service.
+  //
+  // The tenant and service come from the Middleware address, not from the
+  // browser, and are what every code and session is bound to. Traefik must
+  // call this endpoint directly (in-cluster service address) so that
+  // X-Forwarded-Host and X-Forwarded-Uri are the ones it set.
   router.get('/forward-auth', async (req: Request, res: Response) => {
     const tenant = typeof req.query.tenant === 'string' ? req.query.tenant.trim().toLowerCase() : '';
-    const service = typeof req.query.service === 'string' ? req.query.service.trim() : '';
+    const service =
+      (typeof req.query.service === 'string' ? req.query.service.trim().toLowerCase() : '') || 'openclaw';
     if (!tenant) {
       res.status(400).send('Missing tenant');
       return;
     }
+    if (!NAME_RE.test(tenant) || !NAME_RE.test(service)) {
+      res.status(400).send('Invalid tenant or service');
+      return;
+    }
 
-    const session = await readSessionCookie(req);
-    if (!session || session.expiresAt <= Date.now()) {
-      const tenantUrl = buildTenantServiceUrl(tenant, service || 'openclaw');
-      if (!tenantUrl) {
-        res.status(400).send('Cannot determine tenant URL');
+    const forwardedHost = readForwardedHost(req);
+    const host = resolveForwardAuthHost(tenant, service, forwardedHost);
+    if (!host) {
+      logger.warn(
+        `[OIDC] ForwardAuth refused unregistered host=${forwardedHost || 'missing'} tenant=${tenant} service=${service}`,
+      );
+      res.status(403).send('Access denied');
+      return;
+    }
+    const binding = { tenant, service, host };
+    const forwardedUri = readForwardedUri(req);
+
+    if (forwardedUri.pathname === FORWARD_AUTH_CALLBACK_PATH) {
+      await completeForwardAuthSignIn(req, res, binding, forwardedUri);
+      return;
+    }
+
+    const session = await readForwardAuthSession(req, binding);
+    if (!session) {
+      // Only a top-level navigation starts sign-in. XHR, WebSocket and
+      // asset requests from another open tab get a plain 401 and leave the
+      // state cookie of an in-flight sign-in alone.
+      if (!isNavigationRequest(req)) {
+        res.status(401).send('Authentication required');
         return;
       }
-      res.redirect(buildBrowserLoginUrl(tenantUrl));
+      // Reuse a state cookie this browser still holds, so two sign-ins
+      // started from parallel tabs can both complete.
+      const existingState = parseCookie(req.headers.cookie ?? '', FORWARD_AUTH_STATE_COOKIE) ?? '';
+      const state = STATE_RE.test(existingState) ? existingState : uuid();
+      const authorizeUrl = new URL(`${issuer}/forward-auth/authorize`);
+      authorizeUrl.searchParams.set('tenant', tenant);
+      authorizeUrl.searchParams.set('service', service);
+      authorizeUrl.searchParams.set('host', host);
+      authorizeUrl.searchParams.set('state', state);
+      authorizeUrl.searchParams.set('returnPath', sanitizeReturnPath(forwardedUri.pathname + forwardedUri.search));
+      if (state !== existingState) {
+        res.setHeader(
+          'Set-Cookie',
+          buildHostOnlyCookie(FORWARD_AUTH_STATE_COOKIE, state, FORWARD_AUTH_STATE_MAX_AGE_SECONDS),
+        );
+      }
+      res.redirect(authorizeUrl.toString());
       return;
     }
 
     const role = await membership.getUserRole(session.userId, tenant);
     if (!role) {
-      logger.warn(`[OIDC] ForwardAuth denied: user=${session.userId} tenant=${tenant} service=${service || 'unknown'}`);
+      logger.warn(`[OIDC] ForwardAuth denied: user=${session.userId} tenant=${tenant} service=${service}`);
       res.status(403).send('Access denied');
       return;
     }
@@ -592,6 +748,134 @@ export function createRouter(options: RouterOptions): Router {
     res.setHeader('X-Mctl-Team-Role', role);
     res.setHeader('X-Auth-Request-User', session.userId);
     res.status(200).send('ok');
+  });
+
+  async function completeForwardAuthSignIn(
+    req: Request,
+    res: Response,
+    binding: { tenant: string; service: string; host: string },
+    forwardedUri: URL,
+  ): Promise<void> {
+    const code = forwardedUri.searchParams.get('code') ?? '';
+    const state = forwardedUri.searchParams.get('state') ?? '';
+    const stateCookie = parseCookie(req.headers.cookie ?? '', FORWARD_AUTH_STATE_COOKIE) ?? '';
+    // The state cookie was set on this host when the flow started, so a code
+    // obtained by someone else cannot be planted in this browser.
+    if (!code || !state || state !== stateCookie) {
+      res.status(400).send('Invalid sign-in callback');
+      return;
+    }
+    const issued = await store.consumeForwardAuthCode(code);
+    const now = Date.now();
+    if (
+      !issued ||
+      issued.expiresAt <= now ||
+      issued.sessionExpiresAt <= now ||
+      issued.state !== state ||
+      issued.tenant !== binding.tenant ||
+      issued.service !== binding.service ||
+      issued.host !== binding.host
+    ) {
+      logger.warn(
+        `[OIDC] ForwardAuth callback rejected host=${binding.host} tenant=${binding.tenant} service=${binding.service}`,
+      );
+      res.status(400).send('Invalid or expired sign-in code. Please try again.');
+      return;
+    }
+
+    // The host session never outlives the portal session it came from.
+    const sessionId = uuid();
+    await store.saveForwardAuthSession(sessionId, {
+      userId: issued.userId,
+      portalSessionId: issued.portalSessionId,
+      tenant: binding.tenant,
+      service: binding.service,
+      host: binding.host,
+      expiresAt: issued.sessionExpiresAt,
+    });
+    logger.info(
+      `[OIDC] ForwardAuth session for ${issued.userId} host=${binding.host} tenant=${binding.tenant} service=${binding.service}`,
+    );
+
+    // The state cookie is left to expire on its own: tabs that started
+    // sign-in in parallel share it, and clearing it here would fail the
+    // callback of every tab but the first.
+    res.setHeader(
+      'Set-Cookie',
+      buildHostOnlyCookie(
+        FORWARD_AUTH_SESSION_COOKIE,
+        sessionId,
+        Math.floor((issued.sessionExpiresAt - now) / 1000),
+      ),
+    );
+    // Absolute: Traefik resolves a relative Location against this
+    // endpoint's own address, not against the protected host.
+    res.redirect(`https://${binding.host}${sanitizeReturnPath(issued.returnPath)}`);
+  }
+
+  // ── Forward-auth Authorize ─────────────────────────────────────────
+  // GET /forward-auth/authorize?tenant=&service=&host=&state=&returnPath=
+  //
+  // Runs on the portal host with the portal session. Issues a short-lived,
+  // single-use code bound to tenant, service, host and state, and sends it
+  // to the protected host's callback path. Only registered hosts are
+  // accepted, so this cannot be used to send a code anywhere else.
+  router.get('/forward-auth/authorize', async (req: Request, res: Response) => {
+    const param = (name: string) => (typeof req.query[name] === 'string' ? (req.query[name] as string).trim() : '');
+    const tenant = param('tenant').toLowerCase();
+    const service = param('service').toLowerCase();
+    const state = param('state');
+    const returnPath = sanitizeReturnPath(param('returnPath'));
+
+    const host = resolveForwardAuthHost(tenant, service, param('host'));
+    if (!host || (await isAmbiguousCanonicalHost(tenant, service, host))) {
+      logger.warn(
+        `[OIDC] ForwardAuth authorize refused host=${summarizeUrlHost(`https://${param('host')}`)} tenant=${tenant.slice(0, 64)} service=${service.slice(0, 64)}`,
+      );
+      res.status(400).send('Unknown protected host');
+      return;
+    }
+    if (!STATE_RE.test(state)) {
+      res.status(400).send('Missing or invalid state');
+      return;
+    }
+
+    const session = await readSessionCookie(req);
+    if (!session || session.expiresAt <= Date.now()) {
+      res.redirect(await buildGitHubAuthRedirect(res, req.originalUrl));
+      return;
+    }
+
+    // Lax is no CSRF boundary between *.mctl.ai hosts: only a top-level
+    // navigation may mint a code with the portal cookie.
+    if (!isNavigationRequest(req)) {
+      res.status(403).send('Navigation required');
+      return;
+    }
+
+    const role = await membership.getUserRole(session.userId, tenant);
+    if (!role) {
+      logger.warn(`[OIDC] ForwardAuth authorize denied: user=${session.userId} tenant=${tenant} service=${service}`);
+      res.status(403).send('Access denied');
+      return;
+    }
+
+    const code = uuid();
+    await store.saveForwardAuthCode(code, {
+      userId: session.userId,
+      portalSessionId: session.sessionId,
+      tenant,
+      service,
+      host,
+      state,
+      returnPath,
+      sessionExpiresAt: session.expiresAt,
+      expiresAt: Date.now() + FORWARD_AUTH_CODE_TTL_MS,
+    });
+    const callbackUrl = new URL(`https://${host}${FORWARD_AUTH_CALLBACK_PATH}`);
+    callbackUrl.searchParams.set('code', code);
+    callbackUrl.searchParams.set('state', state);
+    res.redirect(callbackUrl.toString());
   });
 
   // ── Health ──────────────────────────────────────────────────────────
@@ -656,6 +940,119 @@ export function isAllowedReturnTo(returnTo: string): boolean {
 // Exported for unit testing.
 export function sanitizeReturnTo(returnTo: string): string {
   return isAllowedReturnTo(returnTo) ? returnTo : DEFAULT_POST_LOGIN_PATH;
+}
+
+// Every cookie this provider sets is host-only: __Host- prefixed, Secure,
+// Path=/ and without a Domain attribute, so the browser returns it only to
+// the exact host that set it and no sibling *.mctl.ai host can set or
+// shadow it. Never add a Domain attribute here. Exported for unit testing.
+export function buildHostOnlyCookie(name: string, value: string, maxAgeSeconds: number): string {
+  return [
+    `${name}=${value}`,
+    'Path=/',
+    'HttpOnly',
+    'Secure',
+    'SameSite=Lax',
+    `Max-Age=${Math.max(0, maxAgeSeconds)}`,
+  ].join('; ');
+}
+
+function appendSetCookie(res: Response, cookie: string): void {
+  const existing = res.getHeader('Set-Cookie') ?? [];
+  const list = Array.isArray(existing) ? existing : [String(existing)];
+  res.setHeader('Set-Cookie', [...list, cookie]);
+}
+
+// A top-level browser navigation. Sec-Fetch-Mode is authoritative where the
+// browser sends it; without it, fall back to whether the request accepts an
+// HTML document. Exported for unit testing.
+export function isNavigationRequest(req: Request): boolean {
+  const mode = firstHeaderValue(req.headers['sec-fetch-mode']).toLowerCase();
+  if (mode) {
+    return mode === 'navigate';
+  }
+  return firstHeaderValue(req.headers.accept).toLowerCase().includes('text/html');
+}
+
+// The hostname of rawHost if, and only if, rawHost is a plain hostname:
+// no port, path, query, fragment, userinfo, backslash or encoding that URL
+// parsing would rewrite. Exported for unit testing.
+export function parseHostname(rawHost: string): string | null {
+  const raw = rawHost.trim().toLowerCase();
+  if (!raw || raw.endsWith('.')) {
+    return null;
+  }
+  try {
+    const url = new URL(`https://${raw}`);
+    // Userinfo, ports, paths and anything URL would rewrite all make
+    // url.host differ from the raw value.
+    if (url.host !== raw || url.hostname !== raw) {
+      return null;
+    }
+    return url.hostname;
+  } catch {
+    return null;
+  }
+}
+
+// Fails startup on a forward-auth alias list that is malformed or
+// ambiguous: every entry needs DNS-label tenant/service names and a plain
+// hostname under the portal's base domain (never the portal host itself),
+// and no host may be listed twice. Exported for unit testing.
+export function validateForwardAuthHosts(hosts: ForwardAuthHost[], issuer: string): ForwardAuthHost[] {
+  const issuerHost = new URL(issuer).hostname.toLowerCase();
+  const baseDomain = issuerHost.startsWith('app.') ? issuerHost.slice(4) : issuerHost;
+  const seen = new Set<string>();
+  for (const h of hosts) {
+    const label = `oidcProvider.forwardAuth.hosts entry ${JSON.stringify(h)}`;
+    if (!NAME_RE.test(h.tenant) || !NAME_RE.test(h.service)) {
+      throw new Error(`${label}: tenant and service must be lowercase DNS labels`);
+    }
+    if (parseHostname(h.host) !== h.host || !h.host.endsWith(`.${baseDomain}`) || h.host === issuerHost) {
+      throw new Error(`${label}: host must be a plain hostname under ${baseDomain}, other than ${issuerHost}`);
+    }
+    if (seen.has(h.host)) {
+      throw new Error(`${label}: host is listed more than once`);
+    }
+    seen.add(h.host);
+  }
+  return hosts;
+}
+
+function firstHeaderValue(value: string | string[] | undefined): string {
+  const first = Array.isArray(value) ? value[0] : value;
+  return (first ?? '').split(',')[0].trim();
+}
+
+// Host of the request Traefik is authorizing, as sent. Anything that is not
+// a plain registered hostname fails resolveForwardAuthHost.
+function readForwardedHost(req: Request): string {
+  return firstHeaderValue(req.headers['x-forwarded-host']);
+}
+
+function readForwardedUri(req: Request): URL {
+  const raw = firstHeaderValue(req.headers['x-forwarded-uri']) || '/';
+  try {
+    return new URL(raw.startsWith('/') ? raw : '/', 'https://forwarded.invalid');
+  } catch {
+    return new URL('/', 'https://forwarded.invalid');
+  }
+}
+
+// Post-sign-in path on a protected host: only a same-host absolute path is
+// kept (same rules as relative returnTo values), and never the callback
+// path itself. Exported for unit testing.
+export function sanitizeReturnPath(path: string): string {
+  if (
+    !path ||
+    path.length > 2048 ||
+    !path.startsWith('/') ||
+    !isAllowedReturnTo(path) ||
+    path.startsWith(FORWARD_AUTH_CALLBACK_PATH)
+  ) {
+    return DEFAULT_POST_LOGIN_PATH;
+  }
+  return path;
 }
 
 function decodeOpenAICodexReturnTo(state: string): string | null {

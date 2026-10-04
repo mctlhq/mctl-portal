@@ -31,6 +31,110 @@ describe('OidcStore.init', () => {
   });
 });
 
+describe('OidcStore legacy session invalidation', () => {
+  it('deletes sessions that were issued before host-only cookies', async () => {
+    const knex = knexLib({ client: 'better-sqlite3', connection: ':memory:', useNullAsDefault: true });
+    currentKnex = knex;
+    // The oidc_sessions shape before the host_only column existed.
+    await knex.schema.createTable('oidc_sessions', t => {
+      t.string('session_id', 128).primary().notNullable();
+      t.string('user_id', 128).notNullable();
+      t.bigInteger('expires_at').notNullable();
+    });
+    await knex('oidc_sessions').insert({ session_id: 'legacy', user_id: 'u', expires_at: Date.now() + 60_000 });
+
+    const store = makeStore(knex);
+    await store.init();
+
+    expect(await knex('oidc_sessions').where({ session_id: 'legacy' }).first()).toBeUndefined();
+    expect(await store.getSession('legacy')).toBeUndefined();
+  });
+
+  it('never returns a session row written without host_only', async () => {
+    const { store, knex } = await freshStore();
+    currentKnex = knex;
+    // A row written by a pod still running the old code during rollout.
+    await knex('oidc_sessions').insert({ session_id: 'old-pod', user_id: 'u', expires_at: Date.now() + 60_000 });
+    expect(await store.getSession('old-pod')).toBeUndefined();
+  });
+
+  it('keeps sessions across a second init', async () => {
+    const { store, knex } = await freshStore();
+    currentKnex = knex;
+    await store.saveSession('kept', 'u', 999);
+    await store.init();
+    expect(await store.getSession('kept')).toEqual({ userId: 'u', expiresAt: 999 });
+  });
+});
+
+describe('OidcStore forward-auth tables from a pre-release build', () => {
+  it('recreates tables that lack portal_session_id', async () => {
+    const knex = knexLib({ client: 'better-sqlite3', connection: ':memory:', useNullAsDefault: true });
+    currentKnex = knex;
+    for (const name of ['oidc_forward_auth_codes', 'oidc_forward_auth_sessions']) {
+      await knex.schema.createTable(name, t => {
+        t.string('id').primary();
+      });
+    }
+    const store = makeStore(knex);
+    await store.init();
+    expect(await knex.schema.hasColumn('oidc_forward_auth_codes', 'portal_session_id')).toBe(true);
+    expect(await knex.schema.hasColumn('oidc_forward_auth_sessions', 'portal_session_id')).toBe(true);
+  });
+});
+
+describe('OidcStore forward-auth codes and sessions', () => {
+  const code = {
+    userId: 'mashkovd',
+    portalSessionId: 'portal-1',
+    tenant: 'ovk',
+    service: 'openclaw',
+    host: 'ovk-openclaw.mctl.ai',
+    state: 'state-1',
+    returnPath: '/x',
+    sessionExpiresAt: 2_000,
+    expiresAt: 1_000,
+  };
+
+  it('round-trips a code exactly once', async () => {
+    const { store, knex } = await freshStore();
+    currentKnex = knex;
+    await store.saveForwardAuthCode('fc1', code);
+    expect(await store.consumeForwardAuthCode('fc1')).toEqual(code);
+    expect(await store.consumeForwardAuthCode('fc1')).toBeUndefined();
+  });
+
+  it('lets only one of several concurrent consumers have a code', async () => {
+    const { store, knex } = await freshStore();
+    currentKnex = knex;
+    await store.saveForwardAuthCode('fc2', code);
+    const results = await Promise.all([1, 2, 3, 4].map(() => store.consumeForwardAuthCode('fc2')));
+    expect(results.filter(Boolean)).toHaveLength(1);
+  });
+
+  it('round-trips a session with its binding', async () => {
+    const { store, knex } = await freshStore();
+    currentKnex = knex;
+    const session = { userId: 'u', portalSessionId: 'p', tenant: 't', service: 's', host: 't-s.mctl.ai', expiresAt: 5 };
+    await store.saveForwardAuthSession('fs1', session);
+    expect(await store.getForwardAuthSession('fs1')).toEqual(session);
+    expect(await store.getForwardAuthSession('nope')).toBeUndefined();
+  });
+
+  it('cleans up expired forward-auth rows', async () => {
+    const { store, knex } = await freshStore();
+    currentKnex = knex;
+    const past = Date.now() - 60_000;
+    await store.saveForwardAuthCode('dead-code', { ...code, expiresAt: past });
+    await store.saveForwardAuthSession('dead-session', {
+      userId: 'u', portalSessionId: 'p', tenant: 't', service: 's', host: 'h', expiresAt: past,
+    });
+    await store.cleanupExpired();
+    expect(await store.consumeForwardAuthCode('dead-code')).toBeUndefined();
+    expect(await store.getForwardAuthSession('dead-session')).toBeUndefined();
+  });
+});
+
 describe('OidcStore authorization codes', () => {
   it('round-trips a code with all fields', async () => {
     const { store, knex } = await freshStore();
