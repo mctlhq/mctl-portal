@@ -1,5 +1,6 @@
 import { DatabaseService, LoggerService } from '@backstage/backend-plugin-api';
 import { Tenant, TenantMember } from './types';
+import { isPostgresClient } from './membershipLookup';
 
 /** Schema of github-app-connect's repo_connections table on Postgres. */
 const GITHUB_APP_CONNECT_SCHEMA = 'github-app-connect';
@@ -99,7 +100,7 @@ export class TenantStore {
    */
   async delete(name: string): Promise<void> {
     const knex = await this.db.getClient();
-    if (knex.client.config.client === 'pg') {
+    if (isPostgresClient(knex)) {
       try {
         await knex('repo_connections')
           .withSchema(GITHUB_APP_CONNECT_SCHEMA)

@@ -4,6 +4,7 @@ import {
 } from '@backstage/backend-plugin-api';
 import { KubernetesUsageClient } from './k8sClient';
 import { createRouter } from './router';
+import { isPostgresClient } from '../../tenant-backend/src/membershipLookup';
 
 export const resourceUsagePlugin = createBackendPlugin({
   pluginId: 'resource-usage',
@@ -42,7 +43,7 @@ export const resourceUsagePlugin = createBackendPlugin({
         // ── HTTP router ────────────────────────────────────────────────────────
         // Tenant membership lives in tenant-backend's tenant_members table.
         const db = await database.getClient();
-        const isPostgres = db.client.config.client === 'pg';
+        const isPostgres = isPostgresClient(db);
         const router = createRouter({ logger, httpAuth, userInfo, db, isPostgres, k8sClient });
         httpRouter.use(router);
 

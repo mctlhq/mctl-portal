@@ -379,3 +379,90 @@ describe('mctl:workflow:submit build repository', () => {
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 });
+
+describe('mctl:workflow:submit image name', () => {
+  // deploy-service builds into and runs ghcr.io/mctlhq/<component_name>, so
+  // a team may not take another team's component name, nor a new mctl- name.
+  const COMPONENTS = [
+    { metadata: { name: 'shop', labels: { team: 'karabu' } }, spec: { owner: 'group:default/karabu' } },
+    { metadata: { name: 'cart' }, spec: { owner: 'group:default/karabu' } },
+    { metadata: { name: 'mctl-telegram', labels: { team: 'labs' } }, spec: { owner: 'labs' } },
+  ];
+  const getEntities = jest.fn();
+  const auth = { getOwnServiceCredentials: jest.fn(async () => ({ principal: { type: 'service' } })) };
+
+  function actionWith(withCatalog = true) {
+    return createSubmitWorkflowAction({
+      config: new ConfigReader({
+        argoWorkflows: { baseUrl: 'https://workflows.example.invalid', namespace: 'argo-workflows' },
+      }),
+      database: { getClient: async () => fakeDb(MEMBERSHIPS) } as any,
+      ...(withCatalog ? { catalog: { getEntities } as any, auth: auth as any } : {}),
+    });
+  }
+
+  function onboard(user: string, component: string, act = actionWith()) {
+    const ctx: any = {
+      input: {
+        templateName: 'deploy-service',
+        waitForCompletion: false,
+        namespace: 'labs',
+        parameters: { action: 'onboard', team_name: 'labs', component_name: component },
+      },
+      user: { ref: user },
+      logger: { info: jest.fn(), warn: jest.fn(), error: jest.fn() },
+      output: jest.fn(),
+    };
+    return act.handler(ctx);
+  }
+
+  beforeEach(() => {
+    getEntities.mockReset();
+    getEntities.mockImplementation(async (req: any) => ({
+      items: COMPONENTS.filter(c => c.metadata.name === req.filter['metadata.name']),
+    }));
+  });
+
+  it.each([
+    ['shop', /belongs to team "karabu"/],
+    ['cart', /belongs to team "karabu"/], // owner taken from spec.owner
+    ['mctl-api', /reserved for the platform/],
+  ])('refuses %s to another team', async (component, message) => {
+    await expect(onboard('user:default/carol', component)).rejects.toThrow(message);
+    expect(submitWorkflow).not.toHaveBeenCalled();
+  });
+
+  it("allows a team's own mctl- component and a new name", async () => {
+    await onboard('user:default/carol', 'mctl-telegram');
+    await onboard('user:default/carol', 'brand-new');
+    expect(submitWorkflow).toHaveBeenCalledTimes(2);
+  });
+
+  it('reads the catalog with the plugin credentials, not the user', async () => {
+    await onboard('user:default/carol', 'brand-new');
+    expect(auth.getOwnServiceCredentials).toHaveBeenCalled();
+    expect(getEntities).toHaveBeenCalledWith(
+      { filter: { kind: 'Component', 'metadata.name': 'brand-new' } },
+      { credentials: { principal: { type: 'service' } } },
+    );
+  });
+
+  it('refuses when the catalog lookup fails', async () => {
+    getEntities.mockRejectedValue(new Error('catalog unavailable'));
+    await expect(onboard('user:default/carol', 'brand-new')).rejects.toThrow(/catalog unavailable/);
+    expect(submitWorkflow).not.toHaveBeenCalled();
+  });
+
+  it('refuses when the catalog is not wired in', async () => {
+    await expect(onboard('user:default/carol', 'brand-new', actionWith(false))).rejects.toThrow(
+      /catalog is not available/,
+    );
+    expect(submitWorkflow).not.toHaveBeenCalled();
+  });
+
+  it('lets a platform admin use any name', async () => {
+    await onboard('user:default/root', 'mctl-api');
+    expect(submitWorkflow).toHaveBeenCalledTimes(1);
+    expect(getEntities).not.toHaveBeenCalled();
+  });
+});

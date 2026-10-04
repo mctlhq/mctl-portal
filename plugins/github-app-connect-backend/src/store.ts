@@ -1,4 +1,5 @@
 import { Knex } from 'knex';
+import { isPostgresClient } from '../../tenant-backend/src/membershipLookup';
 
 export interface RepoConnection {
   team_id: string;
@@ -89,7 +90,7 @@ export class RepoConnectionStore {
    */
   async migrateLegacyRows(): Promise<number> {
     const cutoff = await this.legacyCutoff();
-    const isPostgres = this.db.client.config.client === 'pg';
+    const isPostgres = isPostgresClient(this.db);
     const query = this.db('repo_connections')
       .whereNot('created_by', 'like', '%:%')
       // An ISO string compares correctly both as a Postgres timestamp and as

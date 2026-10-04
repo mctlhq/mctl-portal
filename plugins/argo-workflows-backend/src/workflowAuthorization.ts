@@ -36,6 +36,19 @@ const BUILD_REPO_PARAMETERS = ['dockerfile_repo'] as const;
 const REPO_FULL_NAME_RE = /^(?!\.+\/)[\w.-]+\/(?![\w.-]*\/)(?!\.+$)[\w.-]+$/;
 
 /**
+ * Team templates whose component_name is an image name: deploy-service
+ * builds into and runs ghcr.io/mctlhq/<component_name>.
+ */
+const IMAGE_TEMPLATES = new Set(['deploy-service']);
+
+// Image names the platform keeps for itself; a team may use one only for a
+// component the catalog already shows as its own.
+const RESERVED_IMAGE_PREFIX = 'mctl-';
+
+/** Teams that own catalog Components with this name (labels.team, else spec.owner). */
+export type ComponentOwnersLookup = (name: string) => Promise<string[]>;
+
+/**
  * GitHub's own answer, unauthenticated: public only on 200 with
  * `private: false`. Anything else (404, rate limit, error, malformed body)
  * is not public.
@@ -76,7 +89,9 @@ function initiatingUserId(userRef: string | undefined): string | undefined {
  * Everyone else may only run one of TEAM_WORKFLOW_TEMPLATES, as a
  * ClusterWorkflowTemplate, in the namespace of a team they are a developer
  * or owner of, and every team_name / tenant_name parameter must name that
- * same team. The default (control-plane) namespace is admin-only. A
+ * same team. The default (control-plane) namespace is admin-only. For an
+ * image-producing template, component_name may not name another team's
+ * component, nor a new `mctl-` image. A
  * repository to build (dockerfile_repo) must be connected to that team, or
  * be public.
  *
@@ -91,8 +106,9 @@ export async function authorizeWorkflowSubmission(options: {
   namespace: string;
   defaultNamespace: string;
   parameters: Record<string, string | null | undefined> | undefined;
+  componentOwners?: ComponentOwnersLookup;
 }): Promise<void> {
-  const { db, isPostgres, userRef, templateName, clusterScope, namespace, defaultNamespace, parameters } =
+  const { db, isPostgres, userRef, templateName, clusterScope, namespace, defaultNamespace, parameters, componentOwners } =
     options;
 
   const userId = initiatingUserId(userRef);
@@ -129,6 +145,22 @@ export async function authorizeWorkflowSubmission(options: {
     throw new Error(
       `Access denied: "${userId}" is not a developer or owner of team "${namespace}" and is not a platform admin.`,
     );
+  }
+
+  const component = String(parameters?.component_name ?? '').trim();
+  if (IMAGE_TEMPLATES.has(templateName) && component) {
+    if (!componentOwners) {
+      throw denied('the catalog is not available to check the image name');
+    }
+    // A lookup error propagates: an unreadable catalog is not "no owner".
+    const owners = await componentOwners(component);
+    const other = owners.find(o => o !== namespace);
+    if (other) {
+      throw denied(`image name "${component}" belongs to team "${other}"`);
+    }
+    if (component.startsWith(RESERVED_IMAGE_PREFIX) && !owners.includes(namespace)) {
+      throw denied(`image names starting with "${RESERVED_IMAGE_PREFIX}" are reserved for the platform`);
+    }
   }
 
   for (const key of BUILD_REPO_PARAMETERS) {

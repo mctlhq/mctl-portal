@@ -1,5 +1,6 @@
 import { createBackendModule, coreServices } from '@backstage/backend-plugin-api';
 import { scaffolderActionsExtensionPoint } from '@backstage/plugin-scaffolder-node';
+import { catalogServiceRef } from '@backstage/plugin-catalog-node';
 import { createSubmitWorkflowAction } from './scaffolderActions';
 import { createRequireTeamAccessAction } from './teamAccessAction';
 
@@ -22,10 +23,12 @@ export const scaffolderModuleArgoWorkflows = createBackendModule({
         scaffolder: scaffolderActionsExtensionPoint,
         config: coreServices.rootConfig,
         database: coreServices.database,
+        catalog: catalogServiceRef,
+        auth: coreServices.auth,
       },
-      async init({ scaffolder, config, database }) {
+      async init({ scaffolder, config, database, catalog, auth }) {
         scaffolder.addActions(
-          createSubmitWorkflowAction({ config, database }),
+          createSubmitWorkflowAction({ config, database, catalog, auth }),
           createRequireTeamAccessAction({ database }),
         );
       },

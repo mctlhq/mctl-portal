@@ -1,8 +1,10 @@
 import { createTemplateAction } from '@backstage/plugin-scaffolder-node';
-import { DatabaseService } from '@backstage/backend-plugin-api';
+import { AuthService, DatabaseService } from '@backstage/backend-plugin-api';
 import { Config } from '@backstage/config';
 import { ArgoWorkflowsClient, WorkflowStatus } from './argoClient';
-import { authorizeWorkflowSubmission } from './workflowAuthorization';
+import { authorizeWorkflowSubmission, ComponentOwnersLookup } from './workflowAuthorization';
+import type { CatalogService } from '@backstage/plugin-catalog-node';
+import { parseEntityRef } from '@backstage/catalog-model';
 import { isPostgresClient } from '../../tenant-backend/src/membershipLookup';
 
 function sleep(ms: number) {
@@ -53,8 +55,33 @@ function nodeLabel(type: string): string {
 export function createSubmitWorkflowAction(options: {
   config: Config;
   database: DatabaseService;
+  catalog?: CatalogService;
+  auth?: AuthService;
 }) {
-  const { config, database } = options;
+  const { config, database, catalog, auth } = options;
+
+  // Owners of catalog Components with this name, read with the plugin's own
+  // credentials so every team's components are visible.
+  const componentOwners: ComponentOwnersLookup | undefined =
+    catalog && auth
+      ? async name => {
+          const credentials = await auth.getOwnServiceCredentials();
+          const { items } = await catalog.getEntities(
+            { filter: { kind: 'Component', 'metadata.name': name } },
+            { credentials },
+          );
+          return items.map(e => {
+            const team = e.metadata.labels?.team;
+            if (team) return team;
+            const owner = typeof e.spec?.owner === 'string' ? e.spec.owner : '';
+            try {
+              return parseEntityRef(owner, { defaultKind: 'group', defaultNamespace: 'default' }).name;
+            } catch {
+              return `unparseable owner of ${name}`;
+            }
+          });
+        }
+      : undefined;
 
   return createTemplateAction({
     id: 'mctl:workflow:submit',
@@ -133,6 +160,7 @@ export function createSubmitWorkflowAction(options: {
         namespace,
         defaultNamespace,
         parameters,
+        componentOwners,
       });
 
       const client = new ArgoWorkflowsClient({ baseUrl, token });
