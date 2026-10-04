@@ -7,7 +7,7 @@
  */
 
 import { createBackend } from '@backstage/backend-defaults';
-import { githubAuthModuleWithFallback } from './githubAuthModule';
+import { githubAuthModule } from './githubAuthModule';
 import {
   authModuleGithubInstallRedirect,
   scaffolderFiltersModule,
@@ -30,8 +30,8 @@ backend.add(import('@backstage/plugin-techdocs-backend'));
 
 // auth plugin
 backend.add(import('@backstage/plugin-auth-backend'));
-// Custom GitHub auth with fallback — allows login even before catalog entity exists
-backend.add(githubAuthModuleWithFallback);
+// GitHub sign-in, only for catalog Users (tenant members)
+backend.add(githubAuthModule);
 
 // catalog plugin
 backend.add(import('@backstage/plugin-catalog-backend'));

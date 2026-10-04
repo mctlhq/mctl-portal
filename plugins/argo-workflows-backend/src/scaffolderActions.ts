@@ -1,6 +1,8 @@
 import { createTemplateAction } from '@backstage/plugin-scaffolder-node';
+import { DatabaseService } from '@backstage/backend-plugin-api';
 import { Config } from '@backstage/config';
 import { ArgoWorkflowsClient, WorkflowStatus } from './argoClient';
+import { authorizeWorkflowSubmission } from './workflowAuthorization';
 
 function sleep(ms: number) {
   return new Promise(r => setTimeout(r, ms));
@@ -42,9 +44,15 @@ function nodeLabel(type: string): string {
  *     baseUrl: https://workflows.mctl.me
  *     token: <optional bearer token>
  *     namespace: argo-workflows
+ *
+ * The initiating user must be a platform admin or a developer/owner of
+ * every team the submission targets (see authorizeWorkflowSubmission).
  */
-export function createSubmitWorkflowAction(options: { config: Config }) {
-  const { config } = options;
+export function createSubmitWorkflowAction(options: {
+  config: Config;
+  database: DatabaseService;
+}) {
+  const { config, database } = options;
 
   return createTemplateAction({
     id: 'mctl:workflow:submit',
@@ -112,6 +120,16 @@ export function createSubmitWorkflowAction(options: { config: Config }) {
       const waitForCompletion = (ctx.input.waitForCompletion as boolean) ?? true;
       const pollInterval = ((ctx.input.pollIntervalSeconds as number) ?? 5) * 1000;
       const timeoutMs = ((ctx.input.timeoutMinutes as number) ?? 30) * 60 * 1000;
+
+      const db = await database.getClient();
+      await authorizeWorkflowSubmission({
+        db,
+        isPostgres: db.client.config.client === 'pg',
+        userRef: ctx.user?.ref,
+        namespace,
+        defaultNamespace,
+        parameters,
+      });
 
       const client = new ArgoWorkflowsClient({ baseUrl, token });
 
