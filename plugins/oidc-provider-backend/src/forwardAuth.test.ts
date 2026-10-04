@@ -19,6 +19,25 @@ import { OIDC_SESSION_COOKIE } from './sessionAuth';
 // must only ever accept its own host-bound session.
 
 const ISSUER = 'https://app.mctl.ai/api/oidc-provider';
+const DEX_CALLBACK = 'https://ops.mctl.ai/api/dex/callback';
+const DEX_AUTHORIZE = `/authorize?response_type=code&client_id=dex&redirect_uri=${encodeURIComponent(
+  DEX_CALLBACK,
+)}&state=dex-state`;
+// What vault-secrets' openclaw intake page sends to /login: an absolute
+// portal URL, which also ends in .mctl.ai.
+const VAULT_INTAKE_RETURN_TO =
+  'https://app.mctl.ai/api/vault-secrets/openclaw/intake?team=ovk&service=openclaw';
+// Every browser entry point that can lead to the portal session cookie.
+const SIGN_IN_ENTRY_POINTS: Array<[string, string]> = [
+  ['/login for a tenant returnTo (old forward-auth path)', `/login?returnTo=${encodeURIComponent('https://ovk-openclaw.mctl.ai/')}`],
+  ['/login for the vault-secrets intake returnTo', `/login?returnTo=${encodeURIComponent(VAULT_INTAKE_RETURN_TO)}`],
+  ['/tenant-login', '/tenant-login?tenant=ovk&service=openclaw'],
+  ['/authorize (Dex)', DEX_AUTHORIZE],
+  [
+    '/forward-auth/authorize',
+    '/forward-auth/authorize?tenant=ovk&service=openclaw&host=ovk-openclaw.mctl.ai&state=0123456789abcdef',
+  ],
+];
 const ROLES: Record<string, string> = {
   'mashkovd/admins': 'owner',
   'mashkovd/ovk': 'member',
@@ -49,7 +68,7 @@ beforeEach(async () => {
     },
     keyStore: {} as KeyStore,
     issuer: ISSUER,
-    clients: [],
+    clients: [{ clientId: 'dex', clientSecret: 'dex-secret', redirectUris: [DEX_CALLBACK] }],
     githubClientId: 'gh-client',
     githubClientSecret: 'gh-secret',
     store,
@@ -136,49 +155,67 @@ function expectHostOnly(setCookie: string) {
   expect(setCookie).toContain('; SameSite=Lax');
 }
 
+function mockGitHub(login = 'mashkovd') {
+  global.fetch = jest.fn(async (input: any) => {
+    const url = String(input);
+    if (url.startsWith('https://github.com/login/oauth/access_token')) {
+      return new Response(JSON.stringify({ access_token: 'gh-token' }));
+    }
+    if (url.startsWith('https://api.github.com/user')) {
+      return new Response(JSON.stringify({ login }));
+    }
+    throw new Error(`unexpected fetch ${url}`);
+  }) as any;
+}
+
 describe('portal session cookie', () => {
-  it('is host-only after GitHub sign-in even when returnTo is a tenant host', async () => {
-    const login = await get(`/login?returnTo=${encodeURIComponent('https://ovk-openclaw.mctl.ai/')}`);
-    const state = new URL(login.headers.get('location')!).searchParams.get('state')!;
+  it.each(SIGN_IN_ENTRY_POINTS)('is host-only after GitHub sign-in started by %s', async (_name, path) => {
+    const start = await get(path);
+    expect(start.status).toBe(302);
+    const github = new URL(start.headers.get('location')!);
+    expect(github.origin).toBe('https://github.com');
+    expect(start.headers.getSetCookie()).toEqual([]);
 
-    global.fetch = jest.fn(async (input: any) => {
-      const url = String(input);
-      if (url.startsWith('https://github.com/login/oauth/access_token')) {
-        return new Response(JSON.stringify({ access_token: 'gh-token' }));
-      }
-      if (url.startsWith('https://api.github.com/user')) {
-        return new Response(JSON.stringify({ login: 'mashkovd' }));
-      }
-      throw new Error(`unexpected fetch ${url}`);
-    }) as any;
-
-    const callback = await get(`/github/callback?code=gh-code&state=${state}`);
+    mockGitHub();
+    const callback = await get(`/github/callback?code=gh-code&state=${github.searchParams.get('state')}`);
     expect(callback.status).toBe(302);
-    expect(callback.headers.get('location')).toBe('https://ovk-openclaw.mctl.ai/');
     const cookies = callback.headers.getSetCookie();
     expect(cookies).toHaveLength(1);
     expect(cookies[0].startsWith(`${OIDC_SESSION_COOKIE}=`)).toBe(true);
     expectHostOnly(cookies[0]);
   });
 
-  it('is not re-issued by /login for a tenant returnTo', async () => {
-    const portal = await portalSession();
-    const res = await get(`/login?returnTo=${encodeURIComponent('https://ovk-openclaw.mctl.ai/')}`, {
-      Cookie: `${OIDC_SESSION_COOKIE}=${portal}`,
-    });
-    expect(res.status).toBe(302);
-    expect(res.headers.getSetCookie()).toEqual([]);
-  });
+  it.each(SIGN_IN_ENTRY_POINTS)(
+    'is never re-issued for an already signed-in browser by %s',
+    async (_name, path) => {
+      const portal = await portalSession();
+      const res = await get(path, { Cookie: `${OIDC_SESSION_COOKIE}=${portal}` });
+      expect(res.status).toBe(302);
+      expect(new URL(res.headers.get('location')!).origin).not.toBe('https://github.com');
+      expect(res.headers.getSetCookie()).toEqual([]);
+    },
+  );
 
-  it('is not re-issued by /tenant-login', async () => {
+  it('sends /tenant-login to the tenant host without a cookie', async () => {
     const portal = await portalSession();
     const res = await get('/tenant-login?tenant=ovk&service=openclaw', {
       Cookie: `${OIDC_SESSION_COOKIE}=${portal}`,
     });
-    expect(res.status).toBe(302);
     expect(res.headers.get('location')).toBe('https://ovk-openclaw.mctl.ai/');
-    expect(res.headers.getSetCookie()).toEqual([]);
   });
+
+  it.each(SIGN_IN_ENTRY_POINTS)(
+    'ignores a session tossed onto .mctl.ai under the legacy name at %s',
+    async (_name, path) => {
+      // A sibling host can still set a non-prefixed cookie for the parent
+      // domain; the browser refuses that for a __Host- name. Even a valid
+      // session id sent under the legacy name must count as signed out.
+      const portal = await portalSession();
+      const res = await get(path, { Cookie: `oidc_session=${portal}` });
+      expect(res.status).toBe(302);
+      expect(res.headers.get('location')).toMatch(/^https:\/\/github\.com\/login\/oauth\/authorize/);
+    },
+  );
 
   it('builds every cookie without a Domain attribute', () => {
     const cookie = buildHostOnlyCookie('__Host-x', 'v', 60);
@@ -274,6 +311,16 @@ describe('forward-auth', () => {
       cookie: sessionCookie,
     });
     expect(canonical.status).toBe(302);
+  });
+
+  it('ignores a host session tossed onto .mctl.ai under a non-prefixed name', async () => {
+    const { sessionCookie } = await signInToHost('ovk', 'openclaw', 'ovk-openclaw.mctl.ai');
+    const hostSessionId = sessionCookie.split('=')[1];
+    const res = await forwardAuth('ovk', 'openclaw', 'ovk-openclaw.mctl.ai', {
+      cookie: `mctl_forward_auth=${hostSessionId}; x${FORWARD_AUTH_SESSION_COOKIE}=${hostSessionId}`,
+    });
+    expect(res.status).toBe(302);
+    expect(res.headers.get('x-forwarded-user')).toBeNull();
   });
 
   it('does not accept a host session as the portal session', async () => {
