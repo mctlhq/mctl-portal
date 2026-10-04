@@ -1,13 +1,16 @@
 import knexFactory, { Knex } from 'knex';
-import { LEGACY_BINDING_CUTOFF, RepoConnectionStore } from './store';
+import { RepoConnectionStore } from './store';
 
 // The verified-only readers and the one-time legacy carry-over, against real
 // databases. Postgres runs when GAC_TEST_PG_URL points at a scratch server
 // (schemas are created and dropped here); SQLite always runs.
 // Use a database of its own: suites run in parallel and drop the same schemas.
 
-const BEFORE = new Date(new Date(LEGACY_BINDING_CUTOFF).getTime() - 86_400_000).toISOString();
-const AFTER = new Date(new Date(LEGACY_BINDING_CUTOFF).getTime() + 86_400_000).toISOString();
+// The first initialize() runs at FIRST_RUN and records it as the cutoff.
+const FIRST_RUN = new Date('2026-10-05T12:00:00.000Z');
+const BEFORE = new Date(FIRST_RUN.getTime() - 86_400_000).toISOString();
+const AFTER = new Date(FIRST_RUN.getTime() + 86_400_000).toISOString();
+const LATER = new Date(FIRST_RUN.getTime() + 2 * 86_400_000);
 
 type Row = { team_id: string; repo_full_name: string; installation_id: number; created_by: string; created_at: string };
 
@@ -72,8 +75,8 @@ describe.each(engines)('RepoConnectionStore on %s', (_name, open) => {
 
   beforeEach(async () => {
     ({ db, cleanup, tenantCheck } = await open());
-    store = new RepoConnectionStore(db);
-    await store.initialize(); // creates the table; nothing to migrate yet
+    store = new RepoConnectionStore(db, () => FIRST_RUN);
+    await store.initialize(); // creates the tables and records the cutoff; nothing to migrate yet
     await seed(db);
   });
 
@@ -116,5 +119,23 @@ describe.each(engines)('RepoConnectionStore on %s', (_name, open) => {
     expect(await store.find('labs', '_auto', 'victim-org/private')).toBeUndefined();
     expect(await store.findByRepo('victim-org/private')).toEqual([]);
     expect((await store.findAllInstallations()).sort()).toEqual(tenantCheck ? [1, 2, 5] : [1, 2, 3, 5]);
+  });
+
+  it('records the cutoff on the first run and never moves it', async () => {
+    expect(await store.legacyCutoff()).toBe(FIRST_RUN.toISOString());
+    // A later start (a new release, a restart) must not re-derive the cutoff:
+    // the bare row written after the first run would then be carried over.
+    const later = new RepoConnectionStore(db, () => LATER);
+    await later.initialize();
+    expect(await later.legacyCutoff()).toBe(FIRST_RUN.toISOString());
+    const row = await db('repo_connections').where({ repo_full_name: 'victim-org/private' }).first();
+    expect(row.created_by).toBe('popup-install');
+    expect(await later.findByTeamAndRepo('labs', 'victim-org/private')).toBeUndefined();
+  });
+
+  it('refuses to migrate when the recorded cutoff is unreadable', async () => {
+    await db('repo_connections_migrations').update({ cutoff: 'garbage' });
+    await expect(store.migrateLegacyRows()).rejects.toThrow(/unreadable cutoff/);
+    expect(await store.findByTeamAndRepo('labs', 'mashkovd/app')).toBeUndefined();
   });
 });

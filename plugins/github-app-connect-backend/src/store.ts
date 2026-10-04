@@ -19,17 +19,21 @@ export interface RepoConnection {
 export const VERIFIED_CREATED_BY_PREFIXES = ['popup:', 'callback:', 'sync:', 'legacy:'];
 
 /**
- * Rows created before this instant by the old, unverified flows were
- * reviewed (2026-10-04: 25 rows, all bare 'sync', no popup/callback/
- * auto-discovery rows) and are carried over as `legacy:<created_by>`.
- * Anything without a verified prefix after it is not trusted.
+ * Bookkeeping for one-time migrations of repo_connections. The legacy
+ * carry-over records its cutoff here on its first run, so the cutoff is the
+ * moment this code first started against the database, not a date fixed
+ * when it was written.
  */
-export const LEGACY_BINDING_CUTOFF = '2026-10-05T00:00:00.000Z';
+const MIGRATIONS_TABLE = 'repo_connections_migrations';
+const LEGACY_MIGRATION = 'legacy-bindings';
 
 const TENANT_SCHEMA = 'tenant-management';
 
 export class RepoConnectionStore {
-  constructor(private readonly db: Knex) {}
+  constructor(
+    private readonly db: Knex,
+    private readonly now: () => Date = () => new Date(),
+  ) {}
 
   async initialize(): Promise<void> {
     const hasTable = await this.db.schema.hasTable('repo_connections');
@@ -46,7 +50,33 @@ export class RepoConnectionStore {
         table.primary(['team_id', 'service_id', 'repo_full_name']);
       });
     }
+    if (!(await this.db.schema.hasTable(MIGRATIONS_TABLE))) {
+      await this.db.schema.createTable(MIGRATIONS_TABLE, table => {
+        table.string('name').primary();
+        table.string('cutoff').notNullable();
+      });
+    }
     await this.migrateLegacyRows();
+  }
+
+  /**
+   * The legacy cutoff: recorded by the first run, read back by every later
+   * one. Rows written by the old, unverified flows before it were reviewed
+   * (2026-10-04: 25 rows, all bare 'sync', no popup/callback/auto-discovery
+   * rows). A bare row written after it, e.g. by an old replica during the
+   * rollout, stays untrusted. Concurrent first runs agree: only one insert
+   * wins and both read the stored value.
+   */
+  async legacyCutoff(): Promise<string> {
+    await this.db(MIGRATIONS_TABLE)
+      .insert({ name: LEGACY_MIGRATION, cutoff: this.now().toISOString() })
+      .onConflict('name')
+      .ignore();
+    const row = await this.db(MIGRATIONS_TABLE).where({ name: LEGACY_MIGRATION }).first();
+    if (typeof row?.cutoff !== 'string' || Number.isNaN(Date.parse(row.cutoff))) {
+      throw new Error(`${MIGRATIONS_TABLE}: unreadable cutoff for ${LEGACY_MIGRATION}`);
+    }
+    return row.cutoff;
   }
 
   /**
@@ -54,15 +84,17 @@ export class RepoConnectionStore {
    * `legacy:<created_by>` so verified-only readers keep them. Only rows of
    * teams that still exist as tenants are carried over; a row for a deleted
    * tenant would otherwise pass its bindings to whoever registers the name
-   * next. Idempotent: marked rows no longer match.
+   * next. Idempotent: marked rows no longer match, and the cutoff does not
+   * move after the first run.
    */
   async migrateLegacyRows(): Promise<number> {
+    const cutoff = await this.legacyCutoff();
     const isPostgres = this.db.client.config.client === 'pg';
     const query = this.db('repo_connections')
       .whereNot('created_by', 'like', '%:%')
       // An ISO string compares correctly both as a Postgres timestamp and as
       // the ISO text SQLite stores.
-      .andWhere('created_at', '<', LEGACY_BINDING_CUTOFF);
+      .andWhere('created_at', '<', cutoff);
     if (isPostgres) {
       // tenant-backend owns the tenants table in its own schema.
       query.whereIn(
