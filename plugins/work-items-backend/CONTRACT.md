@@ -101,7 +101,9 @@ surface, execution_id, reason, created_at, updated_at, closed_at`. `claimed_by`,
 
 `getWorkItem` reads the item first; only that read is fatal. It then reads
 `execution-requests` and the four history lists in parallel, and each becomes
-its own `Observed` section:
+its own `Observed` section. One detail view therefore makes 6 relay calls,
+unconditional and uncached (each with its own 10 s timeout); a 429 or any other
+upstream error degrades only the affected section:
 
 - a 2xx body whose list is present and every entry is recognised -> `ok` (an
   empty list is `ok` with `[]`, never unknown);
@@ -120,8 +122,11 @@ evidence is paged; see `truncated` below. If mctl-api ever bounds one of the thr
 it must carry a completeness signal and this mapper must treat it like evidence.
 
 `GET /work-items/{id}/executions` -> `{executions: WorkItemExecution[]}`:
-`id, attempt, phase, started_at, ended_at, resumed_from_execution_id`. `engine` and
-`engine_ref` are not forwarded.
+`id, attempt, phase, started_at, ended_at, resumed_from_execution_id`. `id`,
+`attempt`, `phase` and `started_at` are required (mctl-api always sets them), here
+and for `latest_execution`: a missing one is `unrecognised_shape`, never a default.
+`phase` is kept raw, and the page offers a resume only after a known terminal phase
+(`Succeeded`, `Failed`, `Error`). `engine` and `engine_ref` are not forwarded.
 
 `GET /work-items/{id}/snapshots` -> `{snapshots: ContextSnapshotSummary[]}`:
 `id, execution_id, content_hash, execution_sequence, strategy, strategy_version,

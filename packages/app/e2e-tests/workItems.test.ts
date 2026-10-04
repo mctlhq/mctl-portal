@@ -29,8 +29,35 @@ const WORK_ITEM = {
     observedAt: '2026-10-03T00:00:00Z',
   },
   executions: { state: 'ok', value: [{ id: 'we_1', attempt: 1, phase: 'Succeeded' }] },
-  snapshots: { state: 'ok', value: [] },
-  evidence: { state: 'ok', value: [] },
+  // Full-length hashes and ids: unbreakable tokens the mobile scrollWidth
+  // check below must still fit.
+  snapshots: {
+    state: 'ok',
+    value: [
+      {
+        id: 'cs_9f86d081884c7d659a2feaa0c55ad015',
+        executionId: 'we_1',
+        contentHash: 'sha256:9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08',
+        executionSequence: 1,
+        strategy: 'devloop',
+        strategyVersion: '3',
+        createdAt: '2026-10-03T00:00:00Z',
+      },
+    ],
+  },
+  evidence: {
+    state: 'ok',
+    value: [
+      {
+        id: 'ev_60303ae22b998861bce3b28f33eec1be',
+        contentHash: 'sha256:60303ae22b998861bce3b28f33eec1be758a213c86c93c076dbe9f558c11c752',
+        primaryRefKind: 'runtime',
+        primaryRefId: 'ex-0123456789abcdef',
+        apiVersion: 'evidence/v1',
+        createdAt: '2026-10-03T00:00:00Z',
+      },
+    ],
+  },
   events: { state: 'ok', value: [{ seq: 1, kind: 'created', toState: 'active', surface: 'telegram' }] },
   surfaces: unknownRelay,
   links: [],
@@ -111,5 +138,15 @@ test.describe('work item deep link', () => {
     expect(pending!.y).toBeGreaterThan(header!.y);
     const scrollWidth = await page.evaluate(() => document.documentElement.scrollWidth);
     expect(scrollWidth).toBeLessThanOrEqual(390);
+    // An inner scroll container can hide row overflow from the document's
+    // scrollWidth, so check the history rows carrying full-length hashes too.
+    await expect(page.getByTestId('section-ContextSnapshots')).toContainText(
+      WORK_ITEM.snapshots.value[0].contentHash,
+    );
+    await expect(page.getByTestId('section-Evidence')).toContainText(WORK_ITEM.evidence.value[0].contentHash);
+    const overflowing = await page
+      .locator('[data-testid^="section-"] li')
+      .evaluateAll(rows => rows.filter(r => r.scrollWidth > r.clientWidth).map(r => r.textContent));
+    expect(overflowing).toEqual([]);
   });
 });

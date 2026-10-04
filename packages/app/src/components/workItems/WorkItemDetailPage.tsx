@@ -39,6 +39,12 @@ function newIdempotencyKey(): string {
   return `portal-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
 }
 
+/** mctl-api's terminal execution phases; anything else may still be running. */
+const TERMINAL_PHASES = new Set(['Succeeded', 'Failed', 'Error']);
+
+/** Long hashes and ids have no break points; let them wrap on narrow screens. */
+const ROW_STYLE = { overflowWrap: 'anywhere' as const };
+
 /** Which governed action the canonical state allows (mirrors mctl-api #368 rules). */
 export function nextExecutionAction(item: WorkItem): NextAction | undefined {
   if (item.executionRequests.state !== 'ok') return undefined;
@@ -50,7 +56,9 @@ export function nextExecutionAction(item: WorkItem): NextAction | undefined {
   if (!exec) {
     return item.state === 'active' ? { label: 'Request start', kind: 'start' } : undefined;
   }
-  if (exec.phase === 'Pending' || exec.phase === 'Running') return undefined;
+  // Only a known terminal phase may be resumed: an unrecognised phase could
+  // be a run that is still executing.
+  if (!TERMINAL_PHASES.has(exec.phase)) return undefined;
   if (item.state === 'waiting' || item.state === 'active') {
     return { label: 'Request resume', kind: 'resume', resumedFromExecutionId: exec.id };
   }
@@ -217,7 +225,13 @@ export const WorkItemDetailView = (props: {
           <ObservedSection
             title="Latest ContextSnapshot"
             data={item.latestSnapshot}
-            render={s => s && <Typography variant="body2">{s.id} · {s.contentHash}</Typography>}
+            render={s =>
+              s && (
+                <Typography variant="body2" style={ROW_STYLE}>
+                  {s.id} · {s.contentHash}
+                </Typography>
+              )
+            }
           />
           {item.links.map(l => (
             <MuiLink key={l.url} href={l.url} target="_blank" rel="noopener noreferrer">
@@ -241,7 +255,7 @@ export const WorkItemDetailView = (props: {
             render={list => (
               <ul>
                 {list.map(e => (
-                  <li key={e.id}>
+                  <li key={e.id} style={ROW_STYLE}>
                     {e.id} · attempt {e.attempt ?? '?'} · {e.phase}
                     {e.startedAt ? ` · started ${e.startedAt}` : ''}
                     {e.endedAt ? ` · ended ${e.endedAt}` : ''}
@@ -257,7 +271,7 @@ export const WorkItemDetailView = (props: {
             render={list => (
               <ul>
                 {list.map(s => (
-                  <li key={s.id}>
+                  <li key={s.id} style={ROW_STYLE}>
                     {s.id} · {s.executionId} · {s.contentHash}
                     {s.strategy ? ` · ${s.strategy}${s.strategyVersion ? `@${s.strategyVersion}` : ''}` : ''}
                     {s.priorSnapshotId ? ` · after ${s.priorSnapshotId}` : ''}
@@ -284,7 +298,7 @@ export const WorkItemDetailView = (props: {
             render={list => (
               <ul>
                 {list.map(e => (
-                  <li key={e.id}>
+                  <li key={e.id} style={ROW_STYLE}>
                     {e.id} · {e.primaryRefKind} {e.primaryRefId} · {e.contentHash}
                     {e.createdAt ? ` · ${e.createdAt}` : ''}
                   </li>
@@ -298,7 +312,7 @@ export const WorkItemDetailView = (props: {
             render={list => (
               <ul>
                 {list.map(e => (
-                  <li key={e.seq}>
+                  <li key={e.seq} style={ROW_STYLE}>
                     #{e.seq} · {e.kind}
                     {e.fromState || e.toState ? ` · ${e.fromState ?? '?'} → ${e.toState ?? '?'}` : ''}
                     {e.surface ? ` · via ${e.surface}` : ''}

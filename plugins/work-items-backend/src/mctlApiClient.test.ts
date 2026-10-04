@@ -175,6 +175,12 @@ describe('toPortalWorkItem', () => {
     ]);
   });
 
+  it('never defaults an unreadable latest execution phase', () => {
+    const { phase: _phase, ...noPhase } = VIEW.latest_execution;
+    const w = toPortalWorkItem({ ...VIEW, latest_execution: noPhase }, unknownReq, unknownHistory);
+    expect(w.latestExecution).toEqual({ state: 'unknown', reason: 'unrecognised_shape' });
+  });
+
   it('says why there is no canvas link, so an unset template is not a failure', () => {
     const noExec = { ...VIEW, latest_execution: null };
     expect(toPortalWorkItem(VIEW, unknownReq, unknownHistory).canvas).toBe('not_configured');
@@ -339,7 +345,11 @@ describe('MctlApiWorkItemsClient (T4)', () => {
     const cases: [string, 'executions' | 'snapshots' | 'evidence' | 'events', unknown][] = [
       ['executions', 'executions', {}],
       ['executions', 'executions', { executions: 'we_1' }],
-      ['executions', 'executions', { executions: [{ id: 'we_1', phase: 'Failed' }, { phase: 'Running' }] }],
+      ['executions', 'executions', { executions: [{ id: 'we_1', attempt: 1, phase: 'Failed', started_at: 'T1' }, { phase: 'Running' }] }],
+      ['executions', 'executions', { executions: [{ id: 'we_2', attempt: 2, started_at: 'T1' }] }],
+      ['executions', 'executions', { executions: [{ id: 'we_2', attempt: 2, phase: '', started_at: 'T1' }] }],
+      ['executions', 'executions', { executions: [{ id: 'we_2', phase: 'Running', started_at: 'T1' }] }],
+      ['executions', 'executions', { executions: [{ id: 'we_2', attempt: 2, phase: 'Running' }] }],
       ['snapshots', 'snapshots', { snapshots: [{ id: 'cs_1', execution_id: 'we_1' }] }],
       ['evidence', 'evidence', { evidence: [] }],
       ['evidence', 'evidence', { evidence: [], truncated: 'no' }],

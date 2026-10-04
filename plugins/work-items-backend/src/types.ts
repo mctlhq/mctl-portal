@@ -9,9 +9,10 @@ export type Observed<T> =
 
 export interface ExecutionRef {
   id: string;
-  attempt?: number;
+  attempt: number;
+  /** Raw mctl-api phase; never defaulted, since it gates the resume action. */
   phase: string;
-  startedAt?: string;
+  startedAt: string;
   endedAt?: string;
   resumedFromExecutionId?: string;
 }

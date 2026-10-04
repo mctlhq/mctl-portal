@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { renderInTestApp } from '@backstage/test-utils';
 import { ObservedSection } from './ObservedSection';
-import { WorkItemDetailView } from './WorkItemDetailPage';
+import { WorkItemDetailView, nextExecutionAction } from './WorkItemDetailPage';
 import { WorkItemsApi, WorkItemsApiError } from './api';
 import { WorkItem } from './types';
 
@@ -174,6 +174,25 @@ describe('WorkItemDetailView', () => {
     expect(screen.getAllByText(/mctl-api upstream error 500/).length).toBeGreaterThan(0);
     expect(screen.queryByText('Link your platform identity')).toBeNull();
     expect(screen.queryByTestId('work-item-header')).toBeNull();
+  });
+
+  it('offers resume only after a known terminal phase', () => {
+    const withPhase = (phase: string) =>
+      nextExecutionAction(item({ latestExecution: { state: 'ok', value: { id: 'we_1', phase, attempt: 1 } } }));
+    for (const phase of ['Succeeded', 'Failed', 'Error']) {
+      expect(withPhase(phase)).toMatchObject({ kind: 'resume', resumedFromExecutionId: 'we_1' });
+    }
+    for (const phase of ['Pending', 'Running', 'unknown', 'Paused', '']) {
+      expect(withPhase(phase)).toBeUndefined();
+    }
+    render(
+      <WorkItemDetailView
+        item={item({ actionsEnabled: true, latestExecution: { state: 'ok', value: { id: 'we_1', phase: 'unknown', attempt: 1 } } })}
+        api={api()}
+        onReload={jest.fn()}
+      />,
+    );
+    expect(screen.queryByText('Request resume')).toBeNull();
   });
 
   it('hides actions when disabled (T11)', () => {

@@ -69,6 +69,7 @@ const LINK_CODES = new Set(['link_not_found', 'link_revoked', 'link_expired', 'r
 const str = (v: unknown): string | undefined => (typeof v === 'string' && v.length > 0 ? v : undefined);
 const obj = (v: unknown): Record<string, unknown> | undefined =>
   v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : undefined;
+const num = (v: unknown): number | undefined => (typeof v === 'number' && Number.isFinite(v) ? v : undefined);
 
 function safeHttpUrl(v: unknown): string | undefined {
   const s = str(v);
@@ -91,21 +92,28 @@ export function isSafeLink(url: string): boolean {
   return /^\/(?![/\\])/.test(url);
 }
 
+/**
+ * Used for `latest_execution` and the executions list alike. mctl-api always
+ * sets id, attempt, phase and started_at; a missing one is an unrecognised
+ * execution, never a default. `phase` gates the resume action, so it is never
+ * substituted. `engine` and `engine_ref` are never read.
+ */
 function mapExecution(raw: unknown): ExecutionRef | undefined {
   const r = obj(raw);
   const id = str(r?.id);
-  if (!r || !id) return undefined;
+  const attempt = num(r?.attempt);
+  const phase = str(r?.phase);
+  const startedAt = str(r?.started_at);
+  if (!r || !id || attempt === undefined || !phase || !startedAt) return undefined;
   return {
     id,
-    attempt: typeof r.attempt === 'number' ? r.attempt : undefined,
-    phase: str(r.phase) ?? 'unknown',
-    startedAt: str(r.started_at),
+    attempt,
+    phase,
+    startedAt,
     endedAt: str(r.ended_at),
     resumedFromExecutionId: str(r.resumed_from_execution_id),
   };
 }
-
-const num = (v: unknown): number | undefined => (typeof v === 'number' && Number.isFinite(v) ? v : undefined);
 
 /** Metadata only: `produced_by` and `canonical_b64` are never read. */
 function mapSnapshot(raw: unknown): SnapshotRef | undefined {
