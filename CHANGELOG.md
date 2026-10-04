@@ -1,5 +1,18 @@
 # Changelog
 
+## [4.17.3](https://github.com/mctlhq/mctl-portal/compare/4.17.2...4.17.3) (2026-10-04)
+
+
+### Bug Fixes
+
+* **argo-workflows:** pin team templates to the gitops flows ([e548c37](https://github.com/mctlhq/mctl-portal/commit/e548c376775720af629d55729ece61e67eb9d6b3))
+* **argo-workflows:** team workflows only, in the team's namespace ([c7ab779](https://github.com/mctlhq/mctl-portal/commit/c7ab779e9c84dc67c441f024b163433589138107))
+* **auth:** sign in only catalog users; gate workflow submission ([1a736dd](https://github.com/mctlhq/mctl-portal/commit/1a736dd113af39fa4e54e4fd870dfe1cef7a2461))
+* **auth:** sign in only catalog users; gate workflow submission ([48de954](https://github.com/mctlhq/mctl-portal/commit/48de954798524fe472bb154fb1389c4ec9b4b782))
+* **github-app-connect:** refuse auto-deploy in the webhook ([84ffe04](https://github.com/mctlhq/mctl-portal/commit/84ffe049b758302937ea886de0c64d768358075c))
+* **work-items:** refuse bad intentId, name the 400 field, quiet canvas ([f61a64c](https://github.com/mctlhq/mctl-portal/commit/f61a64c429d05a6c080a0838d43da4f48c495ec0))
+* **work-items:** refuse bad intentId, name the 400 field, quiet canvas ([ac9e539](https://github.com/mctlhq/mctl-portal/commit/ac9e5391d1801a67c1f740c64d8a178d832ae5de)), closes [#136](https://github.com/mctlhq/mctl-portal/issues/136)
+
 ## [4.17.2](https://github.com/mctlhq/mctl-portal/compare/4.17.1...4.17.2) (2026-10-04)
 
 
