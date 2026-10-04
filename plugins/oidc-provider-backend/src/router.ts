@@ -797,14 +797,17 @@ export function createRouter(options: RouterOptions): Router {
       `[OIDC] ForwardAuth session for ${issued.userId} host=${binding.host} tenant=${binding.tenant} service=${binding.service}`,
     );
 
-    res.setHeader('Set-Cookie', [
+    // The state cookie is left to expire on its own: tabs that started
+    // sign-in in parallel share it, and clearing it here would fail the
+    // callback of every tab but the first.
+    res.setHeader(
+      'Set-Cookie',
       buildHostOnlyCookie(
         FORWARD_AUTH_SESSION_COOKIE,
         sessionId,
         Math.floor((issued.sessionExpiresAt - now) / 1000),
       ),
-      buildHostOnlyCookie(FORWARD_AUTH_STATE_COOKIE, '', 0),
-    ]);
+    );
     // Absolute: Traefik resolves a relative Location against this
     // endpoint's own address, not against the protected host.
     res.redirect(`https://${binding.host}${sanitizeReturnPath(issued.returnPath)}`);

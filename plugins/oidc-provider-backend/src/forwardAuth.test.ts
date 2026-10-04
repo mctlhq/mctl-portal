@@ -338,7 +338,7 @@ describe('forward-auth', () => {
     expect(res.headers.get('x-mctl-team-role')).toBe('owner');
   });
 
-  it('sets the host session cookie host-only and clears the state cookie', async () => {
+  it('sets the host session cookie host-only and leaves the state cookie alone', async () => {
     const start = await forwardAuth('ovk', 'openclaw', 'ovk-openclaw.mctl.ai');
     const state = cookieValue(start, FORWARD_AUTH_STATE_COOKIE)!;
     const issued = await get(`/forward-auth/authorize${new URL(start.headers.get('location')!).search}`, {
@@ -353,9 +353,9 @@ describe('forward-auth', () => {
       cookie: `${FORWARD_AUTH_STATE_COOKIE}=${state}`,
     });
     const cookies = done.headers.getSetCookie();
-    expect(cookies).toHaveLength(2);
-    cookies.forEach(expectHostOnly);
-    expect(cookies.find(c => c.startsWith(`${FORWARD_AUTH_STATE_COOKIE}=;`))).toContain('Max-Age=0');
+    expect(cookies).toHaveLength(1);
+    expect(cookies[0].startsWith(`${FORWARD_AUTH_SESSION_COOKIE}=`)).toBe(true);
+    expectHostOnly(cookies[0]);
   });
 
   it('rejects a host session on any other tenant, service or host', async () => {
@@ -743,8 +743,24 @@ describe('forward-auth sign-in is started only by navigations', () => {
         cookie: jar,
       });
       expect(done.status).toBe(302);
+      // A browser would apply any change to the state cookie before the next tab's callback.
+      const stateUpdate = done.headers.getSetCookie().find(c => c.startsWith(`${FORWARD_AUTH_STATE_COOKIE}=`));
+      expect(stateUpdate).toBeUndefined();
     }
   });
+
+  it.each(['short', 'not/a/state', 'x'.repeat(200)])(
+    'replaces a malformed state cookie %j instead of reusing it',
+    async bad => {
+      const res = await forwardAuth('ovk', 'openclaw', 'ovk-openclaw.mctl.ai', {
+        cookie: `${FORWARD_AUTH_STATE_COOKIE}=${bad}`,
+      });
+      expect(res.status).toBe(302);
+      const state = new URL(res.headers.get('location')!).searchParams.get('state');
+      expect(state).not.toBe(bad);
+      expect(cookieValue(res, FORWARD_AUTH_STATE_COOKIE)).toBe(state);
+    },
+  );
 });
 
 describe('cookie-authenticated code minting needs a top-level navigation', () => {

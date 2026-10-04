@@ -67,6 +67,22 @@ describe('OidcStore legacy session invalidation', () => {
   });
 });
 
+describe('OidcStore forward-auth tables from a pre-release build', () => {
+  it('recreates tables that lack portal_session_id', async () => {
+    const knex = knexLib({ client: 'better-sqlite3', connection: ':memory:', useNullAsDefault: true });
+    currentKnex = knex;
+    for (const name of ['oidc_forward_auth_codes', 'oidc_forward_auth_sessions']) {
+      await knex.schema.createTable(name, t => {
+        t.string('id').primary();
+      });
+    }
+    const store = makeStore(knex);
+    await store.init();
+    expect(await knex.schema.hasColumn('oidc_forward_auth_codes', 'portal_session_id')).toBe(true);
+    expect(await knex.schema.hasColumn('oidc_forward_auth_sessions', 'portal_session_id')).toBe(true);
+  });
+});
+
 describe('OidcStore forward-auth codes and sessions', () => {
   const code = {
     userId: 'mashkovd',
@@ -86,6 +102,14 @@ describe('OidcStore forward-auth codes and sessions', () => {
     await store.saveForwardAuthCode('fc1', code);
     expect(await store.consumeForwardAuthCode('fc1')).toEqual(code);
     expect(await store.consumeForwardAuthCode('fc1')).toBeUndefined();
+  });
+
+  it('lets only one of several concurrent consumers have a code', async () => {
+    const { store, knex } = await freshStore();
+    currentKnex = knex;
+    await store.saveForwardAuthCode('fc2', code);
+    const results = await Promise.all([1, 2, 3, 4].map(() => store.consumeForwardAuthCode('fc2')));
+    expect(results.filter(Boolean)).toHaveLength(1);
   });
 
   it('round-trips a session with its binding', async () => {

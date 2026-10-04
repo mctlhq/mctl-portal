@@ -114,6 +114,14 @@ export class OidcStore {
       });
     }
 
+    // Short-lived rows only: a table from a pre-release build without
+    // portal_session_id is dropped and recreated rather than migrated.
+    for (const name of ['oidc_forward_auth_codes', 'oidc_forward_auth_sessions']) {
+      if ((await hasTable(name)) && !(await hasColumn(name, 'portal_session_id'))) {
+        await (schema ? knex.schema.withSchema(schema).dropTable(name) : knex.schema.dropTable(name));
+      }
+    }
+
     if (!(await hasTable('oidc_forward_auth_codes'))) {
       await createTable('oidc_forward_auth_codes', t => {
         t.string('code', 128).primary().notNullable();
