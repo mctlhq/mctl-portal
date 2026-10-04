@@ -122,9 +122,11 @@ evidence is paged; see `truncated` below. If mctl-api ever bounds one of the thr
 it must carry a completeness signal and this mapper must treat it like evidence.
 
 `GET /work-items/{id}/executions` -> `{executions: WorkItemExecution[]}`:
-`id, attempt, phase, started_at, ended_at, resumed_from_execution_id`. `id`,
-`attempt`, `phase` and `started_at` are required (mctl-api always sets them), here
-and for `latest_execution`: a missing one is `unrecognised_shape`, never a default.
+`id, attempt, phase, started_at, ended_at, resumed_from_execution_id`. Only `id`
+and `phase` are required, here and for `latest_execution`: `phase` gates the resume
+action, so a missing one is `unrecognised_shape`, never a default. `attempt` and
+`started_at` are display-only and optional; a queued (`Pending`) execution may have
+no start time.
 `phase` is kept raw, and the page offers a resume only after a known terminal phase
 (`Succeeded`, `Failed`, `Error`). `engine` and `engine_ref` are not forwarded.
 

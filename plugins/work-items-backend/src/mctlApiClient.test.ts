@@ -348,8 +348,6 @@ describe('MctlApiWorkItemsClient (T4)', () => {
       ['executions', 'executions', { executions: [{ id: 'we_1', attempt: 1, phase: 'Failed', started_at: 'T1' }, { phase: 'Running' }] }],
       ['executions', 'executions', { executions: [{ id: 'we_2', attempt: 2, started_at: 'T1' }] }],
       ['executions', 'executions', { executions: [{ id: 'we_2', attempt: 2, phase: '', started_at: 'T1' }] }],
-      ['executions', 'executions', { executions: [{ id: 'we_2', phase: 'Running', started_at: 'T1' }] }],
-      ['executions', 'executions', { executions: [{ id: 'we_2', attempt: 2, phase: 'Running' }] }],
       ['snapshots', 'snapshots', { snapshots: [{ id: 'cs_1', execution_id: 'we_1' }] }],
       ['evidence', 'evidence', { evidence: [] }],
       ['evidence', 'evidence', { evidence: [], truncated: 'no' }],
@@ -365,6 +363,25 @@ describe('MctlApiWorkItemsClient (T4)', () => {
       const w = await client().getWorkItem('wi_abc', 'u');
       expect(w[k]).toEqual({ state: 'unknown', reason: 'unrecognised_shape' });
     }
+  });
+
+  it('keeps a queued execution without started_at readable, with its canvas link', async () => {
+    const queued = { id: 'we_3', engine: 'temporal', engine_ref: 'dev-loop-q', attempt: 1, phase: 'Pending' };
+    route({
+      '': () => jsonResp(200, { ...VIEW, latest_execution: queued }),
+      executions: () => jsonResp(200, { executions: [queued] }),
+    });
+    const c = new MctlApiWorkItemsClient({
+      baseUrl: 'http://api.test',
+      surfaceToken: 't',
+      executionCanvasUrlTemplate: '/canvas/{executionId}',
+    });
+    const w = await c.getWorkItem('wi_abc', 'u');
+    const value = { id: 'we_3', attempt: 1, phase: 'Pending' };
+    expect(w.latestExecution).toEqual({ state: 'ok', value });
+    expect(w.executions).toEqual({ state: 'ok', value: [value], observedAt: expect.any(String) });
+    expect(w.links).toEqual([{ label: 'Execution Canvas', url: '/canvas/we_3' }]);
+    expect(w.canvas).toBe('ok');
   });
 
   it('reads runtime-only evidence, whose execution_id is blank', async () => {

@@ -93,23 +93,22 @@ export function isSafeLink(url: string): boolean {
 }
 
 /**
- * Used for `latest_execution` and the executions list alike. mctl-api always
- * sets id, attempt, phase and started_at; a missing one is an unrecognised
- * execution, never a default. `phase` gates the resume action, so it is never
- * substituted. `engine` and `engine_ref` are never read.
+ * Used for `latest_execution` and the executions list alike. Only `id` and
+ * `phase` are required: `phase` gates the resume action, so a missing one is
+ * an unrecognised execution, never a default. `attempt` and `started_at` are
+ * display-only, and a queued (Pending) execution may have no start time.
+ * `engine` and `engine_ref` are never read.
  */
 function mapExecution(raw: unknown): ExecutionRef | undefined {
   const r = obj(raw);
   const id = str(r?.id);
-  const attempt = num(r?.attempt);
   const phase = str(r?.phase);
-  const startedAt = str(r?.started_at);
-  if (!r || !id || attempt === undefined || !phase || !startedAt) return undefined;
+  if (!r || !id || !phase) return undefined;
   return {
     id,
-    attempt,
+    attempt: num(r.attempt),
     phase,
-    startedAt,
+    startedAt: str(r.started_at),
     endedAt: str(r.ended_at),
     resumedFromExecutionId: str(r.resumed_from_execution_id),
   };
