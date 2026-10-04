@@ -49,5 +49,7 @@ export interface WorkItem {
   evidence: Observed<unknown[]>;
   surfaces: Observed<unknown[]>;
   links: { label: string; url: string }[];
+  /** Why the Execution Canvas link is, or is not, in `links`; see the backend's PortalWorkItem. */
+  canvas: 'ok' | 'not_configured' | 'no_execution' | 'unavailable';
   actionsEnabled: boolean;
 }

@@ -22,6 +22,7 @@ const item = (over: Partial<WorkItem> = {}): WorkItem => ({
   evidence: unknownRelay,
   surfaces: unknownRelay,
   links: [],
+  canvas: 'not_configured',
   actionsEnabled: false,
   ...over,
 });
@@ -46,10 +47,33 @@ describe('WorkItemDetailView', () => {
     ({ redeem: jest.fn(), requestExecution: jest.fn(), get: jest.fn(), ...over }) as unknown as WorkItemsApi;
 
   it('renders header, pending panel and canvas-unavailable (T10)', () => {
-    render(<WorkItemDetailView item={item()} api={api()} onReload={jest.fn()} />);
+    render(<WorkItemDetailView item={item({ canvas: 'unavailable' })} api={api()} onReload={jest.fn()} />);
     expect(screen.getByTestId('work-item-header').textContent).toContain('Fix it');
     expect(screen.getByTestId('pending-panel').textContent).toContain('human input');
     expect(screen.getByText('Canvas unavailable')).toBeTruthy();
+  });
+
+  it('reports no canvas failure when the canvas is not configured or there is no execution', () => {
+    const { rerender } = render(<WorkItemDetailView item={item()} api={api()} onReload={jest.fn()} />);
+    expect(screen.getByTestId('latest-execution-panel').textContent).toContain('we_1');
+    expect(screen.queryByText('Canvas unavailable')).toBeNull();
+    rerender(
+      <WorkItemDetailView
+        item={item({ latestExecution: { state: 'ok', value: null }, canvas: 'no_execution' })}
+        api={api()}
+        onReload={jest.fn()}
+      />,
+    );
+    expect(screen.queryByText('Canvas unavailable')).toBeNull();
+    rerender(
+      <WorkItemDetailView
+        item={item({ links: [{ label: 'Execution Canvas', url: '/canvas/we_1' }], canvas: 'ok' })}
+        api={api()}
+        onReload={jest.fn()}
+      />,
+    );
+    expect(screen.getByText('Execution Canvas').closest('a')?.getAttribute('href')).toBe('/canvas/we_1');
+    expect(screen.queryByText('Canvas unavailable')).toBeNull();
   });
 
   it('shows the link form and no data on link_required (T10)', () => {
