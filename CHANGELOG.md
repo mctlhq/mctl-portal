@@ -1,5 +1,15 @@
 # Changelog
 
+## [4.17.2](https://github.com/mctlhq/mctl-portal/compare/4.17.1...4.17.2) (2026-10-04)
+
+
+### Bug Fixes
+
+* **oidc:** keep session cookies host-only, bind forward-auth per host ([a48218a](https://github.com/mctlhq/mctl-portal/commit/a48218a07d7c409a22dde9e1a4578021609e004a))
+* **oidc:** keep session cookies host-only, bind forward-auth per host ([33574d9](https://github.com/mctlhq/mctl-portal/commit/33574d9c8fcc7edd58e125f5482b38c1b5209db7))
+* **oidc:** keep the shared state cookie for parallel sign-ins ([66cda61](https://github.com/mctlhq/mctl-portal/commit/66cda619131dba20ac4200ea89d3f780db49be67))
+* **oidc:** validate protected hosts, gate sign-in on navigation ([29a8a74](https://github.com/mctlhq/mctl-portal/commit/29a8a745702beaf629bb87a97715f581bc372510))
+
 ## [4.17.1](https://github.com/mctlhq/mctl-portal/compare/4.17.0...4.17.1) (2026-10-03)
 
 
