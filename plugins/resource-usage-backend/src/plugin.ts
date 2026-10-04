@@ -14,8 +14,10 @@ export const resourceUsagePlugin = createBackendPlugin({
         logger: coreServices.logger,
         httpRouter: coreServices.httpRouter,
         httpAuth: coreServices.httpAuth,
+        userInfo: coreServices.userInfo,
+        database: coreServices.database,
       },
-      async init({ config, logger, httpRouter, httpAuth }) {
+      async init({ config, logger, httpRouter, httpAuth, userInfo, database }) {
         // ── K8s config ─────────────────────────────────────────────────────────
         const kubeConfigType = (
           config.getOptionalString('resourceUsage.kubeConfigType') ?? 'inCluster'
@@ -38,7 +40,10 @@ export const resourceUsagePlugin = createBackendPlugin({
         });
 
         // ── HTTP router ────────────────────────────────────────────────────────
-        const router = createRouter({ logger, httpAuth, k8sClient });
+        // Tenant membership lives in tenant-backend's tenant_members table.
+        const db = await database.getClient();
+        const isPostgres = db.client.config.client === 'pg';
+        const router = createRouter({ logger, httpAuth, userInfo, db, isPostgres, k8sClient });
         httpRouter.use(router);
 
         logger.info(

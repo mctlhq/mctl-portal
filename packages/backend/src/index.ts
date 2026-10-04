@@ -8,6 +8,7 @@
 
 import { createBackend } from '@backstage/backend-defaults';
 import { githubAuthModule } from './githubAuthModule';
+import { kubernetesEntityScopeModule } from './kubernetesEntityScope';
 import {
   authModuleGithubInstallRedirect,
   scaffolderFiltersModule,
@@ -65,6 +66,9 @@ backend.add(import('@backstage/plugin-search-backend-module-techdocs'));
 
 // kubernetes plugin
 backend.add(import('@backstage/plugin-kubernetes-backend'));
+// Resolves Kubernetes lookups from the catalog with the caller's credentials
+// instead of trusting the entity in the request body.
+backend.add(kubernetesEntityScopeModule);
 
 // notifications and signals plugins
 backend.add(import('@backstage/plugin-notifications-backend'));
