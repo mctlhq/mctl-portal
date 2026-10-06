@@ -142,21 +142,22 @@ export function createRouter(options: RouterOptions): Router {
 
   // The ZITADEL counterpart: the same browser-binding cookie, plus a nonce
   // and a PKCE verifier kept server-side with the state. The authorization
-  // endpoint is resolved first, so a failed discovery leaves no cookie and
-  // no pending row behind.
+  // endpoint is resolved first and the cookie is set last, so a failed
+  // discovery leaves no cookie and no pending row behind, and a failed
+  // write leaves no cookie.
   async function buildZitadelAuthRedirect(res: Response, upstream: ZitadelUpstream, returnTo: string): Promise<string> {
     const state = uuid();
     const nonce = randomToken();
     const codeVerifier = randomToken();
     const url = await upstream.authorizationUrl({ state, nonce, codeChallenge: pkceChallenge(codeVerifier) });
-    appendSetCookie(
-      res,
-      buildHostOnlyCookie(`${LOGIN_STATE_COOKIE_PREFIX}${state}`, '1', LOGIN_STATE_MAX_AGE_SECONDS),
-    );
     await store.savePendingAuth(state, returnTo, Date.now() + LOGIN_STATE_MAX_AGE_SECONDS * 1000, {
       nonce,
       codeVerifier,
     });
+    appendSetCookie(
+      res,
+      buildHostOnlyCookie(`${LOGIN_STATE_COOKIE_PREFIX}${state}`, '1', LOGIN_STATE_MAX_AGE_SECONDS),
+    );
     return url;
   }
 

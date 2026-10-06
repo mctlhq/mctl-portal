@@ -10,13 +10,7 @@ import { renderPage } from './pages';
 import { createRouter, LOGIN_STATE_COOKIE_PREFIX, RouterOptions } from './router';
 import { OIDC_SESSION_COOKIE } from './sessionAuth';
 import { readUpstreamConfig } from './upstreamConfig';
-import {
-  GITHUB_LOGIN_CLAIM,
-  parseUpstreamMode,
-  pkceChallenge,
-  readGithubLogin,
-  UpstreamMode,
-} from './zitadelUpstream';
+import { GITHUB_LOGIN_CLAIM, parseUpstreamMode, pkceChallenge, readGithubLogin, UpstreamMode } from './zitadelUpstream';
 
 // The upstream switch of the provider, over real HTTP against a mocked
 // ZITADEL: discovery, token endpoint and keys are answered by global.fetch,
@@ -34,11 +28,7 @@ const DEX_AUTHORIZE = `/authorize?response_type=code&client_id=dex&redirect_uri=
 // Every browser entry point that starts a sign-in, and where its callback
 // must send the browser afterwards.
 const SIGN_IN_ENTRY_POINTS: Array<[string, string, string]> = [
-  [
-    '/login',
-    `/login?returnTo=${encodeURIComponent('https://ovk-openclaw.mctl.ai/')}`,
-    'https://ovk-openclaw.mctl.ai/',
-  ],
+  ['/login', `/login?returnTo=${encodeURIComponent('https://ovk-openclaw.mctl.ai/')}`, 'https://ovk-openclaw.mctl.ai/'],
   ['/tenant-login', '/tenant-login?tenant=ovk&service=openclaw', 'https://ovk-openclaw.mctl.ai/'],
   ['/authorize (Dex)', DEX_AUTHORIZE, `/api/oidc-provider${DEX_AUTHORIZE}`],
   [
@@ -73,6 +63,9 @@ interface FakeZitadel {
   tokenStatus: number;
   tokenRequests: Array<{ headers: Record<string, string>; body: URLSearchParams }>;
   requests: string[];
+  // While set, a request whose URL ends with `path` is not answered until
+  // `release` resolves, so that others can arrive while it is in flight.
+  hold?: { path: string; release: Promise<void> };
 }
 let zitadel: FakeZitadel;
 // Nonce of the sign-in in flight, as sent to the authorization endpoint.
@@ -110,6 +103,9 @@ function mockZitadel() {
   global.fetch = jest.fn(async (input: any, init: any = {}) => {
     const url = String(input);
     zitadel.requests.push(url);
+    if (zitadel.hold && url.endsWith(zitadel.hold.path)) {
+      await zitadel.hold.release;
+    }
     if (url === `${ZITADEL_ISSUER}/.well-known/openid-configuration`) {
       if (typeof zitadel.discovery === 'number') {
         return new Response('unavailable', { status: zitadel.discovery });
@@ -292,6 +288,25 @@ function finish(started: StartedSignIn, opts: { cookie?: string; state?: string 
   });
 }
 
+// Runs `requests` while ZITADEL withholds its answer on `path`, releasing it
+// only after every request has had time to reach the provider.
+async function whileZitadelHolds<T>(path: string, requests: () => Promise<T>[]): Promise<T[]> {
+  let release!: () => void;
+  zitadel.hold = { path, release: new Promise<void>(resolve => (release = resolve)) };
+  const pending = requests();
+  await new Promise(resolve => setTimeout(resolve, 100));
+  zitadel.hold = undefined;
+  release();
+  return Promise.all(pending);
+}
+
+// A refused sign-in after an earlier successful one: no new session.
+async function expectRefusedWithOneSession(res: TestResponse) {
+  expect(res.status).toBe(502);
+  expect(res.headers.getSetCookie().some(c => c.startsWith(`${OIDC_SESSION_COOKIE}=`))).toBe(false);
+  expect(await sessionCount()).toBe(1);
+}
+
 // A refused sign-in: no portal session cookie and no session row.
 async function expectRefused(res: TestResponse, status: number) {
   expect(res.status).toBe(status);
@@ -317,8 +332,7 @@ describe('parseUpstreamMode', () => {
 describe('readUpstreamConfig', () => {
   const github = { clientId: 'gh-client', clientSecret: 'gh-secret' };
   const zitadelClient = { issuer: ZITADEL_ISSUER, clientId: ZITADEL_CLIENT_ID, clientSecret: ZITADEL_CLIENT_SECRET };
-  const read = (oidcProvider: Record<string, unknown>) =>
-    readUpstreamConfig(new ConfigReader({ oidcProvider } as any));
+  const read = (oidcProvider: Record<string, unknown>) => readUpstreamConfig(new ConfigReader({ oidcProvider } as any));
 
   it('reads only the GitHub client when the switch is unset', () => {
     expect(read({ github })).toEqual({
@@ -428,6 +442,26 @@ describe('renderPage', () => {
     expect(html).toContain('<p>a &amp; &quot;b&quot; &lt;script&gt;</p>');
     expect(html).toContain('<a href="https://x.example/?a=1&amp;b=&quot;2&quot;">&lt;l&gt;&#39;</a>');
     expect(html).not.toContain('<script');
+  });
+
+  it.each(['https://x.example/a', 'http://localhost:7007/a', '/login?returnTo=%2F'])('keeps a link to %s', href => {
+    expect(renderPage({ title: 't', paragraphs: [], links: [{ href, label: 'go' }] })).toContain('>go</a>');
+  });
+
+  it.each([
+    'javascript:alert(1)',
+    'JaVaScRiPt:alert(1)',
+    ' javascript:alert(1)',
+    'data:text/html,x',
+    'vbscript:x',
+    '//evil.example/a',
+    '/\\evil.example/a',
+    'login',
+    '',
+  ])('leaves a link to %j off the page', href => {
+    const html = renderPage({ title: 't', paragraphs: [], links: [{ href, label: 'go' }] });
+    expect(html).not.toContain('<a ');
+    expect(html).not.toContain('go');
   });
 });
 
@@ -673,6 +707,24 @@ describe('upstream zitadel', () => {
     expect(userExistsCalls).toEqual([]);
   });
 
+  // `aud` lists every application of the project, so without `azp` nothing
+  // says the token was issued to this client.
+  it('refuses a token of several audiences that names no authorized party', async () => {
+    zitadel.idToken = nonce => signIdToken(idTokenClaims(nonce, { azp: undefined }));
+    await expectRefused(await finish(await start()), 502);
+    expect(userExistsCalls).toEqual([]);
+  });
+
+  it.each([
+    ['a string', ZITADEL_CLIENT_ID],
+    ['a list of one', [ZITADEL_CLIENT_ID]],
+  ])('accepts a token without an authorized party whose audience is this client alone, as %s', async (_n, aud) => {
+    zitadel.idToken = nonce => signIdToken(idTokenClaims(nonce, { aud, azp: undefined }));
+    const res = await finish(await start());
+    expect(res.status).toBe(302);
+    expect(await sessionCount()).toBe(1);
+  });
+
   it('refuses a token signed with a key ZITADEL does not publish', async () => {
     zitadel.idToken = nonce => signIdToken(idTokenClaims(nonce), { key: otherKey });
     await expectRefused(await finish(await start()), 502);
@@ -686,8 +738,7 @@ describe('upstream zitadel', () => {
   });
 
   it('refuses an expired token', async () => {
-    zitadel.idToken = nonce =>
-      signIdToken(idTokenClaims(nonce), { expiresIn: Math.floor(Date.now() / 1000) - 3600 });
+    zitadel.idToken = nonce => signIdToken(idTokenClaims(nonce), { expiresIn: Math.floor(Date.now() / 1000) - 3600 });
     await expectRefused(await finish(await start()), 502);
     expect(userExistsCalls).toEqual([]);
   });
@@ -730,6 +781,44 @@ describe('upstream zitadel', () => {
     expect(await sessionCount()).toBe(2);
   });
 
+  const jwksReads = () => zitadel.requests.filter(u => u.endsWith('/oauth/v2/keys')).length;
+
+  it('reads the keys again for an unknown key id at most once per cooldown', async () => {
+    const now = jest.spyOn(Date, 'now');
+    try {
+      const t0 = Date.now();
+      await finish(await start());
+      expect(jwksReads()).toBe(1);
+      // Tokens of a key ZITADEL does not publish: one forced read, then none.
+      zitadel.idToken = nonce => signIdToken(idTokenClaims(nonce), { key: rotatedKey, kid: 'key-2' });
+      await expectRefusedWithOneSession(await finish(await start()));
+      expect(jwksReads()).toBe(2);
+      await expectRefusedWithOneSession(await finish(await start()));
+      await expectRefusedWithOneSession(await finish(await start()));
+      expect(jwksReads()).toBe(2);
+      // Once the cooldown has passed, a rotated key is picked up.
+      zitadel.keys = [signingJwk, rotatedJwk];
+      now.mockImplementation(() => t0 + 31_000);
+      const res = await finish(await start());
+      expect(res.status).toBe(302);
+      expect(jwksReads()).toBe(3);
+    } finally {
+      now.mockRestore();
+    }
+  });
+
+  it('shares one key read between sign-ins that finish together', async () => {
+    const a = await start();
+    const nonceA = flowNonce;
+    const b = await start();
+    const nonceB = flowNonce;
+    const nonces = [nonceA, nonceB];
+    zitadel.idToken = () => signIdToken(idTokenClaims(nonces.shift()!));
+    const results = await whileZitadelHolds('/oauth/v2/keys', () => [finish(a), finish(b)]);
+    expect(results.map(r => r.status)).toEqual([302, 302]);
+    expect(jwksReads()).toBe(1);
+  });
+
   it('refuses a callback from a browser that did not start the sign-in', async () => {
     const started = await start();
     for (const cookie of ['', `${LOGIN_STATE_COOKIE_PREFIX}another-state-0123456789=1`, `${started.cookie}0`]) {
@@ -769,7 +858,9 @@ describe('upstream zitadel', () => {
   it('refuses a pending sign-in that carries no nonce or verifier', async () => {
     for (const column of ['nonce', 'code_verifier']) {
       const started = await start();
-      await knex('oidc_pending_auths').where({ state: started.state }).update({ [column]: null });
+      await knex('oidc_pending_auths')
+        .where({ state: started.state })
+        .update({ [column]: null });
       await expectRefused(await finish(started), 400);
     }
     expect(zitadel.tokenRequests).toEqual([]);
@@ -870,6 +961,27 @@ describe('ZITADEL discovery', () => {
     expect(new URL(res.headers.get('location')!).origin).toBe(ZITADEL_ISSUER);
   });
 
+  it('shares one discovery read between sign-ins that start together', async () => {
+    const results = await whileZitadelHolds('/.well-known/openid-configuration', () =>
+      [1, 2, 3].map(() => get(SIGN_IN_ENTRY_POINTS[0][1])),
+    );
+    expect(results.map(r => r.status)).toEqual([302, 302, 302]);
+    expect(zitadel.requests.filter(u => u.endsWith('/.well-known/openid-configuration'))).toHaveLength(1);
+  });
+
+  it('sets no cookie when the pending sign-in could not be stored', async () => {
+    const save = jest.spyOn(store, 'savePendingAuth').mockRejectedValueOnce(new Error('database is down'));
+    try {
+      await expectUnavailable();
+    } finally {
+      save.mockRestore();
+    }
+    // The next sign-in starts normally.
+    const res = await get(SIGN_IN_ENTRY_POINTS[0][1]);
+    expect(res.status).toBe(302);
+    expect(res.headers.getSetCookie()).toHaveLength(1);
+  });
+
   it('reads discovery once it has succeeded', async () => {
     await start();
     await start();
@@ -880,24 +992,27 @@ describe('ZITADEL discovery', () => {
 describe('upstream both', () => {
   beforeEach(() => listen('both'));
 
-  it.each(SIGN_IN_ENTRY_POINTS)('offers both upstreams at %s without starting either', async (_name, path, returnTo) => {
-    const res = await get(path);
-    expect(res.status).toBe(200);
-    expect(res.headers.get('content-type')).toMatch(/^text\/html/);
-    expect(res.headers.get('cache-control')).toBe('no-store');
-    expect(res.headers.getSetCookie()).toEqual([]);
-    expect(await pendingCount()).toBe(0);
-    expect(zitadel.requests).toEqual([]);
+  it.each(SIGN_IN_ENTRY_POINTS)(
+    'offers both upstreams at %s without starting either',
+    async (_name, path, returnTo) => {
+      const res = await get(path);
+      expect(res.status).toBe(200);
+      expect(res.headers.get('content-type')).toMatch(/^text\/html/);
+      expect(res.headers.get('cache-control')).toBe('no-store');
+      expect(res.headers.getSetCookie()).toEqual([]);
+      expect(await pendingCount()).toBe(0);
+      expect(zitadel.requests).toEqual([]);
 
-    const hrefs = [...res.text.matchAll(/href="([^"]+)"/g)].map(m => m[1].replace(/&amp;/g, '&'));
-    expect(hrefs).toHaveLength(2);
-    expect(hrefs.map(h => new URL(h).searchParams.get('upstream'))).toEqual(['zitadel', 'github']);
-    for (const href of hrefs) {
-      const url = new URL(href);
-      expect(`${url.origin}${url.pathname}`).toBe(`${ISSUER}/login`);
-      expect(url.searchParams.get('returnTo')).toBe(returnTo);
-    }
-  });
+      const hrefs = [...res.text.matchAll(/href="([^"]+)"/g)].map(m => m[1].replace(/&amp;/g, '&'));
+      expect(hrefs).toHaveLength(2);
+      expect(hrefs.map(h => new URL(h).searchParams.get('upstream'))).toEqual(['zitadel', 'github']);
+      for (const href of hrefs) {
+        const url = new URL(href);
+        expect(`${url.origin}${url.pathname}`).toBe(`${ISSUER}/login`);
+        expect(url.searchParams.get('returnTo')).toBe(returnTo);
+      }
+    },
+  );
 
   it('never offers a returnTo outside the allowlist', async () => {
     const res = await get(`/login?returnTo=${encodeURIComponent('https://evil.example/"><script>')}`);

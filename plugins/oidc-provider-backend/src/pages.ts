@@ -1,4 +1,8 @@
-/** A link on a page: `href` is used as is, `label` is escaped. */
+/**
+ * A link on a page. Both fields are escaped by `renderPage`, so pass them
+ * raw. `href` must be an http(s) URL or a path on this host; a link with
+ * any other href is left off the page.
+ */
 export interface PageLink {
   href: string;
   label: string;
@@ -13,11 +17,27 @@ export function escapeHtml(value: string): string {
     .replace(/'/g, '&#39;');
 }
 
+// Escaping makes an href a safe attribute value, not a safe destination:
+// `javascript:` and the like are refused here by scheme. A path must start
+// with a single slash, so `//host` cannot leave this host either.
+function isSafeHref(href: string): boolean {
+  if (/^\/(?![/\\])/.test(href)) {
+    return true;
+  }
+  try {
+    const { protocol } = new URL(href);
+    return protocol === 'https:' || protocol === 'http:';
+  } catch {
+    return false;
+  }
+}
+
 // A small static page for the browser steps of sign-in: no script, and every
 // value escaped. Exported for unit testing.
 export function renderPage(page: { title: string; paragraphs: string[]; links?: PageLink[] }): string {
   const paragraphs = page.paragraphs.map(p => `<p>${escapeHtml(p)}</p>`).join('\n');
   const links = (page.links ?? [])
+    .filter(l => isSafeHref(l.href))
     .map(l => `<p><a href="${escapeHtml(l.href)}">${escapeHtml(l.label)}</a></p>`)
     .join('\n');
   return [

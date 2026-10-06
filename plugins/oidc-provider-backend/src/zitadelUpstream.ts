@@ -20,6 +20,9 @@ const GITHUB_LOGIN_MAX_LENGTH = 39;
 
 const UPSTREAM_TIMEOUT_MS = 10_000;
 
+// The least time between two key refetches forced by an unknown key id.
+const KEY_REFRESH_COOLDOWN_MS = 30_000;
+
 export interface ZitadelUpstreamConfig {
   /** Exactly the `iss` of the tokens, e.g. https://auth.mctl.ai */
   issuer: string;
@@ -76,12 +79,12 @@ interface Endpoints {
 export class ZitadelUpstream {
   private readonly issuerOrigin: string;
   private endpoints?: Endpoints;
+  private discovering?: Promise<Endpoints>;
   private keys?: jose.JSONWebKeySet;
+  private loadingKeys?: Promise<jose.JSONWebKeySet>;
+  private keysRefreshedAt?: number;
 
-  constructor(
-    private readonly config: ZitadelUpstreamConfig,
-    private readonly redirectUri: string,
-  ) {
+  constructor(private readonly config: ZitadelUpstreamConfig, private readonly redirectUri: string) {
     let url: URL;
     try {
       url = new URL(config.issuer);
@@ -168,9 +171,13 @@ export class ZitadelUpstream {
     if (typeof payload.nonce !== 'string' || payload.nonce !== nonce) {
       throw new Error('ID token nonce does not match this sign-in');
     }
-    // ZITADEL lists every application of the project in `aud`; `azp` names
-    // the one the token was issued to.
-    if (payload.azp !== undefined && payload.azp !== this.config.clientId) {
+    // ZITADEL lists every application of the project in `aud`, so the
+    // audience check above also passes for a token of a sibling client;
+    // `azp` names the one the token was issued to. It may only be absent
+    // when this client is the sole audience (OIDC Core 3.1.3.7).
+    const audiences = Array.isArray(payload.aud) ? payload.aud : [payload.aud];
+    const soleAudience = audiences.length === 1 && audiences[0] === this.config.clientId;
+    if (payload.azp === undefined ? !soleAudience : payload.azp !== this.config.clientId) {
       throw new Error('ID token was issued to another client');
     }
     return payload;
@@ -178,10 +185,18 @@ export class ZitadelUpstream {
 
   // Discovery is read on first use and kept once it succeeds; a failed read
   // is an error for that sign-in and is tried again on the next one.
-  private async discover(): Promise<Endpoints> {
+  // Sign-ins that arrive while a read is in flight share it.
+  private discover(): Promise<Endpoints> {
     if (this.endpoints) {
-      return this.endpoints;
+      return Promise.resolve(this.endpoints);
     }
+    this.discovering ??= this.readDiscovery().finally(() => {
+      this.discovering = undefined;
+    });
+    return this.discovering;
+  }
+
+  private async readDiscovery(): Promise<Endpoints> {
     const doc = (await this.getJson(`${this.config.issuer}/.well-known/openid-configuration`)) as Record<
       string,
       unknown
@@ -216,10 +231,28 @@ export class ZitadelUpstream {
     return url.toString();
   }
 
-  private async loadKeys(refresh: boolean): Promise<jose.JSONWebKeySet> {
-    if (this.keys && !refresh) {
-      return this.keys;
+  // The keys are read on first use and kept. A refresh, asked for by a
+  // token with an unknown key id, reads them again at most once per
+  // cooldown; in between, such a token is checked against the keys held.
+  // Callers that arrive while a read is in flight share it.
+  private loadKeys(refresh: boolean): Promise<jose.JSONWebKeySet> {
+    if (this.loadingKeys) {
+      return this.loadingKeys;
     }
+    if (this.keys) {
+      const cooling = this.keysRefreshedAt !== undefined && Date.now() - this.keysRefreshedAt < KEY_REFRESH_COOLDOWN_MS;
+      if (!refresh || cooling) {
+        return Promise.resolve(this.keys);
+      }
+      this.keysRefreshedAt = Date.now();
+    }
+    this.loadingKeys = this.readKeys().finally(() => {
+      this.loadingKeys = undefined;
+    });
+    return this.loadingKeys;
+  }
+
+  private async readKeys(): Promise<jose.JSONWebKeySet> {
     const { jwks } = await this.discover();
     const set = (await this.getJson(jwks)) as { keys?: unknown };
     if (!Array.isArray(set.keys)) {
