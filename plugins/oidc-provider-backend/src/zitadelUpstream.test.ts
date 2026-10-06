@@ -943,7 +943,7 @@ describe('upstream both', () => {
     const res = await get(`/github/callback?code=gh-code&state=${started.state}`, { Cookie: started.cookie });
     await expectRefused(res, 400);
     // GitHub was never asked to redeem anything.
-    expect(zitadel.requests.some(u => u.includes('github.com'))).toBe(false);
+    expect(zitadel.requests.filter(u => new URL(u).hostname !== 'auth.mctl.ai')).toEqual([]);
   });
 
   it('skips the choice for a browser that already has a session', async () => {
