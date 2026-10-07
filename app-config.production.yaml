@@ -208,6 +208,17 @@ resourceUsage:
 
 oidcProvider:
   issuer: ${BACKEND_BASE_URL}/api/oidc-provider
+  # Where a person without a portal session signs in: github (the default
+  # when unset), zitadel, or both (a page offering each). With zitadel or
+  # both, the provider also needs its ZITADEL client:
+  #   upstream: both
+  #   zitadel:
+  #     issuer: https://auth.mctl.ai
+  #     clientId: ${OIDC_ZITADEL_CLIENT_ID}
+  #     clientSecret: ${OIDC_ZITADEL_CLIENT_SECRET}
+  # registered with the redirect URI <issuer>/zitadel/callback. A ZITADEL
+  # sign-in is accepted only with the mctl:github_login claim in the ID
+  # token, and resolves to that login's tenant membership.
   github:
     clientId: ${AUTH_GITHUB_CLIENT_ID}
     clientSecret: ${AUTH_GITHUB_CLIENT_SECRET}

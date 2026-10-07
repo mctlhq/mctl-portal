@@ -5,7 +5,16 @@ import { v4 as uuid } from 'uuid';
 import { LoggerService } from '@backstage/backend-plugin-api';
 import { KeyStore } from './keyStore';
 import { OidcStore } from './oidcStore';
+import { renderPage } from './pages';
 import { OIDC_SESSION_COOKIE, parseCookie } from './sessionAuth';
+import {
+  pkceChallenge,
+  randomToken,
+  readGithubLogin,
+  UpstreamMode,
+  ZitadelUpstream,
+  ZitadelUpstreamConfig,
+} from './zitadelUpstream';
 
 /** Session cookie of a forward-auth protected host (host-only on that host). */
 export const FORWARD_AUTH_SESSION_COOKIE = '__Host-mctl_forward_auth';
@@ -17,9 +26,9 @@ export const FORWARD_AUTH_STATE_COOKIE = '__Host-mctl_forward_auth_state';
 export const FORWARD_AUTH_CALLBACK_PATH = '/.mctl-auth/callback';
 
 /**
- * Prefix of the cookie binding a GitHub sign-in to the browser that started
- * it. The full name carries the OAuth state, so sign-ins started in parallel
- * tabs do not overwrite each other.
+ * Prefix of the cookie binding an upstream sign-in (GitHub or ZITADEL) to the
+ * browser that started it. The full name carries the OAuth state, so
+ * sign-ins started in parallel tabs do not overwrite each other.
  */
 export const LOGIN_STATE_COOKIE_PREFIX = '__Host-oidc_login_';
 
@@ -69,6 +78,10 @@ export interface RouterOptions {
   githubClientSecret: string;
   store: OidcStore;
   forwardAuthHosts?: ForwardAuthHost[];
+  /** Where a person without a session signs in. Default: 'github'. */
+  upstream?: UpstreamMode;
+  /** Required unless upstream is 'github'. */
+  zitadel?: ZitadelUpstreamConfig;
 }
 
 export function createRouter(options: RouterOptions): Router {
@@ -82,6 +95,17 @@ export function createRouter(options: RouterOptions): Router {
 
   // Derive the GitHub OAuth callback URL from the issuer
   const githubCallbackUrl = `${issuer}/github/callback`;
+
+  // The ZITADEL upstream exists only when the switch selects it. Selecting
+  // it without its client fails startup rather than the first sign-in.
+  const upstreamMode: UpstreamMode = options.upstream ?? 'github';
+  let zitadel: ZitadelUpstream | undefined;
+  if (upstreamMode !== 'github') {
+    if (!options.zitadel) {
+      throw new Error(`oidcProvider.upstream is ${upstreamMode} but oidcProvider.zitadel is not configured`);
+    }
+    zitadel = new ZitadelUpstream(options.zitadel, `${issuer}/zitadel/callback`);
+  }
 
   // Cleanup expired entries every 60 seconds
   setInterval(() => {
@@ -114,6 +138,74 @@ export function createRouter(options: RouterOptions): Router {
         githubAuthUrl.searchParams.set('state', githubState);
         return githubAuthUrl.toString();
       });
+  }
+
+  // The ZITADEL counterpart: the same browser-binding cookie, plus a nonce
+  // and a PKCE verifier kept server-side with the state. The authorization
+  // endpoint is resolved first and the cookie is set last, so a failed
+  // discovery leaves no cookie and no pending row behind, and a failed
+  // write leaves no cookie.
+  async function buildZitadelAuthRedirect(res: Response, upstream: ZitadelUpstream, returnTo: string): Promise<string> {
+    const state = uuid();
+    const nonce = randomToken();
+    const codeVerifier = randomToken();
+    const url = await upstream.authorizationUrl({ state, nonce, codeChallenge: pkceChallenge(codeVerifier) });
+    await store.savePendingAuth(state, returnTo, Date.now() + LOGIN_STATE_MAX_AGE_SECONDS * 1000, {
+      nonce,
+      codeVerifier,
+    });
+    appendSetCookie(
+      res,
+      buildHostOnlyCookie(`${LOGIN_STATE_COOKIE_PREFIX}${state}`, '1', LOGIN_STATE_MAX_AGE_SECONDS),
+    );
+    return url;
+  }
+
+  async function startZitadelSignIn(res: Response, upstream: ZitadelUpstream, returnTo: string): Promise<void> {
+    let url: string;
+    try {
+      url = await buildZitadelAuthRedirect(res, upstream, returnTo);
+    } catch (err: any) {
+      logger.error(`[OIDC] ZITADEL sign-in could not start: ${err?.message}`);
+      sendPage(res, 502, {
+        title: 'Sign-in is unavailable',
+        paragraphs: ['The MCTL sign-in service could not be reached. Please try again in a minute.'],
+      });
+      return;
+    }
+    res.redirect(url);
+  }
+
+  // Sends a person without a portal session to sign in. returnTo is where
+  // the upstream callback sends the browser afterwards; every caller passes
+  // either its own URL or one that went through sanitizeReturnTo.
+  //
+  // With both upstreams enabled nothing is chosen for the person: they get a
+  // page linking to /login once per upstream, which is where a choice is
+  // read (`choice`, from /login only).
+  async function startSignIn(res: Response, returnTo: string, choice?: string): Promise<void> {
+    if (!zitadel) {
+      res.redirect(await buildGitHubAuthRedirect(res, returnTo));
+      return;
+    }
+    if (upstreamMode === 'zitadel' || choice === 'zitadel') {
+      await startZitadelSignIn(res, zitadel, returnTo);
+      return;
+    }
+    if (choice === 'github') {
+      res.redirect(await buildGitHubAuthRedirect(res, returnTo));
+      return;
+    }
+    const link = (upstream: string) =>
+      `${issuer}/login?${new URLSearchParams({ returnTo, upstream }).toString()}`;
+    sendPage(res, 200, {
+      title: 'Sign in to MCTL',
+      paragraphs: ['Choose how to sign in.'],
+      links: [
+        { href: link('zitadel'), label: 'Continue with your MCTL account' },
+        { href: link('github'), label: 'Sign in with GitHub (legacy)' },
+      ],
+    });
   }
 
   function readSessionCookie(
@@ -328,9 +420,9 @@ export function createRouter(options: RouterOptions): Router {
       return;
     }
 
-    // No session — start GitHub OAuth flow.
-    // Store the original /authorize URL so we can return to it after GitHub callback.
-    res.redirect(await buildGitHubAuthRedirect(res, req.originalUrl));
+    // No session — start the upstream sign-in (GitHub unless configured otherwise).
+    // Store the original /authorize URL so we can return to it after the callback.
+    await startSignIn(res, req.originalUrl);
   });
 
   // ── Browser Login Helper ───────────────────────────────────────────
@@ -363,7 +455,9 @@ export function createRouter(options: RouterOptions): Router {
       res.redirect(returnTo);
       return;
     }
-    res.redirect(await buildGitHubAuthRedirect(res, returnTo));
+    // Only /login reads a choice of upstream, and only when both are enabled.
+    const choice = typeof req.query.upstream === 'string' ? req.query.upstream : undefined;
+    await startSignIn(res, returnTo, choice);
   });
 
   // ── Browser Tenant Login Helper ───────────────────────────────────
@@ -402,7 +496,7 @@ export function createRouter(options: RouterOptions): Router {
       return;
     }
 
-    res.redirect(await buildGitHubAuthRedirect(res, tenantUrl));
+    await startSignIn(res, tenantUrl);
   });
 
   // ── OpenAI Codex OAuth Callback ───────────────────────────────────
@@ -460,6 +554,12 @@ export function createRouter(options: RouterOptions): Router {
   // for a token, fetch the GitHub username, verify DB membership, create
   // a session cookie, then redirect back to the original /authorize URL.
   router.get('/github/callback', async (req: Request, res: Response) => {
+    // With ZITADEL as the only upstream there is no GitHub sign-in to finish.
+    if (upstreamMode === 'zitadel') {
+      res.status(404).send('Not found');
+      return;
+    }
+
     const { code, state, error } = req.query as Record<string, string>;
 
     if (error) {
@@ -479,8 +579,9 @@ export function createRouter(options: RouterOptions): Router {
       return;
     }
 
+    // A state started for another upstream is not a GitHub sign-in.
     const pending = await store.consumePendingAuth(state);
-    if (!pending || pending.expiresAt < Date.now()) {
+    if (!pending || pending.expiresAt < Date.now() || pending.upstream !== 'github') {
       res.status(400).send('Invalid or expired OAuth state. Please try again.');
       return;
     }
@@ -549,6 +650,115 @@ export function createRouter(options: RouterOptions): Router {
     // Set session cookie and redirect back to original /authorize URL
     // /authorize will now see the session and issue the auth code to Dex.
     // The cookie is host-only on the portal whatever returnTo points at.
+    res.setHeader('Set-Cookie', [
+      buildHostOnlyCookie(OIDC_SESSION_COOKIE, sessionId, 28800),
+      buildHostOnlyCookie(loginStateCookie, '', 0),
+    ]);
+    res.redirect(pending.returnTo);
+  });
+
+  // ── ZITADEL OIDC Callback ────────────────────────────────────────────
+  // GET /zitadel/callback?code=X&state=Y
+  //
+  // ZITADEL redirects here after the person signs in. The code is exchanged
+  // (client secret plus PKCE) and the ID token verified against ZITADEL's
+  // keys, this client's audience and the nonce of this sign-in. The person
+  // is then whoever the token's GitHub login claim names: the same user id
+  // GitHub sign-in yields, checked against the same membership table. A
+  // token without that claim is refused. Nothing else in the token (e-mail,
+  // name, subject) is ever used to find a user, and no user is created.
+  router.get('/zitadel/callback', async (req: Request, res: Response) => {
+    if (!zitadel) {
+      res.status(404).send('Not found');
+      return;
+    }
+
+    const query = req.query as Record<string, unknown>;
+    const code = typeof query.code === 'string' ? query.code : '';
+    const state = typeof query.state === 'string' ? query.state : '';
+
+    if (typeof query.error === 'string' && query.error) {
+      // Logged only when it is shaped like an OAuth error code.
+      const errorCode = /^[a-z_]{1,64}$/.test(query.error) ? query.error : 'unrecognized';
+      logger.warn(`[OIDC] ZITADEL sign-in returned an error: ${errorCode}`);
+      sendPage(res, 400, {
+        title: 'Sign-in was not completed',
+        paragraphs: ['The MCTL sign-in was cancelled or failed. Please try again.'],
+      });
+      return;
+    }
+
+    if (!code || !state) {
+      res.status(400).send('Missing code or state');
+      return;
+    }
+
+    const loginStateCookie = `${LOGIN_STATE_COOKIE_PREFIX}${state}`;
+    if (!STATE_RE.test(state) || parseCookie(req.headers.cookie ?? '', loginStateCookie) !== '1') {
+      res.status(400).send('This sign-in was not started in this browser. Please try again.');
+      return;
+    }
+
+    // Single-use, and only a state this provider started for ZITADEL.
+    const pending = await store.consumePendingAuth(state);
+    if (
+      !pending ||
+      pending.expiresAt < Date.now() ||
+      pending.upstream !== 'zitadel' ||
+      !pending.nonce ||
+      !pending.codeVerifier
+    ) {
+      res.status(400).send('Invalid or expired sign-in state. Please try again.');
+      return;
+    }
+
+    let claims: Record<string, unknown>;
+    try {
+      const idToken = await zitadel.exchangeCode(code, pending.codeVerifier);
+      claims = await zitadel.verifyIdToken(idToken, pending.nonce);
+    } catch (err: any) {
+      logger.error(`[OIDC] ZITADEL sign-in failed: ${err?.message}`);
+      sendPage(res, 502, {
+        title: 'Sign-in failed',
+        paragraphs: ['The MCTL sign-in could not be verified. Please try again.'],
+      });
+      return;
+    }
+
+    const subject = String(claims.sub);
+    const githubLogin = readGithubLogin(claims);
+    if (!githubLogin) {
+      logger.warn(`[OIDC] ZITADEL sign-in refused: no GitHub login claim for sub=${subject}`);
+      sendPage(res, 403, {
+        title: 'Access denied',
+        paragraphs: [
+          'Your MCTL account is not linked to a portal user yet.',
+          'Ask a platform administrator to link your account, then sign in again.',
+        ],
+      });
+      return;
+    }
+
+    // Verify user is a member of a tenant
+    const exists = await membership.userExists(githubLogin);
+    if (!exists) {
+      logger.warn(`[OIDC] ZITADEL sign-in refused: ${githubLogin} (sub=${subject}) is not a member of any team`);
+      sendPage(res, 403, {
+        title: 'Access denied',
+        paragraphs: [
+          `The portal user "${githubLogin}" is not a member of any team.`,
+          'Register a team at mctl.ai or ask a team owner to invite you.',
+        ],
+      });
+      return;
+    }
+
+    const sessionId = uuid();
+    await store.saveSession(sessionId, githubLogin, Date.now() + 8 * 60 * 60 * 1000);
+
+    logger.info(`[OIDC] ZITADEL login: ${githubLogin} (sub=${subject})`);
+
+    // The same host-only session cookie as after a GitHub sign-in.
     res.setHeader('Set-Cookie', [
       buildHostOnlyCookie(OIDC_SESSION_COOKIE, sessionId, 28800),
       buildHostOnlyCookie(loginStateCookie, '', 0),
@@ -842,7 +1052,7 @@ export function createRouter(options: RouterOptions): Router {
 
     const session = await readSessionCookie(req);
     if (!session || session.expiresAt <= Date.now()) {
-      res.redirect(await buildGitHubAuthRedirect(res, req.originalUrl));
+      await startSignIn(res, req.originalUrl);
       return;
     }
 
@@ -955,6 +1165,13 @@ export function buildHostOnlyCookie(name: string, value: string, maxAgeSeconds: 
     'SameSite=Lax',
     `Max-Age=${Math.max(0, maxAgeSeconds)}`,
   ].join('; ');
+}
+
+// Browser-facing pages of the sign-in flow are never cached: a chooser or a
+// refusal describes one moment of one browser.
+function sendPage(res: Response, status: number, page: Parameters<typeof renderPage>[0]): void {
+  res.status(status).setHeader('Cache-Control', 'no-store');
+  res.type('html').send(renderPage(page));
 }
 
 function appendSetCookie(res: Response, cookie: string): void {

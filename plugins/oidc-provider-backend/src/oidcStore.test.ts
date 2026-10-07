@@ -210,6 +210,7 @@ describe('OidcStore pending auths', () => {
     expect(await store.consumePendingAuth('state-1')).toEqual({
       returnTo: '/return/here',
       expiresAt: 555,
+      upstream: 'github',
     });
     expect(await store.consumePendingAuth('state-1')).toBeUndefined();
   });
