@@ -1,5 +1,13 @@
 # Changelog
 
+## [4.18.1](https://github.com/mctlhq/mctl-portal/compare/4.18.0...4.18.1) (2026-10-08)
+
+
+### Bug Fixes
+
+* **oidc-provider:** close the P3 follow-ups from the [#151](https://github.com/mctlhq/mctl-portal/issues/151) review ([d7bb47c](https://github.com/mctlhq/mctl-portal/commit/d7bb47c92bb8705e5030ed98f2994ea0c9a7b568))
+* **oidc-provider:** close the P3 follow-ups from the [#151](https://github.com/mctlhq/mctl-portal/issues/151) review ([890d46b](https://github.com/mctlhq/mctl-portal/commit/890d46bc94444aee7a5a9a34244da51a1264580a)), closes [#152](https://github.com/mctlhq/mctl-portal/issues/152)
+
 ## [4.18.0](https://github.com/mctlhq/mctl-portal/compare/4.17.3...4.18.0) (2026-10-07)
 
 
