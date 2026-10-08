@@ -21,6 +21,12 @@ export function escapeHtml(value: string): string {
 // `javascript:` and the like are refused here by scheme. A path must start
 // with a single slash, so `//host` cannot leave this host either.
 function isSafeHref(href: string): boolean {
+  // Browsers drop ASCII control characters when following a link, so
+  // "/\t/evil.example" would collapse into scheme-relative "//evil.example".
+  // eslint-disable-next-line no-control-regex
+  if (/[\x00-\x1f\x7f]/.test(href)) {
+    return false;
+  }
   if (/^\/(?![/\\])/.test(href)) {
     return true;
   }

@@ -239,16 +239,26 @@ export class ZitadelUpstream {
     if (this.loadingKeys) {
       return this.loadingKeys;
     }
+    let refreshing = false;
     if (this.keys) {
       const cooling = this.keysRefreshedAt !== undefined && Date.now() - this.keysRefreshedAt < KEY_REFRESH_COOLDOWN_MS;
       if (!refresh || cooling) {
         return Promise.resolve(this.keys);
       }
-      this.keysRefreshedAt = Date.now();
+      refreshing = true;
     }
-    this.loadingKeys = this.readKeys().finally(() => {
-      this.loadingKeys = undefined;
-    });
+    this.loadingKeys = this.readKeys()
+      .then(keys => {
+        // The cooldown starts when a refresh succeeds: a failed read must
+        // not silence the retry for its full length.
+        if (refreshing) {
+          this.keysRefreshedAt = Date.now();
+        }
+        return keys;
+      })
+      .finally(() => {
+        this.loadingKeys = undefined;
+      });
     return this.loadingKeys;
   }
 
