@@ -456,6 +456,9 @@ describe('renderPage', () => {
     'vbscript:x',
     '//evil.example/a',
     '/\\evil.example/a',
+    '/\t/evil.example',
+    '/\n/evil.example',
+    '/a\x7f',
     'login',
     '',
   ])('leaves a link to %j off the page', href => {
@@ -807,6 +810,30 @@ describe('upstream zitadel', () => {
     }
   });
 
+  it('retries a failed key refresh without waiting for the cooldown', async () => {
+    await finish(await start());
+    expect(jwksReads()).toBe(1);
+    // A token of an unknown key id forces a refresh, which fails.
+    zitadel.idToken = nonce => signIdToken(idTokenClaims(nonce), { key: rotatedKey, kid: 'key-2' });
+    const realFetch = global.fetch;
+    global.fetch = jest.fn(async (input: any, init: any) => {
+      if (String(input).endsWith('/oauth/v2/keys')) {
+        zitadel.requests.push(String(input));
+        return new Response('unavailable', { status: 503 });
+      }
+      return realFetch(input, init);
+    }) as any;
+    await expectRefusedWithOneSession(await finish(await start()));
+    expect(jwksReads()).toBe(2);
+    // ZITADEL is back and publishes the new key: the very next sign-in reads
+    // the keys again instead of being silenced for the cooldown.
+    global.fetch = realFetch;
+    zitadel.keys = [signingJwk, rotatedJwk];
+    const res = await finish(await start());
+    expect(res.status).toBe(302);
+    expect(jwksReads()).toBe(3);
+  });
+
   it('shares one key read between sign-ins that finish together', async () => {
     const a = await start();
     const nonceA = flowNonce;
@@ -891,6 +918,7 @@ describe('upstream zitadel', () => {
     await expectRefused(res, 400);
     expect(res.text).not.toContain('alert(1)');
     expect(res.headers.get('cache-control')).toBe('no-store');
+    expect(res.headers.get('content-security-policy')).toBe("default-src 'none'");
   });
 
   it('no longer serves the GitHub callback', async () => {

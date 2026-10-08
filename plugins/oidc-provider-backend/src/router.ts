@@ -122,6 +122,9 @@ export function createRouter(options: RouterOptions): Router {
   // Also binds the GitHub state to this browser with a host-only cookie, so
   // a callback URL started by someone else cannot sign this browser in to
   // their account (login CSRF).
+  // The GitHub path is deliberately left as it was before the ZITADEL
+  // upstream existed (state cookie set before the pending row is saved);
+  // only the ZITADEL twin orders the two the safer way round.
   function buildGitHubAuthRedirect(res: Response, returnTo: string): Promise<string> {
     const githubState = uuid();
     appendSetCookie(
@@ -1171,6 +1174,8 @@ export function buildHostOnlyCookie(name: string, value: string, maxAgeSeconds: 
 // refusal describes one moment of one browser.
 function sendPage(res: Response, status: number, page: Parameters<typeof renderPage>[0]): void {
   res.status(status).setHeader('Cache-Control', 'no-store');
+  // The pages carry no script, style or subresource; say so to the browser.
+  res.setHeader('Content-Security-Policy', "default-src 'none'");
   res.type('html').send(renderPage(page));
 }
 
