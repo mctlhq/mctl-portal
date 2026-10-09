@@ -75,7 +75,9 @@
       "last 1 safari version"
     ]
   },
+  "configSchema": "config.d.ts",
   "files": [
-    "dist"
+    "dist",
+    "config.d.ts"
   ]
 }

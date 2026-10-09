@@ -8,8 +8,12 @@ import {
   alertApiRef,
   configApiRef,
   createApiFactory,
+  discoveryApiRef,
+  oauthRequestApiRef,
 } from '@backstage/core-plugin-api';
+import { OAuth2 } from '@backstage/core-app-api';
 import { toastApiRef } from '@backstage/frontend-plugin-api';
+import { zitadelAuthApiRef } from './signIn';
 
 export const apis: AnyApiFactory[] = [
   createApiFactory({
@@ -18,6 +22,25 @@ export const apis: AnyApiFactory[] = [
     factory: ({ configApi }) => ScmIntegrationsApi.fromConfig(configApi),
   }),
   ScmAuth.createDefaultApiFactory(),
+  // ZITADEL sign-in, auth provider `oidc` in the backend. offline_access
+  // asks ZITADEL for a refresh token, which the session refresh needs.
+  createApiFactory({
+    api: zitadelAuthApiRef,
+    deps: {
+      discoveryApi: discoveryApiRef,
+      oauthRequestApi: oauthRequestApiRef,
+      configApi: configApiRef,
+    },
+    factory: ({ discoveryApi, oauthRequestApi, configApi }) =>
+      OAuth2.create({
+        configApi,
+        discoveryApi,
+        oauthRequestApi,
+        provider: { id: 'oidc', title: 'MCTL account', icon: () => null },
+        environment: configApi.getOptionalString('auth.environment'),
+        defaultScopes: ['openid', 'profile', 'email', 'offline_access'],
+      }),
+  }),
   // Backstage 1.50 introduced toastApiRef but app-defaults 1.7.7 still
   // registers only alertApiRef. plugin-notifications components call
   // useApi(toastApiRef) and crash with NotImplementedError, blanking the

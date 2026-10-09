@@ -8,6 +8,7 @@
 
 import { createBackend } from '@backstage/backend-defaults';
 import { githubAuthModule } from './githubAuthModule';
+import { zitadelAuthModule } from './zitadelAuthModule';
 import {
   authModuleGithubInstallRedirect,
   scaffolderFiltersModule,
@@ -32,6 +33,9 @@ backend.add(import('@backstage/plugin-techdocs-backend'));
 backend.add(import('@backstage/plugin-auth-backend'));
 // GitHub sign-in, only for catalog Users (tenant members)
 backend.add(githubAuthModule);
+// ZITADEL sign-in (provider `oidc`), same catalog-only rule through the
+// mctl:github_login claim; inert until auth.providers.oidc is configured
+backend.add(zitadelAuthModule);
 
 // catalog plugin
 backend.add(import('@backstage/plugin-catalog-backend'));
