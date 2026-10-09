@@ -1,5 +1,18 @@
 # Changelog
 
+## [4.19.0](https://github.com/mctlhq/mctl-portal/compare/4.18.1...4.19.0) (2026-10-09)
+
+
+### Features
+
+* **auth:** portal sign-in through ZITADEL behind auth.signIn ([73154a8](https://github.com/mctlhq/mctl-portal/commit/73154a88f7db6a243d2caf1381b72f83d82a017c))
+* **auth:** portal sign-in through ZITADEL behind auth.signIn ([d0f9d0b](https://github.com/mctlhq/mctl-portal/commit/d0f9d0bff3a54c07df9943bf36dd5c8e24f67bd0))
+
+
+### Bug Fixes
+
+* **auth:** address review nits on ZITADEL sign-in ([3c1e428](https://github.com/mctlhq/mctl-portal/commit/3c1e428889fc860f96a95f3f95aaaa81df5c5c1a))
+
 ## [4.18.1](https://github.com/mctlhq/mctl-portal/compare/4.18.0...4.18.1) (2026-10-08)
 
 
