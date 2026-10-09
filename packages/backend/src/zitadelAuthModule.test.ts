@@ -82,6 +82,12 @@ describe('githubLoginOf', () => {
     expect(githubLoginOf(profile(claims))).toBeNull();
   });
 
+  it('maps an undecodable ID token to no one instead of throwing', () => {
+    const p = profile(undefined, { 'mctl:github_login': 'mallory' });
+    p.tokenset.id_token = 'not.a.jwt';
+    expect(githubLoginOf(p)).toBeNull();
+  });
+
   it('never uses email, preferred_username or sub in place of the claim', () => {
     const claims = {
       email: 'carol@example.com',
@@ -108,13 +114,19 @@ describe('createZitadelSignInResolver', () => {
   it('refuses an unmapped account without looking anyone up', async () => {
     const ctx = context(['carol']);
     await expect(
-      resolver(signInInfo(profile({ email: 'carol@example.com' })), ctx),
+      resolver(
+        signInInfo(profile({ sub: '3141', email: 'carol@example.com' })),
+        ctx,
+      ),
     ).rejects.toMatchObject({
       name: 'NotAllowedError',
       message: expect.stringMatching(/not mapped/),
     });
     expect(ctx.signInWithCatalogUser).not.toHaveBeenCalled();
     expect(ctx.issueToken).not.toHaveBeenCalled();
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.stringContaining('sub=3141'),
+    );
   });
 
   it('refuses a mapped login without a catalog User and issues no token', async () => {

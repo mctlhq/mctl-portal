@@ -27,20 +27,41 @@ import {
  * claim, which ZITADEL emits for the portal's clients from metadata only the
  * IaC writes (mctlhq/mctl-portal#150). The ID token is read when the result
  * has one: openid-client has verified it (signature, issuer, audience,
- * nonce). A refresh without a new ID token falls back to the userinfo
- * response, which came from the issuer for this session's access token.
+ * nonce). A token response without an ID token, which ZITADEL returns on
+ * refresh and could in principle return on any exchange, falls back to the
+ * userinfo response, which the backend fetched from the issuer with this
+ * session's access token.
  *
  * No other claim is ever used in its place: e-mail, preferred_username and
  * sub are not GitHub logins, and guessing one would sign a person in as
  * someone else.
  */
 export function githubLoginOf(profile: OidcAuthResult): string | null {
+  const claims = identityClaims(profile);
+  return claims ? readGithubLogin(claims) : null;
+}
+
+// The claims a sign-in is judged on: the verified ID token when there is
+// one, otherwise userinfo. An undecodable ID token yields null, so "the
+// claim is unusable" always means "not mapped" rather than a 500.
+function identityClaims(
+  profile: OidcAuthResult,
+): Record<string, unknown> | null {
   if (profile.tokenset?.id_token) {
-    return readGithubLogin(
-      profile.tokenset.claims() as Record<string, unknown>,
-    );
+    try {
+      return profile.tokenset.claims() as Record<string, unknown>;
+    } catch {
+      return null;
+    }
   }
-  return readGithubLogin((profile.userinfo ?? {}) as Record<string, unknown>);
+  return (profile.userinfo ?? {}) as Record<string, unknown>;
+}
+
+// The ZITADEL subject, for correlating a refused sign-in with the ZITADEL
+// audit log. Logged only; never used to decide who someone is.
+function subjectOf(profile: OidcAuthResult): string {
+  const sub = identityClaims(profile)?.sub;
+  return typeof sub === 'string' && sub ? sub : 'unknown';
 }
 
 /**
@@ -56,7 +77,8 @@ export function createZitadelSignInResolver(
     const login = githubLoginOf(result.fullProfile);
     if (!login) {
       logger.warn(
-        `ZITADEL sign-in refused: no valid ${GITHUB_LOGIN_CLAIM} claim`,
+        `ZITADEL sign-in refused: no valid ${GITHUB_LOGIN_CLAIM} claim ` +
+          `for sub=${subjectOf(result.fullProfile)}`,
       );
       throw new NotAllowedError(
         'Your MCTL account is not mapped to a portal user yet. ' +
@@ -89,6 +111,12 @@ export function createZitadelSignInResolver(
  * (/api/auth/oidc). It is inert until `auth.providers.oidc` is configured:
  * the auth backend registers no routes for a provider without config, and
  * the frontend offers it only when `auth.signIn` selects it.
+ *
+ * `@backstage/plugin-auth-backend-module-oidc-provider` is pinned exactly in
+ * package.json, to the version that matches the Backstage release in use
+ * (0.4.16 for 1.51.1). A caret range resolves a newer release that brings a
+ * second copy of `plugin-auth-node`; restore the exact pin if a
+ * `versions:bump` turns it back into a range.
  */
 export const zitadelAuthModule = createBackendModule({
   pluginId: 'auth',

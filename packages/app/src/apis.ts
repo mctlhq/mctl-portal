@@ -13,6 +13,7 @@ import {
 } from '@backstage/core-plugin-api';
 import { OAuth2 } from '@backstage/core-app-api';
 import { toastApiRef } from '@backstage/frontend-plugin-api';
+import AccountCircleIcon from '@material-ui/icons/AccountCircle';
 import { zitadelAuthApiRef } from './signIn';
 
 export const apis: AnyApiFactory[] = [
@@ -36,7 +37,7 @@ export const apis: AnyApiFactory[] = [
         configApi,
         discoveryApi,
         oauthRequestApi,
-        provider: { id: 'oidc', title: 'MCTL account', icon: () => null },
+        provider: { id: 'oidc', title: 'MCTL account', icon: AccountCircleIcon },
         environment: configApi.getOptionalString('auth.environment'),
         defaultScopes: ['openid', 'profile', 'email', 'offline_access'],
       }),

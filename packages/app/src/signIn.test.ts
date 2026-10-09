@@ -14,6 +14,12 @@ describe('signInProviders', () => {
     ]);
   });
 
+  it('falls back to GitHub alone for an unknown mode', () => {
+    expect(signInProviders('zitdel').map(p => p.apiRef)).toEqual([
+      githubAuthApiRef,
+    ]);
+  });
+
   it('offers ZITADEL alone for zitadel', () => {
     expect(signInProviders('zitadel').map(p => p.apiRef)).toEqual([
       zitadelAuthApiRef,
