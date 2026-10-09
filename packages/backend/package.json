@@ -24,6 +24,7 @@
     "@backstage/plugin-auth-backend": "^0.29.0",
     "@backstage/plugin-auth-backend-module-github-provider": "^0.5.3",
     "@backstage/plugin-auth-backend-module-guest-provider": "^0.2.19",
+    "@backstage/plugin-auth-backend-module-oidc-provider": "0.4.16",
     "@backstage/plugin-auth-node": "^0.7.1",
     "@backstage/plugin-catalog-backend": "^3.7.1",
     "@backstage/plugin-catalog-backend-module-github": "^0.13.2",

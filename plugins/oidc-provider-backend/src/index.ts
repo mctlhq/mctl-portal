@@ -5,3 +5,4 @@ export {
   parseCookie,
   readOidcSessionUserId,
 } from './sessionAuth';
+export { GITHUB_LOGIN_CLAIM, readGithubLogin } from './zitadelUpstream';

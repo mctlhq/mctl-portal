@@ -41,7 +41,12 @@ import {
 import { createApp } from '@backstage/app-defaults';
 import { AppRouter, FlatRoutes } from '@backstage/core-app-api';
 import { CatalogGraphPage } from '@backstage/plugin-catalog-graph';
-import { githubAuthApiRef } from '@backstage/core-plugin-api';
+import {
+  configApiRef,
+  SignInPageProps,
+  useApi,
+} from '@backstage/core-plugin-api';
+import { signInProviders } from './signIn';
 import { catalogTranslationRef } from '@backstage/plugin-catalog/alpha';
 import { coreComponentsTranslationRef } from '@backstage/core-components/alpha';
 import { createTranslationMessages } from '@backstage/core-plugin-api/alpha';
@@ -122,6 +127,20 @@ const backstageDefaultLight = createBackstageTheme({
   defaultPageTheme: 'home',
 });
 
+// The sign-in page offers the providers `auth.signIn` selects (signIn.ts):
+// GitHub until the switch is set, then ZITADEL, with GitHub as legacy
+// during the canary. `auto` exists only on the single-provider page; the
+// multi-provider page restores a session on its own through each
+// provider's silent loader.
+function PortalSignInPage(props: SignInPageProps) {
+  const config = useApi(configApiRef);
+  const providers = signInProviders(config.getOptionalString('auth.signIn'));
+  if (providers.length === 1) {
+    return <SignInPage {...props} auto provider={providers[0]} />;
+  }
+  return <SignInPage {...props} providers={providers} />;
+}
+
 const app = createApp({
   apis,
   __experimentalTranslations: {
@@ -185,18 +204,7 @@ const app = createApp({
     });
   },
   components: {
-    SignInPage: props => (
-      <SignInPage
-        {...props}
-        auto
-        provider={{
-          id: 'github-auth-provider',
-          title: 'GitHub',
-          message: 'Sign in using GitHub',
-          apiRef: githubAuthApiRef,
-        }}
-      />
-    ),
+    SignInPage: props => <PortalSignInPage {...props} />,
   },
 });
 
