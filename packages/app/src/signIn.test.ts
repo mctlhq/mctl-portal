@@ -1,5 +1,17 @@
 import { githubAuthApiRef } from '@backstage/core-plugin-api';
-import { signInProviders, zitadelAuthApiRef } from './signIn';
+import {
+  signInProviders,
+  ZITADEL_AUTH_PROVIDER_ID,
+  zitadelAuthApiRef,
+} from './signIn';
+
+describe('ZITADEL_AUTH_PROVIDER_ID', () => {
+  it('is oidc, the backend provider id', () => {
+    // Pinned on both sides: packages/backend/src/zitadelAuthModule.test.ts
+    // asserts the backend registers 'oidc'. A mismatch is a 404 at sign-in.
+    expect(ZITADEL_AUTH_PROVIDER_ID).toBe('oidc');
+  });
+});
 
 describe('signInProviders', () => {
   it('offers GitHub alone when unset, as before the switch existed', () => {

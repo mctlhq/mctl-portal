@@ -2,9 +2,28 @@ import { NotFoundError } from '@backstage/errors';
 import {
   createZitadelSignInResolver,
   githubLoginOf,
+  registerZitadelProvider,
+  ZITADEL_AUTH_PROVIDER_ID,
 } from './zitadelAuthModule';
 
 const logger = { info: jest.fn(), warn: jest.fn() };
+
+// Log assertions must see only the calls of their own test.
+beforeEach(() => jest.clearAllMocks());
+
+describe('registerZitadelProvider', () => {
+  it('registers the sign-in as provider oidc', () => {
+    // Pinned on both sides: packages/app/src/signIn.test.ts asserts the
+    // frontend id is 'oidc' too. A mismatch is a 404 at sign-in.
+    expect(ZITADEL_AUTH_PROVIDER_ID).toBe('oidc');
+    const registerProvider = jest.fn();
+    registerZitadelProvider({ registerProvider }, logger);
+    expect(registerProvider).toHaveBeenCalledTimes(1);
+    expect(registerProvider).toHaveBeenCalledWith(
+      expect.objectContaining({ providerId: 'oidc' }),
+    );
+  });
+});
 
 // The shape oidcAuthenticator hands the resolver: an openid-client TokenSet
 // (claims() decodes the already verified ID token) and the userinfo response.

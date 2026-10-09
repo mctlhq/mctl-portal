@@ -9,6 +9,7 @@ import {
   OidcAuthResult,
 } from '@backstage/plugin-auth-backend-module-oidc-provider';
 import {
+  AuthProvidersExtensionPoint,
   authProvidersExtensionPoint,
   createOAuthProviderFactory,
   OAuthAuthenticatorResult,
@@ -107,10 +108,37 @@ export function createZitadelSignInResolver(
 }
 
 /**
- * The portal UI sign-in through ZITADEL, as auth provider `oidc`
- * (/api/auth/oidc). It is inert until `auth.providers.oidc` is configured:
- * the auth backend registers no routes for a provider without config, and
- * the frontend offers it only when `auth.signIn` selects it.
+ * The auth provider id of the ZITADEL sign-in, which is also its route
+ * (/api/auth/oidc). It must equal ZITADEL_AUTH_PROVIDER_ID in
+ * packages/app/src/signIn.ts: a mismatch is a 404 at sign-in that no type
+ * check sees. Both sides pin it to 'oidc' in their tests.
+ */
+export const ZITADEL_AUTH_PROVIDER_ID = 'oidc';
+
+/** Registers the ZITADEL sign-in with the auth backend. */
+export function registerZitadelProvider(
+  providers: Pick<AuthProvidersExtensionPoint, 'registerProvider'>,
+  logger: Pick<LoggerService, 'info' | 'warn'>,
+): void {
+  providers.registerProvider({
+    providerId: ZITADEL_AUTH_PROVIDER_ID,
+    factory: createOAuthProviderFactory({
+      authenticator: oidcAuthenticator,
+      signInResolver: createZitadelSignInResolver(logger),
+    }),
+  });
+}
+
+/**
+ * The portal UI sign-in through ZITADEL, as auth provider `oidc`.
+ *
+ * Two independent switches, and only the first one is an access gate:
+ * - `auth.providers.oidc`: without it the auth backend registers no routes
+ *   for the provider. With it, /api/auth/oidc/start works for anyone who
+ *   calls it, whatever the sign-in page shows.
+ * - `auth.signIn` (frontend): which buttons the sign-in page shows. It
+ *   changes what is offered, not who can sign in.
+ * Who can sign in is decided only by createZitadelSignInResolver.
  *
  * `@backstage/plugin-auth-backend-module-oidc-provider` is pinned exactly in
  * package.json, to the version that matches the Backstage release in use
@@ -128,13 +156,7 @@ export const zitadelAuthModule = createBackendModule({
         logger: coreServices.logger,
       },
       async init({ providers, logger }) {
-        providers.registerProvider({
-          providerId: 'oidc',
-          factory: createOAuthProviderFactory({
-            authenticator: oidcAuthenticator,
-            signInResolver: createZitadelSignInResolver(logger),
-          }),
-        });
+        registerZitadelProvider(providers, logger);
       },
     });
   },
