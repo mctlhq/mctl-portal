@@ -9,6 +9,13 @@ import {
 } from '@backstage/core-plugin-api';
 
 /**
+ * The backend auth provider id of the ZITADEL sign-in, which is also its
+ * route (/api/auth/oidc). It must equal ZITADEL_AUTH_PROVIDER_ID in
+ * packages/backend/src/zitadelAuthModule.ts; both tests pin it to 'oidc'.
+ */
+export const ZITADEL_AUTH_PROVIDER_ID = 'oidc';
+
+/**
  * The portal sign-in through ZITADEL: auth provider `oidc` in the backend
  * (packages/backend/src/zitadelAuthModule.ts).
  */
