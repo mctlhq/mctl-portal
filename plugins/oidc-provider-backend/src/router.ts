@@ -893,10 +893,9 @@ export function createRouter(options: RouterOptions): Router {
   // X-Forwarded-Host and X-Forwarded-Uri are the ones it set.
   router.get('/forward-auth', async (req: Request, res: Response) => {
     const tenant = typeof req.query.tenant === 'string' ? req.query.tenant.trim().toLowerCase() : '';
-    const service =
-      (typeof req.query.service === 'string' ? req.query.service.trim().toLowerCase() : '') || 'openclaw';
-    if (!tenant) {
-      res.status(400).send('Missing tenant');
+    const service = typeof req.query.service === 'string' ? req.query.service.trim().toLowerCase() : '';
+    if (!tenant || !service) {
+      res.status(400).send('Missing tenant or service');
       return;
     }
     if (!NAME_RE.test(tenant) || !NAME_RE.test(service)) {
