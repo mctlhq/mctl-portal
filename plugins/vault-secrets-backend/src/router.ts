@@ -1,4 +1,4 @@
-import { Router, Request, Response, urlencoded } from 'express';
+import { Router, Request, Response } from 'express';
 import type { Knex } from 'knex';
 import {
   HttpAuthService,
@@ -6,7 +6,6 @@ import {
   UserInfoService,
 } from '@backstage/backend-plugin-api';
 import { getTenantMember, isAdminUser } from '../../tenant-backend/src/membershipLookup';
-import { readOidcSessionUserId } from '../../oidc-provider-backend/src/sessionAuth';
 import type { VaultTokenProvider } from './vaultAuth';
 
 export interface RouterOptions {
@@ -18,9 +17,6 @@ export interface RouterOptions {
   vaultAddr: string;
   /** Supplies (and can refresh) the Vault token. See vaultAuth.ts. */
   vaultTokens: VaultTokenProvider;
-  oidcLoginUrl: string;
-  /** Public base URL of this backend (e.g. https://app.mctl.ai). Trusted source of truth for building self-referential URLs. */
-  backendBaseUrl: string;
 }
 
 type TenantAuthResult =
@@ -70,11 +66,8 @@ export function auditSecretRead(
 }
 
 export function createRouter(options: RouterOptions): Router {
-  const { logger, httpAuth, userInfo, db, isPostgres, vaultAddr, vaultTokens, oidcLoginUrl, backendBaseUrl } = options;
+  const { logger, httpAuth, userInfo, db, isPostgres, vaultAddr, vaultTokens } = options;
   const router = Router();
-  router.use(urlencoded({ extended: false }));
-
-  const trustedOrigin = deriveOrigin(backendBaseUrl);
 
   /**
    * Express decodes each path segment before it reaches req.params, so a
@@ -200,95 +193,6 @@ export function createRouter(options: RouterOptions): Router {
     }
   });
 
-  router.get('/openclaw/intake', async (req: Request, res: Response) => {
-    const team = String(req.query.team ?? '').trim();
-    const service = String(req.query.service ?? '').trim();
-    const returnTo = sanitizeReturnTo(String(req.query.returnTo ?? '').trim());
-    if (!team || !service) {
-      res.status(400).send('Missing team or service');
-      return;
-    }
-    if (!SLUG_RE.test(team) || !SLUG_RE.test(service)) {
-      res.status(400).send('Invalid team or service name');
-      return;
-    }
-
-    try {
-      const userId = await readOidcSessionUserId(req.headers.cookie, db, isPostgres);
-      if (!userId) {
-        const selfUrl = buildSelfUrl(trustedOrigin, req.originalUrl);
-        res.redirect(`${oidcLoginUrl}?returnTo=${encodeURIComponent(selfUrl)}`);
-        return;
-      }
-
-      const auth = await checkTenantRole(db, isPostgres, team, userId, 'owner');
-      if (!auth.ok) {
-        res.status(auth.status).send(auth.error);
-        return;
-      }
-
-      // Override Backstage's default Referrer-Policy: no-referrer so that
-      // the form POST from this page keeps its Origin/Referer headers,
-      // which our CSRF check relies on.
-      res.setHeader('Referrer-Policy', 'same-origin');
-      res.type('html').send(renderOpenClawIntakePage(team, service, returnTo));
-    } catch (err: any) {
-      logger.error(`openclaw intake GET failed: ${err?.stack ?? err}`);
-      res.status(500).send('Internal error');
-    }
-  });
-
-  router.post('/openclaw/intake', async (req: Request, res: Response) => {
-    if (!isSameOrigin(req, trustedOrigin)) {
-      res.status(403).send('Cross-site request blocked');
-      return;
-    }
-
-    const team = String(req.body.team ?? '').trim();
-    const service = String(req.body.service ?? '').trim();
-    const returnTo = sanitizeReturnTo(String(req.body.returnTo ?? '').trim());
-    const botToken = String(req.body.telegram_bot_token ?? '').trim();
-    if (!team || !service) {
-      res.status(400).send('Missing team or service');
-      return;
-    }
-    if (!SLUG_RE.test(team) || !SLUG_RE.test(service)) {
-      res.status(400).send('Invalid team or service name');
-      return;
-    }
-    if (!botToken) {
-      res.status(400).send('Telegram bot token is required');
-      return;
-    }
-
-    try {
-      const userId = await readOidcSessionUserId(req.headers.cookie, db, isPostgres);
-      if (!userId) {
-        res.status(401).send('Authentication required');
-        return;
-      }
-
-      const auth = await checkTenantRole(db, isPostgres, team, userId, 'owner');
-      if (!auth.ok) {
-        res.status(auth.status).send(auth.error);
-        return;
-      }
-
-      await writeVaultKV(vaultAddr, vaultTokens, `teams/${team}/${service}/telegram`, {
-        'telegram-bot-token': botToken,
-      });
-      if (returnTo) {
-        const sep = returnTo.includes('?') ? '&' : '?';
-        res.redirect(`${returnTo}${sep}telegram_saved=1`);
-        return;
-      }
-      res.type('html').send(renderOpenClawSavedPage(team, service));
-    } catch (err: any) {
-      logger.error(`openclaw intake POST failed for ${team}/${service}: ${err?.stack ?? err}`);
-      res.status(500).send('Internal error');
-    }
-  });
-
   return router;
 }
 
@@ -348,45 +252,6 @@ export async function checkTenantRole(
   return { ok: true, userId, role: member.role, viaAdminBypass: false };
 }
 
-function deriveOrigin(backendBaseUrl: string): string {
-  try {
-    return new URL(backendBaseUrl).origin;
-  } catch {
-    throw new Error(`vault-secrets: invalid backend.baseUrl: ${backendBaseUrl}`);
-  }
-}
-
-function buildSelfUrl(trustedOrigin: string, originalUrl: string): string {
-  return `${trustedOrigin}${originalUrl}`;
-}
-
-function isSameOrigin(req: Request, trustedOrigin: string): boolean {
-  // Primary: Origin header. Sent by browsers for POST except under
-  // Referrer-Policy: no-referrer (which Chrome honors by dropping Origin too).
-  const origin = String(req.headers.origin ?? '').trim();
-  if (origin) {
-    return origin === trustedOrigin;
-  }
-  // Fallback: Referer header. Same caveat — suppressed under no-referrer.
-  const referer = String(req.headers.referer ?? '').trim();
-  if (referer) {
-    try {
-      return new URL(referer).origin === trustedOrigin;
-    } catch {
-      return false;
-    }
-  }
-  // Last resort: Sec-Fetch-Site. Modern Fetch-Metadata header that can't be
-  // set by JavaScript and is sent regardless of Referrer-Policy. 'same-origin'
-  // means the browser initiated the request from the same origin as the
-  // target, which is exactly the CSRF safety we need.
-  const fetchSite = String(req.headers['sec-fetch-site'] ?? '').trim();
-  if (fetchSite === 'same-origin') {
-    return true;
-  }
-  return false;
-}
-
 function extractUserId(ownershipEntityRefs: string[]): string | undefined {
   const ref = ownershipEntityRefs.find(r => r.startsWith('user:default/'));
   return ref?.split('/').pop();
@@ -441,111 +306,6 @@ async function readVaultKV(vaultAddr: string, tokens: VaultTokenProvider, path: 
   return vaultData?.data?.data ?? undefined;
 }
 
-async function writeVaultKV(vaultAddr: string, tokens: VaultTokenProvider, path: string, data: Record<string, string>): Promise<void> {
-  const vaultResp = await vaultFetch(vaultAddr, tokens, path, {
-    method: 'POST',
-    body: JSON.stringify({ data }),
-  });
-  if (!vaultResp.ok) {
-    throw new Error(`Vault write failed: HTTP ${vaultResp.status}`);
-  }
-}
-
-function sanitizeReturnTo(value: string): string {
-  if (!value) {
-    return '';
-  }
-  try {
-    const parsed = new URL(value);
-    if (parsed.protocol !== 'https:') {
-      return '';
-    }
-    if (!parsed.hostname.endsWith('.mctl.ai') && !parsed.hostname.endsWith('.mctl.me')) {
-      return '';
-    }
-    return parsed.toString();
-  } catch {
-    return '';
-  }
-}
-
-// Team and service names are kebab-case slugs (see CONVENTIONS.md). Both are
-// interpolated into intake HTML below, so reject anything else up front.
+// Team and app names are kebab-case slugs (see CONVENTIONS.md). Both become
+// Vault path components, so reject anything else up front (see rejectNonSlug).
 export const SLUG_RE = /^[a-z0-9][a-z0-9-]{0,30}$/;
-
-export function escapeHtml(value: string): string {
-  return value
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
-}
-
-export function renderOpenClawIntakePage(rawTeam: string, rawService: string, rawReturnTo: string): string {
-  const team = escapeHtml(rawTeam);
-  const service = escapeHtml(rawService);
-  const returnTo = escapeHtml(rawReturnTo);
-  return `<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width,initial-scale=1" />
-    <title>Connect Telegram Bot</title>
-    <style>
-      body { font-family: ui-sans-serif, system-ui, sans-serif; margin: 0; background: #0f172a; color: #e2e8f0; }
-      main { max-width: 720px; margin: 48px auto; padding: 32px; background: #111827; border-radius: 20px; box-shadow: 0 16px 48px rgba(0,0,0,0.35); }
-      h1 { margin-top: 0; font-size: 28px; }
-      p, li { line-height: 1.5; color: #cbd5e1; }
-      code { background: #1e293b; padding: 2px 6px; border-radius: 6px; }
-      label { display: block; margin-top: 20px; margin-bottom: 8px; font-weight: 600; color: #f8fafc; }
-      input[type=text] { width: 100%; padding: 14px 16px; border: 1px solid #334155; border-radius: 12px; background: #020617; color: #f8fafc; box-sizing: border-box; }
-      button { margin-top: 24px; padding: 14px 18px; border: 0; border-radius: 12px; background: #22c55e; color: #052e16; font-weight: 700; cursor: pointer; }
-    </style>
-  </head>
-  <body>
-    <main>
-      <h1>Save Telegram Bot Token</h1>
-      <p>This stores the bot token directly in Vault for <code>${team}/${service}</code>. The token is not echoed back into Claude or the dashboard.</p>
-      <ol>
-        <li>Paste the token from <code>@BotFather</code>.</li>
-        <li>Click save.</li>
-        <li>Go back to Claude and continue with <code>resume-openclaw-deploy</code>.</li>
-      </ol>
-      <form method="post" action="/api/vault-secrets/openclaw/intake">
-        <input type="hidden" name="team" value="${team}" />
-        <input type="hidden" name="service" value="${service}" />
-        <input type="hidden" name="returnTo" value="${returnTo}" />
-        <label for="telegram_bot_token">Telegram bot token</label>
-        <input id="telegram_bot_token" name="telegram_bot_token" type="text" autocomplete="off" spellcheck="false" placeholder="123456789:AA..." />
-        <button type="submit">Save Secret</button>
-      </form>
-    </main>
-  </body>
-</html>`;
-}
-
-export function renderOpenClawSavedPage(rawTeam: string, rawService: string): string {
-  const team = escapeHtml(rawTeam);
-  const service = escapeHtml(rawService);
-  return `<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width,initial-scale=1" />
-    <title>Secret Saved</title>
-    <style>
-      body { font-family: ui-sans-serif, system-ui, sans-serif; background: #f8fafc; color: #0f172a; display: grid; place-items: center; min-height: 100vh; margin: 0; }
-      main { max-width: 640px; padding: 32px; }
-      code { background: #e2e8f0; padding: 2px 6px; border-radius: 6px; }
-    </style>
-  </head>
-  <body>
-    <main>
-      <h1>Secret saved</h1>
-      <p>The Telegram bot token for <code>${team}/${service}</code> is now stored in Vault.</p>
-      <p>Return to Claude and continue with <code>resume-openclaw-deploy</code>.</p>
-    </main>
-  </body>
-</html>`;
-}

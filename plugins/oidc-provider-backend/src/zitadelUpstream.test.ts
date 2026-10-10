@@ -28,13 +28,13 @@ const DEX_AUTHORIZE = `/authorize?response_type=code&client_id=dex&redirect_uri=
 // Every browser entry point that starts a sign-in, and where its callback
 // must send the browser afterwards.
 const SIGN_IN_ENTRY_POINTS: Array<[string, string, string]> = [
-  ['/login', `/login?returnTo=${encodeURIComponent('https://ovk-openclaw.mctl.ai/')}`, 'https://ovk-openclaw.mctl.ai/'],
-  ['/tenant-login', '/tenant-login?tenant=ovk&service=openclaw', 'https://ovk-openclaw.mctl.ai/'],
+  ['/login', `/login?returnTo=${encodeURIComponent('https://ovk-webapp.mctl.ai/')}`, 'https://ovk-webapp.mctl.ai/'],
+  ['/tenant-login', '/tenant-login?tenant=ovk&service=webapp', 'https://ovk-webapp.mctl.ai/'],
   ['/authorize (Dex)', DEX_AUTHORIZE, `/api/oidc-provider${DEX_AUTHORIZE}`],
   [
     '/forward-auth/authorize',
-    '/forward-auth/authorize?tenant=ovk&service=openclaw&host=ovk-openclaw.mctl.ai&state=0123456789abcdef',
-    '/api/oidc-provider/forward-auth/authorize?tenant=ovk&service=openclaw&host=ovk-openclaw.mctl.ai&state=0123456789abcdef',
+    '/forward-auth/authorize?tenant=ovk&service=webapp&host=ovk-webapp.mctl.ai&state=0123456789abcdef',
+    '/api/oidc-provider/forward-auth/authorize?tenant=ovk&service=webapp&host=ovk-webapp.mctl.ai&state=0123456789abcdef',
   ],
 ];
 
@@ -513,7 +513,7 @@ describe('upstream github (default)', () => {
     });
     const res = await get(`/github/callback?code=gh-code&state=${started.state}`, { Cookie: started.cookie });
     expect(res.status).toBe(302);
-    expect(res.headers.get('location')).toBe('https://ovk-openclaw.mctl.ai/');
+    expect(res.headers.get('location')).toBe('https://ovk-webapp.mctl.ai/');
     expect(await sessionCount()).toBe(1);
   });
 });
