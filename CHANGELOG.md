@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.20.1](https://github.com/mctlhq/mctl-portal/compare/4.20.0...4.20.1) (2026-10-10)
+
+
+### Miscellaneous Chores
+
+* release 4.20.1 ([2ee6280](https://github.com/mctlhq/mctl-portal/commit/2ee628091e90f6712e4410cfac4e925d35bd90eb))
+
 ## [4.20.0](https://github.com/mctlhq/mctl-portal/compare/4.19.0...4.20.0) (2026-10-10)
 
 
