@@ -132,13 +132,15 @@ export function registerZitadelProvider(
 /**
  * The portal UI sign-in through ZITADEL, as auth provider `oidc`.
  *
- * Two independent switches, and only the first one is an access gate:
+ * Two independent switches:
  * - `auth.providers.oidc`: without it the auth backend registers no routes
  *   for the provider. With it, /api/auth/oidc/start works for anyone who
  *   calls it, whatever the sign-in page shows.
- * - `auth.signIn` (frontend): which buttons the sign-in page shows. It
- *   changes what is offered, not who can sign in.
- * Who can sign in is decided only by createZitadelSignInResolver.
+ * - `auth.signIn`: which buttons the sign-in page shows. For ZITADEL it
+ *   changes only what is offered. `zitadel` also turns the GitHub sign-in
+ *   off on the backend (githubSignInResolverFor in githubAuthModule.ts).
+ * Who can sign in through ZITADEL is decided only by
+ * createZitadelSignInResolver.
  *
  * `@backstage/plugin-auth-backend-module-oidc-provider` is pinned exactly in
  * package.json, to the version that matches the Backstage release in use

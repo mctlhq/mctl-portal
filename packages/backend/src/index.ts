@@ -31,7 +31,8 @@ backend.add(import('@backstage/plugin-techdocs-backend'));
 
 // auth plugin
 backend.add(import('@backstage/plugin-auth-backend'));
-// GitHub sign-in, only for catalog Users (tenant members)
+// GitHub sign-in, only for catalog Users (tenant members); off under
+// auth.signIn: zitadel, where the provider only serves ScmAuth tokens
 backend.add(githubAuthModule);
 // ZITADEL sign-in (provider `oidc`), same catalog-only rule through the
 // mctl:github_login claim; inert until auth.providers.oidc is configured
