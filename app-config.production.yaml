@@ -222,11 +222,9 @@ oidcProvider:
   github:
     clientId: ${AUTH_GITHUB_CLIENT_ID}
     clientSecret: ${AUTH_GITHUB_CLIENT_SECRET}
-  clients:
-    - clientId: ${OIDC_CLIENT_ID}
-      clientSecret: ${OIDC_CLIENT_SECRET}
-      redirectUris:
-        - ${OPS_DEX_CALLBACK_URL}
+  # Relying parties of this provider; deployments list their own (the
+  # Dex client went with Dex, mctlhq/mctl-gitops#1500 phase 4).
+  clients: []
   forwardAuth:
     # Forward-auth protected hosts other than the canonical
     # <tenant>-<service>.mctl.ai host. Each host gets its own host-only
