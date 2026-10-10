@@ -1,5 +1,13 @@
 # Changelog
 
+## [4.20.0](https://github.com/mctlhq/mctl-portal/compare/4.19.0...4.20.0) (2026-10-10)
+
+
+### Features
+
+* **auth:** auth.signIn zitadel turns the GitHub sign-in off ([845a832](https://github.com/mctlhq/mctl-portal/commit/845a8322fea08199b715a3af47aec7de0771afa6))
+* **auth:** auth.signIn zitadel turns the GitHub sign-in off ([a920446](https://github.com/mctlhq/mctl-portal/commit/a9204465917a20a821de39574ee5df94d55e871d))
+
 ## [4.19.0](https://github.com/mctlhq/mctl-portal/compare/4.18.1...4.19.0) (2026-10-09)
 
 
