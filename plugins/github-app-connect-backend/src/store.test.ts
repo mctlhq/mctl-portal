@@ -68,7 +68,7 @@ if (pgUrl) {
   ]);
 }
 
-describe.each(engines)('RepoConnectionStore on %s', (_name, open) => {
+describe.each(engines)('RepoConnectionStore on %s', (engine, open) => {
   let db: Knex;
   let cleanup: () => Promise<void>;
   let tenantCheck: boolean;
@@ -186,13 +186,25 @@ describe.each(engines)('RepoConnectionStore on %s', (_name, open) => {
 
   it('replaceTeam changes nothing when a write fails part-way (the carried rows are never lost)', async () => {
     await store.migrateLegacyRows();
+    // The database refuses one row of the fresh listing, after the delete
+    // and the carried rows have already been written.
+    if (engine === 'sqlite') {
+      await db.raw(`CREATE TRIGGER refuse_broken BEFORE INSERT ON repo_connections
+        WHEN NEW.repo_full_name = 'carol/broken'
+        BEGIN SELECT RAISE(ABORT, 'injected failure'); END`);
+    } else {
+      await db.raw(`CREATE FUNCTION refuse_broken() RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN
+          IF NEW.repo_full_name = 'carol/broken' THEN RAISE EXCEPTION 'injected failure'; END IF;
+          RETURN NEW;
+        END $$`);
+      await db.raw(`CREATE TRIGGER refuse_broken BEFORE INSERT ON repo_connections
+        FOR EACH ROW EXECUTE FUNCTION refuse_broken()`);
+    }
     const before = await snapshot();
     await expect(
-      store.replaceTeam('labs', new Set([5]), [
-        fresh('carol/new', 5),
-        { ...fresh('carol/broken', 5), repo_full_name: null as unknown as string },
-      ]),
-    ).rejects.toThrow();
+      store.replaceTeam('labs', new Set([5]), [fresh('carol/new', 5), fresh('carol/broken', 5)]),
+    ).rejects.toThrow(/injected failure/);
     expect(await snapshot()).toEqual(before);
   });
 });
