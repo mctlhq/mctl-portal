@@ -25,6 +25,16 @@ export interface ForwardAuthCode {
   expiresAt: number;
 }
 
+/** A sign-in sent to an upstream and not yet returned from it. */
+export interface PendingAuth {
+  returnTo: string;
+  expiresAt: number;
+  /** 'github' or 'zitadel'; a callback only accepts its own. */
+  upstream: string;
+  nonce?: string;
+  codeVerifier?: string;
+}
+
 /**
  * Persistent store for OIDC authorization codes, sessions, pending auths,
  * and access tokens. Replaces the former in-memory Maps so that state
@@ -103,6 +113,17 @@ export class OidcStore {
         t.string('state', 128).primary().notNullable();
         t.text('return_to').notNullable();
         t.bigInteger('expires_at').notNullable();
+      });
+    }
+
+    // Which upstream a pending sign-in was started with, and what its
+    // callback has to present. All nullable: a row without them is a GitHub
+    // sign-in, including one written by a pod that predates the columns.
+    if (!(await hasColumn('oidc_pending_auths', 'upstream'))) {
+      await alterTable('oidc_pending_auths', t => {
+        t.string('upstream', 16).nullable();
+        t.string('nonce', 128).nullable();
+        t.string('code_verifier', 128).nullable();
       });
     }
 
@@ -215,21 +236,36 @@ export class OidcStore {
     return { userId: row.user_id, expiresAt: Number(row.expires_at) };
   }
 
-  // ── Pending GitHub Auths ───────────────────────────────────────────
+  // ── Pending Upstream Auths ─────────────────────────────────────────
+  //
+  // A GitHub sign-in stores no `zitadel` part; a ZITADEL sign-in stores the
+  // nonce and PKCE verifier its callback must match.
 
-  async savePendingAuth(state: string, returnTo: string, expiresAt: number): Promise<void> {
+  async savePendingAuth(
+    state: string,
+    returnTo: string,
+    expiresAt: number,
+    zitadel?: { nonce: string; codeVerifier: string },
+  ): Promise<void> {
     await this.table('oidc_pending_auths').insert({
       state,
       return_to: returnTo,
       expires_at: expiresAt,
+      ...(zitadel ? { upstream: 'zitadel', nonce: zitadel.nonce, code_verifier: zitadel.codeVerifier } : {}),
     });
   }
 
-  async consumePendingAuth(state: string): Promise<{ returnTo: string; expiresAt: number } | undefined> {
+  async consumePendingAuth(state: string): Promise<PendingAuth | undefined> {
     const row = await this.table('oidc_pending_auths').where({ state }).first();
     if (!row) return undefined;
     await this.table('oidc_pending_auths').where({ state }).delete();
-    return { returnTo: row.return_to, expiresAt: Number(row.expires_at) };
+    return {
+      returnTo: row.return_to,
+      expiresAt: Number(row.expires_at),
+      upstream: row.upstream ?? 'github',
+      nonce: row.nonce ?? undefined,
+      codeVerifier: row.code_verifier ?? undefined,
+    };
   }
 
   // ── Access Tokens ──────────────────────────────────────────────────

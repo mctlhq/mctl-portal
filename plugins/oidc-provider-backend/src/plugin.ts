@@ -5,6 +5,7 @@ import {
 import { KeyStore } from './keyStore';
 import { OidcStore } from './oidcStore';
 import { createRouter, ForwardAuthHost, OidcClient, MembershipLookup } from './router';
+import { readUpstreamConfig } from './upstreamConfig';
 import { isPostgresClient } from '../../tenant-backend/src/membershipLookup';
 
 export const oidcProviderPlugin = createBackendPlugin({
@@ -27,8 +28,9 @@ export const oidcProviderPlugin = createBackendPlugin({
           redirectUris: c.getStringArray('redirectUris'),
         }));
 
-        const githubClientId = config.getString('oidcProvider.github.clientId');
-        const githubClientSecret = config.getString('oidcProvider.github.clientSecret');
+        // Where a person without a session signs in, and that upstream's
+        // client: GitHub unless oidcProvider.upstream says otherwise.
+        const { upstream, githubClientId, githubClientSecret, zitadel } = readUpstreamConfig(config);
 
         // Aliases of forward-auth protected hosts beyond the canonical
         // <tenant>-<service> host (e.g. a friendly hostname).
@@ -124,6 +126,8 @@ export const oidcProviderPlugin = createBackendPlugin({
           githubClientSecret,
           store: oidcStore,
           forwardAuthHosts,
+          upstream,
+          zitadel,
         });
         httpRouter.use(router);
 
@@ -133,7 +137,7 @@ export const oidcProviderPlugin = createBackendPlugin({
         httpRouter.addAuthPolicy({ path: '/openai-codex/callback', allow: 'unauthenticated' });
 
         logger.info(
-          `[OIDC Provider] Initialized. Issuer: ${issuer}, clients: ${clients.map(c => c.clientId).join(', ')}`,
+          `[OIDC Provider] Initialized. Issuer: ${issuer}, upstream: ${upstream}, clients: ${clients.map(c => c.clientId).join(', ')}`,
         );
       },
     });

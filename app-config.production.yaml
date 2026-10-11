@@ -208,14 +208,23 @@ resourceUsage:
 
 oidcProvider:
   issuer: ${BACKEND_BASE_URL}/api/oidc-provider
+  # Where a person without a portal session signs in: github (the default
+  # when unset), zitadel, or both (a page offering each). With zitadel or
+  # both, the provider also needs its ZITADEL client:
+  #   upstream: both
+  #   zitadel:
+  #     issuer: https://auth.mctl.ai
+  #     clientId: ${OIDC_ZITADEL_CLIENT_ID}
+  #     clientSecret: ${OIDC_ZITADEL_CLIENT_SECRET}
+  # registered with the redirect URI <issuer>/zitadel/callback. A ZITADEL
+  # sign-in is accepted only with the mctl:github_login claim in the ID
+  # token, and resolves to that login's tenant membership.
   github:
     clientId: ${AUTH_GITHUB_CLIENT_ID}
     clientSecret: ${AUTH_GITHUB_CLIENT_SECRET}
-  clients:
-    - clientId: ${OIDC_CLIENT_ID}
-      clientSecret: ${OIDC_CLIENT_SECRET}
-      redirectUris:
-        - ${OPS_DEX_CALLBACK_URL}
+  # Relying parties of this provider; deployments list their own (the
+  # Dex client went with Dex, mctlhq/mctl-gitops#1500 phase 4).
+  clients: []
   forwardAuth:
     # Forward-auth protected hosts other than the canonical
     # <tenant>-<service>.mctl.ai host. Each host gets its own host-only

@@ -19,7 +19,10 @@ import useAsync from 'react-use/esm/useAsync';
 import { useParams } from 'react-router-dom';
 import { WorkItemsApi, WorkItemsApiError } from './api';
 import { ObservedSection } from './ObservedSection';
-import { WorkItem } from './types';
+import { Observed, WorkItem, WorkItemEventRef } from './types';
+
+/** A backend that did not report events: unknown, never an empty history. */
+const EVENTS_NOT_REPORTED: Observed<WorkItemEventRef[]> = { state: 'unknown', reason: 'not_reported' };
 
 type NextAction = {
   label: string;
@@ -36,6 +39,12 @@ function newIdempotencyKey(): string {
   return `portal-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
 }
 
+/** mctl-api's terminal execution phases; anything else may still be running. */
+const TERMINAL_PHASES = new Set(['Succeeded', 'Failed', 'Error']);
+
+/** Long hashes and ids have no break points; let them wrap on narrow screens. */
+const ROW_STYLE = { overflowWrap: 'anywhere' as const };
+
 /** Which governed action the canonical state allows (mirrors mctl-api #368 rules). */
 export function nextExecutionAction(item: WorkItem): NextAction | undefined {
   if (item.executionRequests.state !== 'ok') return undefined;
@@ -47,7 +56,9 @@ export function nextExecutionAction(item: WorkItem): NextAction | undefined {
   if (!exec) {
     return item.state === 'active' ? { label: 'Request start', kind: 'start' } : undefined;
   }
-  if (exec.phase === 'Pending' || exec.phase === 'Running') return undefined;
+  // Only a known terminal phase may be resumed: an unrecognised phase could
+  // be a run that is still executing.
+  if (!TERMINAL_PHASES.has(exec.phase)) return undefined;
   if (item.state === 'waiting' || item.state === 'active') {
     return { label: 'Request resume', kind: 'resume', resumedFromExecutionId: exec.id };
   }
@@ -214,7 +225,13 @@ export const WorkItemDetailView = (props: {
           <ObservedSection
             title="Latest ContextSnapshot"
             data={item.latestSnapshot}
-            render={s => s && <Typography variant="body2">{s.id} · {s.contentHash}</Typography>}
+            render={s =>
+              s && (
+                <Typography variant="body2" style={ROW_STYLE}>
+                  {s.id} · {s.contentHash}
+                </Typography>
+              )
+            }
           />
           {item.links.map(l => (
             <MuiLink key={l.url} href={l.url} target="_blank" rel="noopener noreferrer">
@@ -232,9 +249,79 @@ export const WorkItemDetailView = (props: {
       </Grid>
       <Grid item xs={12}>
         <Paper style={{ padding: 16 }}>
-          <ObservedSection title="All executions" data={item.executions} render={() => null} />
-          <ObservedSection title="ContextSnapshots" data={item.snapshots} render={() => null} />
-          <ObservedSection title="Evidence" data={item.evidence} render={() => null} />
+          <ObservedSection
+            title="All executions"
+            data={item.executions}
+            render={list => (
+              <ul>
+                {list.map(e => (
+                  <li key={e.id} style={ROW_STYLE}>
+                    {e.id} · attempt {e.attempt ?? '?'} · {e.phase}
+                    {e.startedAt ? ` · started ${e.startedAt}` : ''}
+                    {e.endedAt ? ` · ended ${e.endedAt}` : ''}
+                    {e.resumedFromExecutionId ? ` · resumed from ${e.resumedFromExecutionId}` : ''}
+                  </li>
+                ))}
+              </ul>
+            )}
+          />
+          <ObservedSection
+            title="ContextSnapshots"
+            data={item.snapshots}
+            render={list => (
+              <ul>
+                {list.map(s => (
+                  <li key={s.id} style={ROW_STYLE}>
+                    {s.id} · {s.executionId} · {s.contentHash}
+                    {s.strategy ? ` · ${s.strategy}${s.strategyVersion ? `@${s.strategyVersion}` : ''}` : ''}
+                    {s.priorSnapshotId ? ` · after ${s.priorSnapshotId}` : ''}
+                    {s.createdAt ? ` · ${s.createdAt}` : ''}
+                  </li>
+                ))}
+              </ul>
+            )}
+          />
+          <ObservedSection
+            title="Evidence"
+            data={item.evidence}
+            // A clipped page must never read as the complete history, even
+            // when the page itself is empty.
+            notice={
+              item.evidenceTruncated && (
+                <Typography variant="caption" color="textSecondary" component="div">
+                  {item.evidenceTruncated.limit === undefined
+                    ? 'Older evidence exists.'
+                    : `Showing the latest ${item.evidenceTruncated.limit}; older evidence exists.`}
+                </Typography>
+              )
+            }
+            render={list => (
+              <ul>
+                {list.map(e => (
+                  <li key={e.id} style={ROW_STYLE}>
+                    {e.id} · {e.primaryRefKind} {e.primaryRefId} · {e.contentHash}
+                    {e.createdAt ? ` · ${e.createdAt}` : ''}
+                  </li>
+                ))}
+              </ul>
+            )}
+          />
+          <ObservedSection
+            title="Events"
+            data={item.events ?? EVENTS_NOT_REPORTED}
+            render={list => (
+              <ul>
+                {list.map(e => (
+                  <li key={e.seq} style={ROW_STYLE}>
+                    #{e.seq} · {e.kind}
+                    {e.fromState || e.toState ? ` · ${e.fromState ?? '?'} → ${e.toState ?? '?'}` : ''}
+                    {e.surface ? ` · via ${e.surface}` : ''}
+                    {e.createdAt ? ` · ${e.createdAt}` : ''}
+                  </li>
+                ))}
+              </ul>
+            )}
+          />
           <ObservedSection title="Surfaces" data={item.surfaces} render={() => null} />
         </Paper>
       </Grid>

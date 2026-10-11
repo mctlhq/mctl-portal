@@ -16,6 +16,30 @@ export interface SnapshotRef {
   id: string;
   executionId: string;
   contentHash: string;
+  executionSequence?: number;
+  strategy?: string;
+  strategyVersion?: string;
+  priorSnapshotId?: string;
+  createdAt?: string;
+}
+
+export interface EvidenceRef {
+  id: string;
+  executionId?: string;
+  contentHash: string;
+  apiVersion?: string;
+  createdAt?: string;
+  primaryRefKind: string;
+  primaryRefId: string;
+}
+
+export interface WorkItemEventRef {
+  seq: number;
+  kind: string;
+  fromState?: string;
+  toState?: string;
+  surface?: string;
+  createdAt?: string;
 }
 
 export interface ExecutionRequestRef {
@@ -44,9 +68,15 @@ export interface WorkItem {
   latestExecution: Observed<ExecutionRef | null>;
   latestSnapshot: Observed<SnapshotRef | null>;
   executionRequests: Observed<ExecutionRequestRef[]>;
+  /** History, read through the relay (mctl-api#436); see the backend's PortalWorkItem. */
   executions: Observed<ExecutionRef[]>;
   snapshots: Observed<SnapshotRef[]>;
-  evidence: Observed<unknown[]>;
+  evidence: Observed<EvidenceRef[]>;
+  /** Set when mctl-api clipped the evidence page to the latest `limit`. */
+  evidenceTruncated?: { limit?: number };
+  /** Optional only to tolerate an older backend; absent renders as unknown. */
+  events?: Observed<WorkItemEventRef[]>;
+  /** Not observable through the surface relay today. */
   surfaces: Observed<unknown[]>;
   links: { label: string; url: string }[];
   /** Why the Execution Canvas link is, or is not, in `links`; see the backend's PortalWorkItem. */

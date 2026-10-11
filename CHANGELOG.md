@@ -1,5 +1,59 @@
 # Changelog
 
+## [4.20.1](https://github.com/mctlhq/mctl-portal/compare/4.20.0...4.20.1) (2026-10-10)
+
+
+### Miscellaneous Chores
+
+* release 4.20.1 ([2ee6280](https://github.com/mctlhq/mctl-portal/commit/2ee628091e90f6712e4410cfac4e925d35bd90eb))
+
+## [4.20.0](https://github.com/mctlhq/mctl-portal/compare/4.19.0...4.20.0) (2026-10-10)
+
+
+### Features
+
+* **auth:** auth.signIn zitadel turns the GitHub sign-in off ([845a832](https://github.com/mctlhq/mctl-portal/commit/845a8322fea08199b715a3af47aec7de0771afa6))
+* **auth:** auth.signIn zitadel turns the GitHub sign-in off ([a920446](https://github.com/mctlhq/mctl-portal/commit/a9204465917a20a821de39574ee5df94d55e871d))
+
+## [4.19.0](https://github.com/mctlhq/mctl-portal/compare/4.18.1...4.19.0) (2026-10-09)
+
+
+### Features
+
+* **auth:** portal sign-in through ZITADEL behind auth.signIn ([73154a8](https://github.com/mctlhq/mctl-portal/commit/73154a88f7db6a243d2caf1381b72f83d82a017c))
+* **auth:** portal sign-in through ZITADEL behind auth.signIn ([d0f9d0b](https://github.com/mctlhq/mctl-portal/commit/d0f9d0bff3a54c07df9943bf36dd5c8e24f67bd0))
+
+
+### Bug Fixes
+
+* **auth:** address review nits on ZITADEL sign-in ([3c1e428](https://github.com/mctlhq/mctl-portal/commit/3c1e428889fc860f96a95f3f95aaaa81df5c5c1a))
+
+## [4.18.1](https://github.com/mctlhq/mctl-portal/compare/4.18.0...4.18.1) (2026-10-08)
+
+
+### Bug Fixes
+
+* **oidc-provider:** close the P3 follow-ups from the [#151](https://github.com/mctlhq/mctl-portal/issues/151) review ([d7bb47c](https://github.com/mctlhq/mctl-portal/commit/d7bb47c92bb8705e5030ed98f2994ea0c9a7b568))
+* **oidc-provider:** close the P3 follow-ups from the [#151](https://github.com/mctlhq/mctl-portal/issues/151) review ([890d46b](https://github.com/mctlhq/mctl-portal/commit/890d46bc94444aee7a5a9a34244da51a1264580a)), closes [#152](https://github.com/mctlhq/mctl-portal/issues/152)
+
+## [4.18.0](https://github.com/mctlhq/mctl-portal/compare/4.17.3...4.18.0) (2026-10-07)
+
+
+### Features
+
+* **oidc-provider:** add a ZITADEL upstream behind a switch ([2a7a8fa](https://github.com/mctlhq/mctl-portal/commit/2a7a8fa6fba81a0aac8c62591489be8a5005a536))
+* **oidc-provider:** add a ZITADEL upstream behind a switch ([10bccbb](https://github.com/mctlhq/mctl-portal/commit/10bccbb445d266fcc84bdef03507e60baed4a58f)), closes [#150](https://github.com/mctlhq/mctl-portal/issues/150)
+* **work-items:** show work-item history through the relay ([0bd5bc6](https://github.com/mctlhq/mctl-portal/commit/0bd5bc6ff40ca03f6fb53a78f19d6ccf9c7e675a))
+* **work-items:** show work-item history through the relay ([f2ea09d](https://github.com/mctlhq/mctl-portal/commit/f2ea09d98815f727452e882e70067fd5ea3f8c9f))
+
+
+### Bug Fixes
+
+* **oidc-provider:** require azp unless this client is the sole audience ([86f8e00](https://github.com/mctlhq/mctl-portal/commit/86f8e0061574492a4aaebd2a75a5d190aa5966de)), closes [#150](https://github.com/mctlhq/mctl-portal/issues/150)
+* **work-items:** keep unknown history sections visible ([b168836](https://github.com/mctlhq/mctl-portal/commit/b168836505e4124b679688069ac6943013559d57))
+* **work-items:** never offer resume on an unreadable phase ([d32fec5](https://github.com/mctlhq/mctl-portal/commit/d32fec5788b3a7e1b870ade99b95922457b5ea43))
+* **work-items:** require only id and phase on executions ([7105b8b](https://github.com/mctlhq/mctl-portal/commit/7105b8b0d9dfd16d396daf90e70547ac86c28edb))
+
 ## [4.17.3](https://github.com/mctlhq/mctl-portal/compare/4.17.2...4.17.3) (2026-10-04)
 
 

@@ -33,15 +33,11 @@ import { NoTenantPage } from './components/tenant/NoTenantPage';
 import { ProposalsRoutes } from './components/proposals';
 import { WorkItemsRoutes } from './components/workItems';
 
-import {
-  AlertDisplay,
-  OAuthRequestDialog,
-  SignInPage,
-} from '@backstage/core-components';
+import { AlertDisplay, OAuthRequestDialog } from '@backstage/core-components';
 import { createApp } from '@backstage/app-defaults';
 import { AppRouter, FlatRoutes } from '@backstage/core-app-api';
 import { CatalogGraphPage } from '@backstage/plugin-catalog-graph';
-import { githubAuthApiRef } from '@backstage/core-plugin-api';
+import { PortalSignInPage } from './PortalSignInPage';
 import { catalogTranslationRef } from '@backstage/plugin-catalog/alpha';
 import { coreComponentsTranslationRef } from '@backstage/core-components/alpha';
 import { createTranslationMessages } from '@backstage/core-plugin-api/alpha';
@@ -185,18 +181,7 @@ const app = createApp({
     });
   },
   components: {
-    SignInPage: props => (
-      <SignInPage
-        {...props}
-        auto
-        provider={{
-          id: 'github-auth-provider',
-          title: 'GitHub',
-          message: 'Sign in using GitHub',
-          apiRef: githubAuthApiRef,
-        }}
-      />
-    ),
+    SignInPage: props => <PortalSignInPage {...props} />,
   },
 });
 

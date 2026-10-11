@@ -8,9 +8,6 @@ import {
   checkTenantRole,
   createRouter,
   databaseVaultPath,
-  escapeHtml,
-  renderOpenClawIntakePage,
-  renderOpenClawSavedPage,
   RouterOptions,
   secretsVaultPath,
   vaultFetch,
@@ -33,11 +30,9 @@ afterEach(() => {
   fetchMock.mockRestore();
 });
 
-// team/service are interpolated into the intake HTML pages. These tests guard
-// the two layers that prevent reflected XSS there: the kebab-case slug gate
-// (rejected with 400 in both intake handlers) and the HTML escaping applied
-// inside the render functions.
-describe('SLUG_RE (intake slug validation)', () => {
+// team/app become Vault path components. rejectNonSlug answers 400 for
+// anything that is not a kebab-case slug before it reaches RBAC or Vault.
+describe('SLUG_RE (team/app slug validation)', () => {
   it.each(['labs', 'my-service', 'a', 'svc-2', 'a'.repeat(31)])(
     'accepts valid kebab-case slug %p',
     slug => {
@@ -60,23 +55,9 @@ describe('SLUG_RE (intake slug validation)', () => {
   });
 });
 
-describe('escapeHtml', () => {
-  it('encodes all five HTML-significant characters', () => {
-    expect(escapeHtml(`&<>"'`)).toBe('&amp;&lt;&gt;&quot;&#39;');
-  });
-
-  it('escapes & first so entities are not double-decoded', () => {
-    expect(escapeHtml('&lt;')).toBe('&amp;lt;');
-  });
-
-  it('leaves plain slugs untouched', () => {
-    expect(escapeHtml('my-service')).toBe('my-service');
-  });
-});
-
-// checkTenantRole gates 4 routes in this file: GET/POST /openclaw/intake
-// (minimumRole 'owner') and, via requireTenantRole, GET .../database and
-// GET .../secrets (minimumRole 'viewer'). This exercises the admin bypass
+// checkTenantRole gates every route in this file via requireTenantRole:
+// GET .../database and GET .../secrets (minimumRole 'viewer'), and their
+// /reveal variants (minimumRole 'developer'). This exercises the admin bypass
 // added for platform admins (owner role in the 'admins' tenant), who should
 // pass regardless of their membership in the target team.
 describe('checkTenantRole (admin bypass)', () => {
@@ -380,8 +361,6 @@ describe('database and secrets routes (masked vs. reveal)', () => {
       isPostgres: false,
       vaultAddr: 'https://vault.example',
       vaultTokens: staticTokenProvider('s.tok'),
-      oidcLoginUrl: 'https://app.mctl.ai/oidc/login',
-      backendBaseUrl: 'https://app.mctl.ai',
     } as unknown as RouterOptions;
     const app = express();
     app.use(createRouter(options));
@@ -622,25 +601,5 @@ describe('vaultFetch (token refresh on rejection)', () => {
     fetchMock.mockResolvedValue(ok);
     await vaultFetch('https://vault.example', staticTokenProvider('s.tok'), 'teams/nfc/api');
     expect(fetchMock.mock.calls[0][1].headers).not.toHaveProperty('Content-Type');
-  });
-});
-
-describe('intake page rendering', () => {
-  const payload = '"><script>alert(1)</script>';
-
-  it('does not reflect raw markup from team/service/returnTo into the intake page', () => {
-    const html = renderOpenClawIntakePage(payload, payload, `/x?a=${payload}`);
-    expect(html).not.toContain('<script>alert(1)</script>');
-    expect(html).toContain('&quot;&gt;&lt;script&gt;alert(1)&lt;/script&gt;');
-  });
-
-  it('does not reflect raw markup into the saved page', () => {
-    const html = renderOpenClawSavedPage(payload, payload);
-    expect(html).not.toContain('<script>alert(1)</script>');
-  });
-
-  it('renders valid slugs verbatim in both pages', () => {
-    expect(renderOpenClawIntakePage('labs', 'my-svc', '')).toContain('labs/my-svc');
-    expect(renderOpenClawSavedPage('labs', 'my-svc')).toContain('labs/my-svc');
   });
 });

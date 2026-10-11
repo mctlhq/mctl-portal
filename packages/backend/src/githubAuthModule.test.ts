@@ -1,7 +1,20 @@
 import { NotFoundError } from '@backstage/errors';
-import { createCatalogOnlySignInResolver } from './githubAuthModule';
+import {
+  createCatalogOnlySignInResolver,
+  githubSignInResolverFor,
+  registerGithubProvider,
+} from './githubAuthModule';
+
+// The factory is opaque once built; hand the test the options instead, so it
+// can see which resolver the provider was registered with.
+jest.mock('@backstage/plugin-auth-node', () => ({
+  ...jest.requireActual('@backstage/plugin-auth-node'),
+  createOAuthProviderFactory: (options: unknown) => options,
+}));
 
 const logger = { info: jest.fn(), warn: jest.fn() };
+
+beforeEach(() => jest.clearAllMocks());
 
 function signInInfo(username: string | undefined) {
   return { result: { fullProfile: { username } }, profile: {} } as any;
@@ -50,5 +63,51 @@ describe('createCatalogOnlySignInResolver', () => {
     await expect(resolver(signInInfo(undefined), ctx)).rejects.toThrow(/missing username/);
     expect(ctx.signInWithCatalogUser).not.toHaveBeenCalled();
     expect(ctx.issueToken).not.toHaveBeenCalled();
+  });
+});
+
+describe('githubSignInResolverFor', () => {
+  it('turns the GitHub sign-in off only for zitadel', () => {
+    expect(githubSignInResolverFor('zitadel', logger)).toBeUndefined();
+  });
+
+  it.each([[undefined], ['github'], ['both'], ['zitdel']])(
+    'keeps it for %s',
+    mode => {
+      expect(githubSignInResolverFor(mode, logger)).toEqual(expect.any(Function));
+    },
+  );
+
+  it('keeps the catalog-only rule while it is on', async () => {
+    const resolver = githubSignInResolverFor('both', logger)!;
+    await expect(resolver(signInInfo('stranger'), context([]))).rejects.toMatchObject({
+      name: 'NotAllowedError',
+    });
+  });
+});
+
+describe('registerGithubProvider', () => {
+  function register(mode: string | undefined) {
+    const registerProvider = jest.fn();
+    registerGithubProvider({ registerProvider }, mode, logger);
+    expect(registerProvider).toHaveBeenCalledTimes(1);
+    return registerProvider.mock.calls[0][0];
+  }
+
+  it.each([['zitadel'], ['both'], [undefined]])(
+    'registers provider github for %s, for ScmAuth and the scaffolder',
+    mode => {
+      expect(register(mode)).toMatchObject({ providerId: 'github' });
+    },
+  );
+
+  it('registers no sign-in resolver for zitadel', () => {
+    expect(register('zitadel').factory.signInResolver).toBeUndefined();
+    expect(logger.info).toHaveBeenCalledWith(expect.stringMatching(/sign-in is off/));
+  });
+
+  it('registers the catalog-only resolver otherwise', () => {
+    expect(register('both').factory.signInResolver).toEqual(expect.any(Function));
+    expect(logger.info).not.toHaveBeenCalled();
   });
 });
