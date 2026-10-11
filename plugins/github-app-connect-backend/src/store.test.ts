@@ -186,16 +186,26 @@ describe.each(engines)('RepoConnectionStore on %s', (_engine, open) => {
 
   it('replaceTeam changes nothing when a write fails part-way (the carried rows are never lost)', async () => {
     await store.migrateLegacyRows();
-    // The database refuses the last row of the fresh listing (an explicit
-    // NULL in the NOT NULL account_type column), after the delete and the
-    // carried rows have already been written.
+    // The last write of the fresh listing fails, after the delete and the
+    // carried rows have already been written. Injected in JS so it does not
+    // depend on how a dialect surfaces a constraint violation.
     const before = await snapshot();
-    await expect(
-      store.replaceTeam('labs', new Set([5]), [
-        fresh('carol/new', 5),
-        { ...fresh('carol/broken', 5), account_type: null as unknown as string },
-      ]),
-    ).rejects.toThrow(/null/i);
+    const realUpsert = RepoConnectionStore.prototype.upsert;
+    const upsert = jest
+      .spyOn(RepoConnectionStore.prototype, 'upsert')
+      .mockImplementation(async function mockUpsert(this: RepoConnectionStore, conn) {
+        if (conn.repo_full_name === 'carol/broken') throw new Error('injected failure');
+        return realUpsert.call(this, conn);
+      });
+    try {
+      await expect(
+        store.replaceTeam('labs', new Set([5]), [fresh('carol/new', 5), fresh('carol/broken', 5)]),
+      ).rejects.toThrow(/injected failure/);
+      // pins the injection point: a missed injection or a reordered delete fails here
+      expect(upsert.mock.calls.map(c => c[0].repo_full_name)).toEqual(['mashkovd/app', 'carol/new', 'carol/broken']);
+    } finally {
+      upsert.mockRestore();
+    }
     expect(await snapshot()).toEqual(before);
   });
 });
