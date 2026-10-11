@@ -147,7 +147,13 @@ export async function authorizeWorkflowSubmission(options: {
     );
   }
 
-  const component = String(parameters?.component_name ?? '').trim();
+  // The value is checked exactly as the workflow will receive it: a padded
+  // name or repository is refused, not trimmed, so what is checked is what
+  // is built.
+  const component = String(parameters?.component_name ?? '');
+  if (IMAGE_TEMPLATES.has(templateName) && component.trim() && component !== component.trim()) {
+    throw denied(`image name ${JSON.stringify(component)} has surrounding whitespace`);
+  }
   if (IMAGE_TEMPLATES.has(templateName) && component) {
     if (!componentOwners) {
       throw denied('the catalog is not available to check the image name');
@@ -164,8 +170,8 @@ export async function authorizeWorkflowSubmission(options: {
   }
 
   for (const key of BUILD_REPO_PARAMETERS) {
-    const repo = String(parameters?.[key] ?? '').trim();
-    if (!repo) continue;
+    const repo = String(parameters?.[key] ?? '');
+    if (!repo.trim()) continue;
     if (!REPO_FULL_NAME_RE.test(repo)) {
       throw new Error(`Access denied: "${repo}" is not a GitHub repository name (owner/name).`);
     }

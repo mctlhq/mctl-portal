@@ -336,6 +336,11 @@ describe('mctl:workflow:submit build repository', () => {
     expect(submitWorkflow).not.toHaveBeenCalled();
   });
 
+  it.each([' carol/tool', 'carol/tool ', 'carol/tool\n'])('refuses a padded repo %j instead of trimming it', async repo => {
+    await expect(deploy('user:default/carol', 'labs', repo)).rejects.toThrow(/not a GitHub repository name/);
+    expect(submitWorkflow).not.toHaveBeenCalled();
+  });
+
   it("refuses another team's connected repo", async () => {
     await expect(deploy('user:default/carol', 'labs', 'karabu-org/private')).rejects.toThrow(/not connected/);
     expect(submitWorkflow).not.toHaveBeenCalled();
@@ -429,6 +434,11 @@ describe('mctl:workflow:submit image name', () => {
     ['mctl-api', /reserved for the platform/],
   ])('refuses %s to another team', async (component, message) => {
     await expect(onboard('user:default/carol', component)).rejects.toThrow(message);
+    expect(submitWorkflow).not.toHaveBeenCalled();
+  });
+
+  it.each([' mctl-api', 'shop ', 'brand-new\n'])('refuses a padded name %j instead of trimming it', async component => {
+    await expect(onboard('user:default/carol', component)).rejects.toThrow(/surrounding whitespace/);
     expect(submitWorkflow).not.toHaveBeenCalled();
   });
 

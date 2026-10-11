@@ -212,25 +212,46 @@ async function getInstallationToken(
   return body.token;
 }
 
-// List repos accessible to an installation
+// List repos accessible to an installation. Every page is read; a failed
+// page, a malformed answer or a list that grows past the cap throws, because
+// a shorter list would read as a complete one (a sync replaces the team's
+// bindings with it).
+const INSTALLATION_REPOS_PAGE = 100;
+const INSTALLATION_REPOS_MAX_PAGES = 30;
+
 async function getInstallationRepos(
   installationId: number,
   appId: string,
   privateKey: string,
 ): Promise<string[]> {
   const token = await getInstallationToken(installationId, appId, privateKey);
-  const resp = await fetch(
-    'https://api.github.com/installation/repositories?per_page=100',
-    {
-      headers: {
-        Authorization: `Bearer ${token}`,
-        Accept: 'application/vnd.github+json',
+  const names: string[] = [];
+  for (let page = 1; page <= INSTALLATION_REPOS_MAX_PAGES; page++) {
+    const resp = await fetch(
+      `https://api.github.com/installation/repositories?per_page=${INSTALLATION_REPOS_PAGE}&page=${page}`,
+      {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Accept: 'application/vnd.github+json',
+        },
       },
-    },
-  );
-  if (!resp.ok) return [];
-  const data = (await resp.json()) as { repositories: Array<{ full_name: string }> };
-  return data.repositories.map(r => r.full_name);
+    );
+    if (!resp.ok) {
+      throw new Error(`GitHub answered ${resp.status} listing repositories of installation ${installationId}`);
+    }
+    const data = (await resp.json()) as { repositories?: Array<{ full_name?: unknown }> };
+    if (!data || !Array.isArray(data.repositories)) {
+      throw new Error(`Malformed repository list for installation ${installationId}`);
+    }
+    for (const r of data.repositories) {
+      if (typeof r?.full_name !== 'string') {
+        throw new Error(`Malformed repository entry for installation ${installationId}`);
+      }
+      names.push(r.full_name);
+    }
+    if (data.repositories.length < INSTALLATION_REPOS_PAGE) return names;
+  }
+  throw new Error(`Installation ${installationId} lists more than ${INSTALLATION_REPOS_PAGE * INSTALLATION_REPOS_MAX_PAGES} repositories`);
 }
 
 // Create a short-lived JWT for GitHub App API calls
@@ -246,11 +267,15 @@ function makeAppJwt(appId: string, privateKey: string): string {
   return `${header}.${payload}.${signature}`;
 }
 
-// Find installation for a specific owner
+// Find installation for a specific owner. With `strict`, any answer other than
+// 200 or 404 throws instead of reading as "no installation": a caller that
+// replaces stored bindings with the result must not mistake a GitHub outage
+// for an owner without the App.
 async function findInstallation(
   owner: string,
   appId: string,
   privateKey: string,
+  strict = false,
 ): Promise<{ id: number; account_type: string } | null> {
   const now = Math.floor(Date.now() / 1000);
   const header = Buffer.from(JSON.stringify({ alg: 'RS256', typ: 'JWT' })).toString('base64url');
@@ -280,6 +305,9 @@ async function findInstallation(
         id: data.id,
         account_type: data.account.type.toLowerCase(),
       };
+    }
+    if (strict && resp.status !== 404) {
+      throw new Error(`GitHub answered ${resp.status} looking up the ${type} installation of ${owner}`);
     }
   }
   return null;
@@ -394,6 +422,10 @@ export function createRouter(options: RouterOptions): Router {
       res.status(400).json({ error: 'Missing required params: team, service, repo' });
       return;
     }
+    if (typeof repo !== 'string' || !REPO_FULL_NAME_RE.test(repo)) {
+      res.status(400).json({ error: 'Invalid repo parameter, expected format owner/name' });
+      return;
+    }
 
     const auth = await requireTeamAccess(req, httpAuth, userInfo, db, isPostgres, team as string);
     if (!auth.ok) {
@@ -423,7 +455,13 @@ export function createRouter(options: RouterOptions): Router {
       res.status(401).json({ error: 'Authentication required' });
       return;
     }
-    if (!bindingCheckSubject || subject !== `external:${bindingCheckSubject}`) {
+    // A static external-access token carries the configured subject as it is;
+    // a jwks one carries `external:<sub>`. Both are the configured principal;
+    // a plugin-to-plugin credential (`plugin:<id>`) is neither.
+    if (
+      !bindingCheckSubject ||
+      (subject !== bindingCheckSubject && subject !== `external:${bindingCheckSubject}`)
+    ) {
       res.status(403).json({ error: 'Not allowed' });
       return;
     }
@@ -634,6 +672,10 @@ export function createRouter(options: RouterOptions): Router {
       res.status(400).json({ error: 'Missing required params: team, service, repo' });
       return;
     }
+    if (typeof repo !== 'string' || !REPO_FULL_NAME_RE.test(repo)) {
+      res.status(400).json({ error: 'Invalid repo parameter, expected format owner/name' });
+      return;
+    }
 
     const auth = await requireTeamAccess(req, httpAuth, userInfo, db, isPostgres, team as string);
     if (!auth.ok) {
@@ -751,7 +793,7 @@ export function createRouter(options: RouterOptions): Router {
         return;
       }
 
-      let installationIds: number[];
+      let rows: Array<{ repo_full_name: string }>;
       if (team) {
         const auth = await checkTeamAccess(db, isPostgres, team, userId);
         if (!auth.ok) {
@@ -759,7 +801,7 @@ export function createRouter(options: RouterOptions): Router {
           return;
         }
         auditAdminBypass(logger, '/repos', team, auth);
-        installationIds = await store.findInstallationsByTeam(team);
+        rows = await store.findVerifiedByTeam(team);
       } else {
         // Omitting team used to fall back to all installations across every
         // team. That is a cross-tenant leak once anonymous access is
@@ -769,17 +811,12 @@ export function createRouter(options: RouterOptions): Router {
           return;
         }
         auditAdminBypass(logger, '/repos', '_all', { userId, viaAdminBypass: true });
-        installationIds = await store.findAllInstallations();
+        rows = await store.findAllVerified();
       }
 
-      if (installationIds.length === 0) {
-        res.json({ repos: [] });
-        return;
-      }
-      const repoSets = await Promise.all(
-        installationIds.map(id => getInstallationRepos(id, appId, privateKey)),
-      );
-      const allRepos = [...new Set(repoSets.flat())].sort();
+      // The bound repositories themselves, not everything their installations
+      // can see.
+      const allRepos = [...new Set(rows.map(r => r.repo_full_name))].sort();
       res.json({ repos: allRepos });
     } catch (err) {
       logger.error(`Failed to list repos: ${err}`);
@@ -825,18 +862,21 @@ export function createRouter(options: RouterOptions): Router {
           'https://api.github.com/app/installations?per_page=100',
           { headers: { Authorization: `Bearer ${jwt}`, Accept: 'application/vnd.github+json' } },
         );
-        if (instResp.ok) {
-          const all = (await instResp.json()) as Array<{ id: number; account: { login: string; type: string } }>;
-          for (const inst of all) {
-            if (inst.account.type.toLowerCase() === 'organization') {
-              installMap.set(inst.id, { account_type: 'organization', login: inst.account.login });
-            }
+        if (!instResp.ok) {
+          // The sync below replaces the team's rows with what it found, so a
+          // partial picture must not get that far.
+          throw new Error(`GitHub answered ${instResp.status} listing the App installations`);
+        }
+        const all = (await instResp.json()) as Array<{ id: number; account: { login: string; type: string } }>;
+        for (const inst of all) {
+          if (inst.account.type.toLowerCase() === 'organization') {
+            installMap.set(inst.id, { account_type: 'organization', login: inst.account.login });
           }
         }
       }
 
       // Always include the user's personal installation
-      const userInstallation = await findInstallation(user, appId, privateKey);
+      const userInstallation = await findInstallation(user, appId, privateKey, true);
       if (userInstallation) {
         installMap.set(userInstallation.id, {
           account_type: userInstallation.account_type,
@@ -844,49 +884,48 @@ export function createRouter(options: RouterOptions): Router {
         });
       }
 
-      // Also preserve installations bound to this team by verified flows
-      // (popup/callback with a portal-minted state, or another member's sync)
-      const existingIds = await store.findVerifiedInstallationsByTeam(team);
-      // We'll merge: new sync results + existing popup-added entries
-      // But first fetch repos from discovered installations
+      // Rows written by a verified flow whose installation this sync does not
+      // list again (a popup/callback binding of selected organization repos,
+      // another member's sync) are carried over exactly as they are. They are
+      // never expanded to everything their installation can see: the user
+      // who bound them could read only some of it.
+      const carried = (await store.findVerifiedByTeam(team)).filter(
+        row => !installMap.has(Number(row.installation_id)),
+      );
 
-      if (installMap.size === 0 && existingIds.length === 0) {
+      if (installMap.size === 0 && carried.length === 0) {
         logger.info(`No GitHub App installations found for sync, team=${team}, user=${user}`);
         res.json({ repos: [] });
         return;
       }
 
-      // Fetch repos from discovered installations
+      // Fetch repos from the installations this sync lists again. Any failure
+      // fails the sync before a row is touched.
       const entries = Array.from(installMap.entries());
       const repoResults = await Promise.all(
         entries.map(async ([instId, meta]) => {
-          try {
-            const repos = await getInstallationRepos(instId, appId, privateKey);
-            return repos.map(r => ({ repo: r, instId, ...meta }));
-          } catch (err) {
-            logger.warn(`Failed to get repos from installation ${instId} (${meta.login}): ${err}`);
-            return [];
-          }
-        }),
-      );
-
-      // Also fetch repos from existing DB installations not in the new set
-      const existingOnly = existingIds.filter(id => !installMap.has(id));
-      const existingResults = await Promise.all(
-        existingOnly.map(async (instId) => {
-          try {
-            const repos = await getInstallationRepos(instId, appId, privateKey);
-            return repos.map(r => ({ repo: r, instId, account_type: 'unknown', login: 'db' }));
-          } catch {
-            return [];
-          }
+          const repos = await getInstallationRepos(instId, appId, privateKey);
+          return repos.map(r => ({ repo: r, instId, ...meta }));
         }),
       );
 
       // Replace all connections for this team (clean slate per sync)
       await store.deleteByTeam(team);
 
-      const allRepoEntries = [...repoResults.flat(), ...existingResults.flat()];
+      const allRepoEntries = repoResults.flat();
+      for (const row of carried) {
+        await store.upsert({
+          team_id: row.team_id,
+          service_id: row.service_id,
+          repo_full_name: row.repo_full_name,
+          installation_id: Number(row.installation_id),
+          account_type: row.account_type,
+          created_by: row.created_by,
+        });
+      }
+
+      // The fresh listing is written last, so where both name a repository
+      // the installation the user owns wins.
       for (const entry of allRepoEntries) {
         await store.upsert({
           team_id: team,
@@ -897,9 +936,8 @@ export function createRouter(options: RouterOptions): Router {
           created_by: `sync:${auth.userId.toLowerCase()}`,
         });
       }
-
-      const allRepos = [...new Set(allRepoEntries.map(e => e.repo))].sort();
-      const instSummary = [...entries.map(([id, m]) => `${m.login}(${id})`), ...existingOnly.map(id => `db(${id})`)].join(', ');
+      const allRepos = [...new Set([...allRepoEntries.map(e => e.repo), ...carried.map(r => r.repo_full_name)])].sort();
+      const instSummary = [...entries.map(([id, m]) => `${m.login}(${id})`), `${carried.length} carried rows`].join(', ');
       logger.info(`Synced ${allRepos.length} repos for team=${team} from installations: ${instSummary}`);
       res.json({ repos: allRepos });
     } catch (err) {

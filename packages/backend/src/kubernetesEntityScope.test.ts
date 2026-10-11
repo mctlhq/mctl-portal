@@ -25,11 +25,13 @@ import { kubernetesEntityScopeModule } from './kubernetesEntityScope';
 const ATTACKER = 'user:default/stranger'; // signed in via the GitHub fallback, owns nothing
 const LABS_DEV = 'user:default/labsdev';
 const ADMIN = 'user:default/root';
+const OUTSIDER = 'user:default/outsider'; // member of group:other/labs, not of the labs tenant
 
 const OWNERSHIP: Record<string, string[]> = {
   [ATTACKER]: [ATTACKER],
   [LABS_DEV]: [LABS_DEV, 'group:default/labs'],
   [ADMIN]: [ADMIN, 'group:default/admins', 'group:default/admins-owners'],
+  [OUTSIDER]: [OUTSIDER, 'group:other/labs'],
 };
 
 function component(
@@ -66,7 +68,24 @@ const LABS_WITHOUT_NAMESPACE = component('labs', 'loose', 'group:default/labs', 
   'backstage.io/kubernetes-id': 'loose',
   'backstage.io/kubernetes-label-selector': 'app',
 });
-const ENTITIES = [LABS_APP, ADMINS_APP, LABS_POINTING_AT_ADMINS, LABS_WITHOUT_NAMESPACE];
+// Owned by a user, not by a tenant group, and owned by a group outside the
+// default namespace that merely shares the tenant's name.
+const USER_OWNED = component('labs', 'personal', 'user:default/labsdev', {
+  'backstage.io/kubernetes-id': 'personal',
+  'backstage.io/kubernetes-label-selector': 'app=portfolio',
+});
+const FOREIGN_NAMESPACE_GROUP = component('labs', 'lookalike', 'group:other/labs', {
+  'backstage.io/kubernetes-id': 'lookalike',
+  'backstage.io/kubernetes-label-selector': 'app=portfolio',
+});
+const ENTITIES = [
+  LABS_APP,
+  ADMINS_APP,
+  LABS_POINTING_AT_ADMINS,
+  LABS_WITHOUT_NAMESPACE,
+  USER_OWNED,
+  FOREIGN_NAMESPACE_GROUP,
+];
 
 // What the attacker posts: any name, plus annotations of their choosing.
 const CRAFTED = component('default', 'anything', 'group:default/nobody', {
@@ -356,6 +375,16 @@ describe('POST /api/kubernetes/services/:id with kubernetesEntityScopeModule', (
     // The legacy route reports every provider error as a 500 with its message.
     expect(result.status).toBe(500);
     expect(result.error).toMatch(/outside tenant 'labs'/);
+    expect(fetchCalls).toHaveLength(0);
+  });
+
+  it.each([
+    ['an entity owned by a user', LABS_DEV, USER_OWNED],
+    ['an entity owned by a group outside the default namespace', OUTSIDER, FOREIGN_NAMESPACE_GROUP],
+  ])('refuses %s', async (_label, user, entity) => {
+    const result = await postServices(backend, user, entity);
+    expect(result.status).toBe(500);
+    expect(result.error).toMatch(/is not owned by a tenant group/);
     expect(fetchCalls).toHaveLength(0);
   });
 

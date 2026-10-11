@@ -117,6 +117,13 @@ describe.each(['usage', 'pods'])('GET /namespaces/:ns/%s', route => {
     expect(k8sCall()).not.toHaveBeenCalled();
   });
 
+  it('refuses user credentials that carry no user entity', async () => {
+    const base = await startApp({ type: 'user' });
+    const res = await fetch(`${base}/namespaces/labs/${route}`);
+    expect(res.status).toBe(401);
+    expect(k8sCall()).not.toHaveBeenCalled();
+  });
+
   it('serves any member of the tenant, whatever the role', async () => {
     const base = await startApp({ type: 'user', userRef: 'user:default/carol' });
     const res = await fetch(`${base}/namespaces/labs/${route}`);

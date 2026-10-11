@@ -1,5 +1,6 @@
 import knexFactory, { Knex } from 'knex';
 import { RepoConnectionStore } from './store';
+import { isRepoBoundToTeam } from './bindingLookup';
 
 // The verified-only readers and the one-time legacy carry-over, against real
 // databases. Postgres runs when GAC_TEST_PG_URL points at a scratch server
@@ -103,6 +104,14 @@ describe.each(engines)('RepoConnectionStore on %s', (_name, open) => {
     expect(await store.migrateLegacyRows()).toBe(0);
   });
 
+  it('leaves rows untrusted, and does not fail, while the tenants table does not exist yet', async () => {
+    if (!tenantCheck) return; // only Postgres reads the tenants table
+    await db.raw('DROP TABLE "tenant-management".tenants');
+    expect(await store.migrateLegacyRows()).toBe(0);
+    await expect(store.initialize()).resolves.toBeUndefined();
+    expect(await store.findByTeamAndRepo('labs', 'mashkovd/app')).toBeUndefined();
+  });
+
   it('runs as part of initialize', async () => {
     await store.initialize();
     expect(await store.findByTeamAndRepo('labs', 'mashkovd/app')).toBeDefined();
@@ -119,6 +128,16 @@ describe.each(engines)('RepoConnectionStore on %s', (_name, open) => {
     expect(await store.find('labs', '_auto', 'victim-org/private')).toBeUndefined();
     expect(await store.findByRepo('victim-org/private')).toEqual([]);
     expect((await store.findAllInstallations()).sort()).toEqual(tenantCheck ? [1, 2, 5] : [1, 2, 3, 5]);
+  });
+
+  it('answers the cross-plugin binding check from verified rows only, ignoring case', async () => {
+    const isPostgres = tenantCheck;
+    expect(await isRepoBoundToTeam(db, isPostgres, 'labs', 'carol/tool')).toBe(true);
+    expect(await isRepoBoundToTeam(db, isPostgres, 'labs', 'Carol/Tool')).toBe(true);
+    // another team's binding, and unverified rows, are not this team's
+    expect(await isRepoBoundToTeam(db, isPostgres, 'admins', 'carol/tool')).toBe(false);
+    expect(await isRepoBoundToTeam(db, isPostgres, 'labs', 'victim-org/private')).toBe(false);
+    expect(await isRepoBoundToTeam(db, isPostgres, 'labs', 'mashkovd/app')).toBe(false);
   });
 
   it('records the cutoff on the first run and never moves it', async () => {

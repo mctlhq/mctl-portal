@@ -91,6 +91,14 @@ export class RepoConnectionStore {
   async migrateLegacyRows(): Promise<number> {
     const cutoff = await this.legacyCutoff();
     const isPostgres = isPostgresClient(this.db);
+    // tenant-backend creates its table when it starts, which may be after
+    // this plugin on a fresh database. No table means no tenant to carry a
+    // row over for: the rows stay untrusted and the migration runs on a
+    // later start (the cutoff is already recorded). An error reading the
+    // schema is not "no table" and propagates.
+    if (isPostgres && !(await this.db.schema.withSchema(TENANT_SCHEMA).hasTable('tenants'))) {
+      return 0;
+    }
     const query = this.db('repo_connections')
       .whereNot('created_by', 'like', '%:%')
       // An ISO string compares correctly both as a Postgres timestamp and as
@@ -175,6 +183,20 @@ export class RepoConnectionStore {
   async findVerifiedInstallationsByTeam(teamId: string): Promise<number[]> {
     const rows = await this.verified(teamId).distinct('installation_id').select('installation_id');
     return rows.map(r => Number(r.installation_id));
+  }
+
+  /**
+   * The team's verified rows, as written. Readers that list repositories use
+   * these and not the installations behind them: an installation can see
+   * more repositories than the user who bound it could read.
+   */
+  async findVerifiedByTeam(teamId: string): Promise<RepoConnection[]> {
+    return this.verified(teamId).select('*');
+  }
+
+  /** Every team's verified rows (platform admins only). */
+  async findAllVerified(): Promise<RepoConnection[]> {
+    return this.verified().select('*');
   }
 
   async findAllInstallations(): Promise<number[]> {

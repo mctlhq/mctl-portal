@@ -115,6 +115,8 @@ function fakeStore(overrides: Record<string, jest.Mock> = {}) {
     findByRepo: jest.fn().mockResolvedValue([]),
     findByTeamAndRepo: jest.fn().mockResolvedValue(undefined),
     findVerifiedInstallationsByTeam: jest.fn().mockResolvedValue([]),
+    findVerifiedByTeam: jest.fn().mockResolvedValue([]),
+    findAllVerified: jest.fn().mockResolvedValue([]),
     upsert: jest.fn().mockResolvedValue(undefined),
     deleteByTeam: jest.fn().mockResolvedValue(0),
     ...overrides,
@@ -278,7 +280,7 @@ describe('GET /repos', () => {
     const { status, body } = await dispatch(router, 'GET', '/repos?team=nfc', { 'x-test-user': 'carol' });
     expect(status).toBe(200);
     expect(body).toEqual({ repos: [] });
-    expect(store.findInstallationsByTeam).toHaveBeenCalledWith('nfc');
+    expect(store.findVerifiedByTeam).toHaveBeenCalledWith('nfc');
   });
 
   it('lets an admins-tenant owner bypass membership and audits the read', async () => {
@@ -302,7 +304,23 @@ describe('GET /repos', () => {
     const { router, store } = buildRouter({ 'admins:alice': { role: 'owner' } });
     const { status } = await dispatch(router, 'GET', '/repos', { 'x-test-user': 'alice' });
     expect(status).toBe(200);
-    expect(store.findAllInstallations).toHaveBeenCalled();
+    expect(store.findAllVerified).toHaveBeenCalled();
+  });
+
+  it('lists the bound repositories, not everything their installations can see', async () => {
+    // Installation 22 can see victim-org/private, but the team is bound only
+    // to victim-org/shared (old code listed the whole installation).
+    fetchMock.mockImplementation(bindingStub({ accounts: ACCOUNTS, repos: ['victim-org/shared', 'victim-org/private'] }));
+    const { router } = buildRouter(
+      { 'nfc:carol': { role: 'viewer' } },
+      {
+        findVerifiedByTeam: jest.fn().mockResolvedValue([
+          { team_id: 'nfc', service_id: '_auto', repo_full_name: 'victim-org/shared', installation_id: 22, account_type: 'organization', created_by: 'callback:carol' },
+        ]),
+      },
+    );
+    const { body } = await dispatch(router, 'GET', '/repos?team=nfc', { 'x-test-user': 'carol' });
+    expect(body.repos).toEqual(['victim-org/shared']);
   });
 });
 
@@ -713,6 +731,37 @@ describe('GET /callback binding', () => {
     expect(store.upsert).not.toHaveBeenCalled();
   });
 
+  it('does not read a permission out of a failed answer', async () => {
+    const stub = bindingStub({ accounts: ACCOUNTS, repos: ['victim-org/shared'] });
+    fetchMock.mockImplementation(async (url: string) =>
+      /\/collaborators\/carol\/permission$/.test(url)
+        ? { ok: false, status: 502, json: async () => ({ permission: 'admin' }) }
+        : stub(url),
+    );
+    const { router, store } = buildRouter({});
+    await dispatch(router, 'GET', `/callback?installation_id=22&state=${popupState('nfc', 'carol')}`);
+    expect(store.upsert).not.toHaveBeenCalled();
+  });
+
+  it('binds only the repository named in an install-url state, not its siblings', async () => {
+    fetchMock.mockImplementation(
+      bindingStub({
+        accounts: ACCOUNTS,
+        repos: ['victim-org/also-readable', 'victim-org/shared'],
+        permissions: { 'victim-org/shared': 'read', 'victim-org/also-readable': 'read' },
+      }),
+    );
+    const { router, store } = buildRouter({});
+    const state = encodeURIComponent(
+      encryptState({ team: 'nfc', service: 'api', repo: 'victim-org/shared', user: 'carol', nonce: 'n' }, STATE_SECRET),
+    );
+    await dispatch(router, 'GET', `/callback?installation_id=22&state=${state}`);
+    expect(store.upsert).toHaveBeenCalledTimes(1);
+    expect(store.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({ repo_full_name: 'victim-org/shared', service_id: 'api', created_by: 'callback:carol' }),
+    );
+  });
+
   it('refuses when the installation cannot be looked up', async () => {
     fetchMock.mockImplementation(bindingStub({ accounts: {}, repos: ['carol/app'] }));
     const { router, store } = buildRouter({});
@@ -742,6 +791,17 @@ describe('GET /popup-state', () => {
     const { decryptState } = jest.requireActual('./router');
     expect(decryptState(body.state, STATE_SECRET)).toMatchObject({ popup: true, team: 'nfc', user: 'carol' });
     expect(body.url).toContain(encodeURIComponent(body.state));
+  });
+});
+
+describe('GET /repo-access input', () => {
+  it.each(['../../x', 'owner', 'a/b/c', 'owner/..'])('rejects the repo %s before any lookup', async repo => {
+    const { router } = buildRouter({ 'nfc:carol': { role: 'developer' } });
+    const { status } = await dispatch(
+      router, 'GET', `/repo-access?team=nfc&service=svc&repo=${encodeURIComponent(repo)}`, { 'x-test-user': 'carol' },
+    );
+    expect(status).toBe(400);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });
 
@@ -807,17 +867,145 @@ describe('POST /repos/sync carries over only verified bindings', () => {
     expect(store.upsert).not.toHaveBeenCalledWith(expect.objectContaining({ installation_id: 22 }));
   });
 
-  it('keeps verified bindings and records the syncing user', async () => {
-    fetchMock.mockImplementation(bindingStub({ accounts: ACCOUNTS, repos: ['victim-org/private'] }));
+  const carriedRow = {
+    team_id: 'nfc',
+    service_id: '_auto',
+    repo_full_name: 'victim-org/shared',
+    installation_id: 22,
+    account_type: 'organization',
+    created_by: 'callback:carol',
+  };
+
+  // carol has no personal installation in these tests.
+  function noPersonalInstallation(stub: (url: string) => Promise<any>) {
+    return async (url: string) =>
+      /\/(users|orgs)\/carol\/installation$/.test(url) ? { ok: false, status: 404, json: async () => ({}) } : stub(url);
+  }
+
+  it('carries a verified binding over as it is, never widened to its installation (old code re-listed the installation)', async () => {
+    // Installation 22 can see victim-org/private; carol could read only
+    // victim-org/shared when she bound it.
+    fetchMock.mockImplementation(
+      noPersonalInstallation(bindingStub({ accounts: ACCOUNTS, repos: ['victim-org/shared', 'victim-org/private'] })),
+    );
     const { router, store } = buildRouter(
       { 'nfc:carol': { role: 'developer' } },
-      { findVerifiedInstallationsByTeam: jest.fn().mockResolvedValue([22]) },
+      { findVerifiedByTeam: jest.fn().mockResolvedValue([carriedRow]) },
+    );
+    const { status, body } = await dispatch(router, 'POST', '/repos/sync?team=nfc&user=carol', { 'x-test-user': 'carol' });
+    expect(status).toBe(200);
+    expect(body.repos).toEqual(['victim-org/shared']);
+    expect(store.upsert).toHaveBeenCalledTimes(1);
+    expect(store.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({ repo_full_name: 'victim-org/shared', installation_id: 22, created_by: 'callback:carol' }),
+    );
+    expect(fetchMock).not.toHaveBeenCalledWith(expect.stringContaining('/installation/repositories'), expect.anything());
+  });
+
+  it('replaces rows of an installation the sync lists again with the fresh listing (no stale rows survive)', async () => {
+    // carol's personal installation 555 now has only carol/a; a verified row still names carol/gone.
+    fetchMock.mockImplementation(bindingStub({ accounts: ACCOUNTS, repos: ['carol/a'] }));
+    const stale = { ...carriedRow, repo_full_name: 'carol/gone', installation_id: 555, account_type: 'user', created_by: 'sync:carol' };
+    const { router, store } = buildRouter(
+      { 'nfc:carol': { role: 'developer' } },
+      { findVerifiedByTeam: jest.fn().mockResolvedValue([stale]) },
     );
     const { body } = await dispatch(router, 'POST', '/repos/sync?team=nfc&user=carol', { 'x-test-user': 'carol' });
-    expect(body.repos).toContain('victim-org/private');
-    expect(store.upsert).toHaveBeenCalledWith(
-      expect.objectContaining({ installation_id: 22, created_by: 'sync:carol' }),
+    expect(body.repos).toEqual(['carol/a']);
+    expect(store.upsert).not.toHaveBeenCalledWith(expect.objectContaining({ repo_full_name: 'carol/gone' }));
+  });
+
+  it("lists the syncing user's own installation in full and records them", async () => {
+    fetchMock.mockImplementation(bindingStub({ accounts: ACCOUNTS, repos: ['carol/a', 'carol/b'] }));
+    const { router, store } = buildRouter({ 'nfc:carol': { role: 'developer' } });
+    const { body } = await dispatch(router, 'POST', '/repos/sync?team=nfc&user=carol', { 'x-test-user': 'carol' });
+    expect(body.repos).toEqual(['carol/a', 'carol/b']);
+    expect(store.upsert).toHaveBeenCalledWith(expect.objectContaining({ repo_full_name: 'carol/a', created_by: 'sync:carol' }));
+  });
+
+  it('changes nothing when an installation cannot be listed (old code replaced the rows with a partial list)', async () => {
+    const stub = bindingStub({ accounts: ACCOUNTS, repos: ['carol/a'] });
+    fetchMock.mockImplementation(async (url: string) =>
+      /\/installation\/repositories/.test(url) ? { ok: false, status: 502, json: async () => ({}) } : stub(url),
     );
+    const { router, store } = buildRouter({ 'nfc:carol': { role: 'developer' } });
+    const { status } = await dispatch(router, 'POST', '/repos/sync?team=nfc&user=carol', { 'x-test-user': 'carol' });
+    expect(status).toBe(500);
+    expect(store.deleteByTeam).not.toHaveBeenCalled();
+    expect(store.upsert).not.toHaveBeenCalled();
+  });
+
+  it('changes nothing when the personal installation lookup fails rather than answers 404', async () => {
+    fetchMock.mockImplementation(async (url: string) =>
+      /\/(users|orgs)\/carol\/installation$/.test(url) ? { ok: false, status: 503, json: async () => ({}) } : githubFetchStub(url),
+    );
+    const { router, store } = buildRouter(
+      { 'nfc:carol': { role: 'developer' } },
+      { findVerifiedByTeam: jest.fn().mockResolvedValue([carriedRow]) },
+    );
+    const { status } = await dispatch(router, 'POST', '/repos/sync?team=nfc&user=carol', { 'x-test-user': 'carol' });
+    expect(status).toBe(500);
+    expect(store.deleteByTeam).not.toHaveBeenCalled();
+  });
+
+  it('changes nothing when a later page of the repository list fails', async () => {
+    const page1 = Array.from({ length: 100 }, (_v, i) => ({ full_name: `carol/r${i}` }));
+    const stub = bindingStub({ accounts: ACCOUNTS });
+    fetchMock.mockImplementation(async (url: string) => {
+      if (/\/installation\/repositories\?.*page=1$/.test(url)) {
+        return { ok: true, status: 200, json: async () => ({ repositories: page1 }) };
+      }
+      if (/\/installation\/repositories\?.*page=2$/.test(url)) {
+        return { ok: false, status: 500, json: async () => ({}) };
+      }
+      return stub(url);
+    });
+    const { router, store } = buildRouter({ 'nfc:carol': { role: 'developer' } });
+    const { status } = await dispatch(router, 'POST', '/repos/sync?team=nfc&user=carol', { 'x-test-user': 'carol' });
+    expect(status).toBe(500);
+    expect(store.deleteByTeam).not.toHaveBeenCalled();
+  });
+
+  it('changes nothing when a page of the repository list is malformed', async () => {
+    const stub = bindingStub({ accounts: ACCOUNTS });
+    fetchMock.mockImplementation(async (url: string) =>
+      /\/installation\/repositories\?/.test(url)
+        ? { ok: true, status: 200, json: async () => ({ message: 'not a list' }) }
+        : stub(url),
+    );
+    const { router, store } = buildRouter({ 'nfc:carol': { role: 'developer' } });
+    const { status } = await dispatch(router, 'POST', '/repos/sync?team=nfc&user=carol', { 'x-test-user': 'carol' });
+    expect(status).toBe(500);
+    expect(store.deleteByTeam).not.toHaveBeenCalled();
+  });
+
+  it('changes nothing when an installation lists more repositories than the reader will page through', async () => {
+    const full = Array.from({ length: 100 }, (_v, i) => ({ full_name: `carol/r${i}` }));
+    const stub = bindingStub({ accounts: ACCOUNTS });
+    fetchMock.mockImplementation(async (url: string) =>
+      /\/installation\/repositories\?/.test(url)
+        ? { ok: true, status: 200, json: async () => ({ repositories: full }) }
+        : stub(url),
+    );
+    const { router, store } = buildRouter({ 'nfc:carol': { role: 'developer' } });
+    const { status } = await dispatch(router, 'POST', '/repos/sync?team=nfc&user=carol', { 'x-test-user': 'carol' });
+    expect(status).toBe(500);
+    expect(store.deleteByTeam).not.toHaveBeenCalled();
+  });
+
+  it('reads every page of a long repository list', async () => {
+    const page1 = Array.from({ length: 100 }, (_v, i) => ({ full_name: `carol/r${String(i).padStart(3, '0')}` }));
+    const page2 = [{ full_name: 'carol/z-last' }];
+    const stub = bindingStub({ accounts: ACCOUNTS });
+    fetchMock.mockImplementation(async (url: string) => {
+      if (/\/installation\/repositories\?.*page=1$/.test(url)) return { ok: true, status: 200, json: async () => ({ repositories: page1 }) };
+      if (/\/installation\/repositories\?.*page=2$/.test(url)) return { ok: true, status: 200, json: async () => ({ repositories: page2 }) };
+      return stub(url);
+    });
+    const { router } = buildRouter({ 'nfc:carol': { role: 'developer' } });
+    const { body } = await dispatch(router, 'POST', '/repos/sync?team=nfc&user=carol', { 'x-test-user': 'carol' });
+    expect(body.repos).toHaveLength(101);
+    expect(body.repos).toContain('carol/z-last');
   });
 });
 
@@ -859,8 +1047,17 @@ describe('GET /repo-binding', () => {
     expect(bound).toHaveBeenCalledWith(expect.anything(), false, 'labs', 'acme/api');
   });
 
+  it('answers a static external token, whose subject carries no prefix', async () => {
+    const { router } = buildRouter({}, {}, { bindingCheckSubject: 'mctl-api-repo-binding' });
+    const { status } = await dispatch(router, 'GET', '/repo-binding?team=labs&repo=acme/api', {
+      'x-test-service': 'mctl-api-repo-binding',
+    });
+    expect(status).toBe(200);
+  });
+
   it.each([
     ['another external principal', { 'x-test-service': 'external:mctl-api' }, 403],
+    ['another static principal', { 'x-test-service': 'mctl-api' }, 403],
     ['a plugin principal', { 'x-test-service': 'plugin:scaffolder' }, 403],
     ['a signed-in user, even an admin', { 'x-test-user': 'root' }, 401],
     ['no credentials', {}, 401],
@@ -871,13 +1068,17 @@ describe('GET /repo-binding', () => {
     expect(bound).not.toHaveBeenCalled();
   });
 
-  it('refuses everyone when no subject is configured', async () => {
-    const { router } = buildRouter({});
-    const { status } = await dispatch(router, 'GET', '/repo-binding?team=labs&repo=acme/api', {
-      'x-test-service': 'external:',
-    });
-    expect(status).toBe(403);
-  });
+  it.each(['external:', 'external:undefined', 'undefined'])(
+    'refuses everyone when no subject is configured (subject %j)',
+    async subject => {
+      const { router } = buildRouter({});
+      const { status } = await dispatch(router, 'GET', '/repo-binding?team=labs&repo=acme/api', {
+        'x-test-service': subject,
+      });
+      expect(status).toBe(403);
+      expect(bound).not.toHaveBeenCalled();
+    },
+  );
 
   it.each(['team=../x&repo=acme/api', 'team=labs&repo=acme', 'team=labs&repo=../..'])('rejects malformed %s', async q => {
     const { router } = buildRouter({}, {}, { bindingCheckSubject: 'mctl-api-repo-binding' });
