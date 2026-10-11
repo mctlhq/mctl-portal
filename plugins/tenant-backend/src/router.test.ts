@@ -216,3 +216,118 @@ describe('landing-page token is not platform admin', () => {
     ).toBe(403);
   });
 });
+
+// Callers are identified by the x-test-caller header: "service" for a
+// Backstage service credential, "user:<id>" for a signed-in user.
+describe('tenant data is scoped to members, admins and real users', () => {
+  let server: Server | undefined;
+  const submitWorkflow = jest.fn().mockResolvedValue('wf');
+  const TENANT = { name: 'labs', displayName: 'Labs', contactEmail: 'owner@example.com' };
+  const MEMBERS: Record<string, string> = { 'labs:carol': 'viewer', 'admins:root': 'owner' };
+
+  const noopLogger = {
+    info: jest.fn(),
+    warn: jest.fn(),
+    error: jest.fn(),
+    debug: jest.fn(),
+    child: jest.fn(),
+  };
+  noopLogger.child.mockReturnValue(noopLogger);
+
+  function startApp(): Promise<string> {
+    const options = {
+      logger: noopLogger,
+      httpAuth: {
+        credentials: jest.fn(async (req: any, opts?: { allow?: string[] }) => {
+          const caller = String(req.headers['x-test-caller'] ?? '');
+          const type = caller === 'service' ? 'service' : caller.startsWith('user:') ? 'user' : '';
+          if (!type || (opts?.allow && !opts.allow.includes(type))) {
+            throw new Error('not allowed');
+          }
+          return type === 'user'
+            ? { principal: { type, userEntityRef: `user:default/${caller.slice(5)}` } }
+            : { principal: { type, subject: 'plugin:scaffolder' } };
+        }),
+      },
+      userInfo: {
+        getUserInfo: jest.fn(async (c: any) => ({
+          userEntityRef: c.principal.userEntityRef,
+          ownershipEntityRefs: [c.principal.userEntityRef],
+        })),
+      },
+      store: {
+        listAll: jest.fn().mockResolvedValue([TENANT]),
+        findByName: jest.fn(async (name: string) => (name === 'labs' ? TENANT : undefined)),
+        upsert: jest.fn().mockResolvedValue(undefined),
+        addMember: jest.fn().mockResolvedValue(undefined),
+        listMembers: jest.fn().mockResolvedValue([{ userId: 'carol', role: 'viewer' }]),
+        getMemberByTenant: jest.fn(async (tenant: string, userId: string) => {
+          const role = MEMBERS[`${tenant}:${userId}`];
+          return role ? { tenantName: tenant, userId, role } : undefined;
+        }),
+      },
+      argoClient: { submitWorkflow },
+      argoNamespace: 'argo-workflows',
+      getGithubToken: jest.fn(),
+      landingPageToken: undefined,
+    } as unknown as RouterOptions;
+    const app = express();
+    app.use(createRouter(options));
+    return new Promise(resolve => {
+      server = app.listen(0, '127.0.0.1', () => {
+        resolve(`http://127.0.0.1:${(server!.address() as AddressInfo).port}`);
+      });
+    });
+  }
+
+  afterEach(done => {
+    submitWorkflow.mockClear();
+    if (server) {
+      server.close(() => done());
+      server = undefined;
+    } else {
+      done();
+    }
+  });
+
+  it('does not treat a service credential as platform admin', async () => {
+    const base = await startApp();
+    const headers = { 'x-test-caller': 'service', 'content-type': 'application/json' };
+    expect((await fetch(`${base}/tenants`, { headers })).status).toBe(403);
+    expect((await fetch(`${base}/tenants/labs/members`, { headers })).status).toBe(403);
+    expect((await fetch(`${base}/tenants/labs`, { method: 'DELETE', headers })).status).toBe(403);
+    const created = await fetch(`${base}/tenants`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ tenantName: 'acme', displayName: 'Acme' }),
+    });
+    expect(created.status).toBe(403);
+    expect(submitWorkflow).not.toHaveBeenCalled();
+  });
+
+  it('lists tenants only for platform admins', async () => {
+    const base = await startApp();
+    expect((await fetch(`${base}/tenants`, { headers: { 'x-test-caller': 'user:stranger' } })).status).toBe(403);
+    expect((await fetch(`${base}/tenants`, { headers: { 'x-test-caller': 'user:carol' } })).status).toBe(403);
+    const admin = await fetch(`${base}/tenants`, { headers: { 'x-test-caller': 'user:root' } });
+    expect(admin.status).toBe(200);
+    expect((await admin.json()).tenants).toEqual([TENANT]);
+  });
+
+  it('shows a non-member only that a tenant exists', async () => {
+    const base = await startApp();
+    const res = await fetch(`${base}/tenants/labs`, { headers: { 'x-test-caller': 'user:stranger' } });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.tenant).toEqual({ name: 'labs' });
+    expect(JSON.stringify(body)).not.toContain('owner@example.com');
+  });
+
+  it('shows members and admins the full tenant', async () => {
+    const base = await startApp();
+    for (const caller of ['user:carol', 'user:root']) {
+      const res = await fetch(`${base}/tenants/labs`, { headers: { 'x-test-caller': caller } });
+      expect((await res.json()).tenant).toEqual(TENANT);
+    }
+  });
+});

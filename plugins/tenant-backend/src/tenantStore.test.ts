@@ -226,3 +226,61 @@ describe('TenantStore.getMemberTenant', () => {
     expect(await store.getMemberTenant('nobody')).toBeUndefined();
   });
 });
+
+// Postgres only (repo_connections lives in github-app-connect's schema there):
+// runs when TENANT_TEST_PG_URL points at a scratch server.
+// Use a database of its own: suites run in parallel and drop the same schemas.
+const pgUrl = process.env.TENANT_TEST_PG_URL;
+(pgUrl ? describe : describe.skip)('TenantStore.delete on Postgres', () => {
+  let admin: Knex;
+  let knex: Knex;
+
+  beforeEach(async () => {
+    admin = knexLib({ client: 'pg', connection: pgUrl });
+    await admin.raw('DROP SCHEMA IF EXISTS "github-app-connect" CASCADE');
+    await admin.raw('DROP SCHEMA IF EXISTS "tenant-management" CASCADE');
+    await admin.raw('CREATE SCHEMA "tenant-management"');
+    knex = knexLib({ client: 'pg', connection: pgUrl, searchPath: ['tenant-management'] });
+  });
+
+  afterEach(async () => {
+    await knex.destroy();
+    await admin.destroy();
+  });
+
+  it("deletes the tenant's repo connections and only those", async () => {
+    await admin.raw('CREATE SCHEMA "github-app-connect"');
+    await admin.raw(
+      'CREATE TABLE "github-app-connect".repo_connections (team_id text, repo_full_name text, created_by text)',
+    );
+    await admin.raw(
+      `INSERT INTO "github-app-connect".repo_connections VALUES ('nfc', 'a/b', 'sync'), ('labs', 'c/d', 'sync')`,
+    );
+    const store = makeStore(knex);
+    await store.init();
+    await store.upsert(makeTenant('nfc'));
+    await store.delete('nfc');
+    const rows = await admin('repo_connections').withSchema('github-app-connect').select('team_id');
+    expect(rows.map(r => r.team_id)).toEqual(['labs']);
+    expect(await store.findByName('nfc')).toBeUndefined();
+  });
+
+  it('still deletes the tenant when github-app-connect has no table', async () => {
+    const store = makeStore(knex);
+    await store.init();
+    await store.upsert(makeTenant('nfc'));
+    await store.delete('nfc');
+    expect(await store.findByName('nfc')).toBeUndefined();
+  });
+
+  it('keeps the tenant when the connection cleanup fails', async () => {
+    await admin.raw('CREATE SCHEMA "github-app-connect"');
+    // A table without team_id makes the cleanup fail with something other than 42P01.
+    await admin.raw('CREATE TABLE "github-app-connect".repo_connections (other text)');
+    const store = makeStore(knex);
+    await store.init();
+    await store.upsert(makeTenant('nfc'));
+    await expect(store.delete('nfc')).rejects.toThrow();
+    expect(await store.findByName('nfc')).toBeDefined();
+  });
+});

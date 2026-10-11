@@ -30,6 +30,9 @@ const GitTagPickerComponent = (props: FieldExtensionComponentProps<string>) => {
   const [tags, setTags] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
   const [sourceRepo, setSourceRepo] = useState<string>('');
+  // Tags are read through the team's connected repositories, so the backend
+  // needs the team: the form's teamName (onboard) or the service's owner.
+  const [entityTeam, setEntityTeam] = useState<string>('');
   const [urlPrefilledTag] = useState<string>(
     () => new URLSearchParams(window.location.search).get('gitTag') || '',
   );
@@ -38,6 +41,9 @@ const GitTagPickerComponent = (props: FieldExtensionComponentProps<string>) => {
   const dockerfileRepo = (formContext as any)?.formData?.dockerfileRepo;
   // Source 2: serviceName entity with annotation (deploy-version template)
   const serviceName = (formContext as any)?.formData?.serviceName;
+
+  const rawTeamValue = (formContext as any)?.formData?.teamName as string | undefined;
+  const team = (rawTeamValue ? rawTeamValue.split('/').pop() : undefined) || entityTeam;
 
   // Use dockerfileRepo directly if available, otherwise fetch from entity
   useEffect(() => {
@@ -65,18 +71,21 @@ const GitTagPickerComponent = (props: FieldExtensionComponentProps<string>) => {
       const entity = await resp.json();
       const repo = entity?.metadata?.annotations?.['github.com/source-repo'];
       if (repo) setSourceRepo(repo);
+      const owner: string | undefined =
+        entity?.metadata?.labels?.team ?? entity?.spec?.owner;
+      if (owner) setEntityTeam(owner.replace(/^group:/, '').split('/').pop() ?? '');
     } catch {
       // ignore
     }
   }, [serviceName, dockerfileRepo, discoveryApi, fetchApi]);
 
   const fetchTags = useCallback(async () => {
-    if (!sourceRepo) return;
+    if (!sourceRepo || !team) return;
     setLoading(true);
     try {
       const base = await discoveryApi.getBaseUrl('github-app-connect');
       const resp = await fetchApi.fetch(
-        `${base}/repo-tags?repo=${encodeURIComponent(sourceRepo)}`,
+        `${base}/repo-tags?team=${encodeURIComponent(team)}&repo=${encodeURIComponent(sourceRepo)}`,
       );
       if (resp.ok) {
         const data = await resp.json();
@@ -87,7 +96,7 @@ const GitTagPickerComponent = (props: FieldExtensionComponentProps<string>) => {
     } finally {
       setLoading(false);
     }
-  }, [sourceRepo, discoveryApi, fetchApi]);
+  }, [sourceRepo, team, discoveryApi, fetchApi]);
 
   useEffect(() => { fetchEntity(); }, [fetchEntity]);
   useEffect(() => { fetchTags(); }, [fetchTags]);

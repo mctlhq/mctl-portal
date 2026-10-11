@@ -192,18 +192,38 @@ const GitHubRepoPickerComponent = (
     }, POLL_INTERVAL);
   }, [syncAndFetch, onChange]);
 
-  const handleGrantAccessClick = useCallback(() => {
-    const state = teamName ? `popup:${teamName}` : 'popup';
-    const installUrl = `${GITHUB_APP_INSTALL_BASE}?state=${encodeURIComponent(state)}`;
+  const handleGrantAccessClick = useCallback(async () => {
+    // Open synchronously so the popup is not blocked, then point it at the
+    // install URL once the backend has minted a state bound to this team and
+    // user. Without a team there is nothing to bind: the install still
+    // completes, and /repos/sync picks up the user's own installation.
     const popup = window.open(
-      installUrl,
+      'about:blank',
       'github-app-install',
       'width=1000,height=700',
     );
     popupRef.current = popup;
     setWaiting(true);
     startFallbackPolling();
-  }, [startFallbackPolling, teamName]);
+    // The stateless `popup` marker records nothing, but it still sends the
+    // popup to /popup-done, which closes it.
+    let installUrl = `${GITHUB_APP_INSTALL_BASE}?state=popup`;
+    if (teamName) {
+      try {
+        const baseUrl = await discoveryApi.getBaseUrl('github-app-connect');
+        const resp = await fetchApi.fetch(
+          `${baseUrl}/popup-state?team=${encodeURIComponent(teamName)}`,
+        );
+        if (resp.ok) {
+          const data = (await resp.json()) as { url?: string };
+          if (data.url) installUrl = data.url;
+        }
+      } catch {
+        // fall through to the stateless install URL
+      }
+    }
+    if (popup && !popup.closed) popup.location.href = installUrl;
+  }, [startFallbackPolling, teamName, discoveryApi, fetchApi]);
 
   // Cleanup on unmount
   useEffect(() => {

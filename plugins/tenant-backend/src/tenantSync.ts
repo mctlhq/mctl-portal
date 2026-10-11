@@ -3,6 +3,9 @@ import { LoggerService } from '@backstage/backend-plugin-api';
 import { TenantStore } from './tenantStore';
 import { Tenant, TenantValuesYaml } from './types';
 
+// The GitHub contents API lists at most this many entries of a directory.
+const CONTENTS_LISTING_LIMIT = 1000;
+
 export interface TenantSyncOptions {
   /** GitHub org name (e.g. mctlhq) */
   githubOrg: string;
@@ -117,12 +120,23 @@ export class TenantSync {
       }
     }
 
-    // Remove tenants from DB that no longer exist in Git
-    const existingNames = await this.store.listNames();
-    for (const name of existingNames) {
-      if (!syncedNames.includes(name)) {
-        this.logger.info(`[TenantSync] Removing stale tenant '${name}' from DB`);
-        await this.store.delete(name);
+    // Remove tenants from DB that no longer exist in Git. Deleting a tenant
+    // also deletes its repository connections, which cannot be rebuilt, so
+    // only a tenant whose directory is absent from a complete listing counts
+    // as gone. One whose values.yaml could not be read this cycle (a GitHub
+    // error, a rate limit, a malformed file) is not gone, and neither is
+    // anything when the listing may be cut short.
+    if (directories.length >= CONTENTS_LISTING_LIMIT) {
+      this.logger.warn(
+        `[TenantSync] The tenant listing has ${directories.length} entries and may be truncated; not removing any tenant`,
+      );
+    } else {
+      const existingNames = await this.store.listNames();
+      for (const name of existingNames) {
+        if (!directories.includes(name)) {
+          this.logger.info(`[TenantSync] Removing stale tenant '${name}' from DB`);
+          await this.store.delete(name);
+        }
       }
     }
 
