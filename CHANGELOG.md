@@ -1,5 +1,14 @@
 # Changelog
 
+## [4.20.2](https://github.com/mctlhq/mctl-portal/compare/4.20.1...4.20.2) (2026-10-11)
+
+
+### Bug Fixes
+
+* **github-app-connect:** atomic repo sync, bounded permission checks ([f857157](https://github.com/mctlhq/mctl-portal/commit/f85715793e4d1f6de1ea9cc939d184b4412f9085))
+* **portal:** fail closed on partial reads, sync, subject and padded input ([81b9d68](https://github.com/mctlhq/mctl-portal/commit/81b9d68c7bce3a54d7c5659ea34386d1cdd03206))
+* **portal:** tenant-scoped kubernetes, usage and repository bindings ([9bdf81d](https://github.com/mctlhq/mctl-portal/commit/9bdf81d4f9691b062696f65b14398050a899e208))
+
 ## [4.20.1](https://github.com/mctlhq/mctl-portal/compare/4.20.0...4.20.1) (2026-10-10)
 
 
