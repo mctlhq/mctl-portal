@@ -205,7 +205,9 @@ const GitHubRepoPickerComponent = (
     popupRef.current = popup;
     setWaiting(true);
     startFallbackPolling();
-    let installUrl = GITHUB_APP_INSTALL_BASE;
+    // The stateless `popup` marker records nothing, but it still sends the
+    // popup to /popup-done, which closes it.
+    let installUrl = `${GITHUB_APP_INSTALL_BASE}?state=popup`;
     if (teamName) {
       try {
         const baseUrl = await discoveryApi.getBaseUrl('github-app-connect');
@@ -217,7 +219,7 @@ const GitHubRepoPickerComponent = (
           if (data.url) installUrl = data.url;
         }
       } catch {
-        // fall through to the plain install URL
+        // fall through to the stateless install URL
       }
     }
     if (popup && !popup.closed) popup.location.href = installUrl;

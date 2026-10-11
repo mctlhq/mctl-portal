@@ -157,4 +157,42 @@ describe.each(engines)('RepoConnectionStore on %s', (_name, open) => {
     await expect(store.migrateLegacyRows()).rejects.toThrow(/unreadable cutoff/);
     expect(await store.findByTeamAndRepo('labs', 'mashkovd/app')).toBeUndefined();
   });
+
+  const fresh = (repo: string, installation: number) => ({
+    team_id: 'labs',
+    service_id: '_auto',
+    repo_full_name: repo,
+    installation_id: installation,
+    account_type: 'user',
+    created_by: 'sync:mashkovd',
+  });
+
+  const snapshot = () =>
+    db('repo_connections')
+      .orderBy(['team_id', 'repo_full_name'])
+      .select('team_id', 'repo_full_name', 'installation_id', 'created_by');
+
+  it('replaceTeam carries verified rows of other installations, drops the rest and writes the fresh listing', async () => {
+    await store.migrateLegacyRows();
+    const carried = await store.replaceTeam('labs', new Set([5]), [fresh('carol/new', 5)]);
+    expect(carried.map(r => r.repo_full_name)).toEqual(['mashkovd/app']);
+    const labs = (await snapshot()).filter(r => r.team_id === 'labs');
+    expect(labs.map(r => [r.repo_full_name, r.created_by])).toEqual([
+      ['carol/new', 'sync:mashkovd'],
+      ['mashkovd/app', 'legacy:sync'],
+    ]);
+    expect((await snapshot()).filter(r => r.team_id === 'admins')).toHaveLength(1);
+  });
+
+  it('replaceTeam changes nothing when a write fails part-way (the carried rows are never lost)', async () => {
+    await store.migrateLegacyRows();
+    const before = await snapshot();
+    await expect(
+      store.replaceTeam('labs', new Set([5]), [
+        fresh('carol/new', 5),
+        { ...fresh('carol/broken', 5), repo_full_name: null as unknown as string },
+      ]),
+    ).rejects.toThrow();
+    expect(await snapshot()).toEqual(before);
+  });
 });

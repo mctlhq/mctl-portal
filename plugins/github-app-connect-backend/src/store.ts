@@ -227,4 +227,45 @@ export class RepoConnectionStore {
       .where({ team_id: teamId })
       .delete();
   }
+
+  /**
+   * Replaces the team's rows for a repo sync, in one transaction: verified
+   * rows of installations not in `relisted` are carried over as written,
+   * every other row is dropped, then `fresh` is written (it wins where both
+   * name a repository). A failure or restart part-way rolls back, so the
+   * carried rows, which no later sync can rebuild, are never lost. Syncs of
+   * the same team are serialized (an advisory lock on Postgres; SQLite has a
+   * single writer). Returns the carried rows.
+   */
+  async replaceTeam(
+    teamId: string,
+    relisted: ReadonlySet<number>,
+    fresh: Array<Omit<RepoConnection, 'created_at' | 'updated_at'>>,
+  ): Promise<RepoConnection[]> {
+    const isPostgres = isPostgresClient(this.db);
+    return this.db.transaction(async trx => {
+      if (isPostgres) {
+        await trx.raw('SELECT pg_advisory_xact_lock(hashtext(?))', [`repo_connections:${teamId}`]);
+      }
+      const tx = new RepoConnectionStore(trx, this.now);
+      const carried = (await tx.findVerifiedByTeam(teamId)).filter(
+        row => !relisted.has(Number(row.installation_id)),
+      );
+      await tx.deleteByTeam(teamId);
+      for (const row of carried) {
+        await tx.upsert({
+          team_id: row.team_id,
+          service_id: row.service_id,
+          repo_full_name: row.repo_full_name,
+          installation_id: Number(row.installation_id),
+          account_type: row.account_type,
+          created_by: row.created_by,
+        });
+      }
+      for (const row of fresh) {
+        await tx.upsert(row);
+      }
+      return carried;
+    });
+  }
 }

@@ -3,7 +3,15 @@ import type { Router } from 'express';
 import crypto from 'crypto';
 import express from 'express';
 import { AddressInfo } from 'net';
-import { auditAdminBypass, checkTeamAccess, createRouter, encryptState, RouterOptions } from './router';
+import {
+  auditAdminBypass,
+  checkTeamAccess,
+  createRouter,
+  encryptState,
+  MAX_PERMISSION_CHECKS,
+  resolveBindableRepos,
+  RouterOptions,
+} from './router';
 
 jest.mock('./bindingLookup', () => ({ isRepoBoundToTeam: jest.fn() }));
 // eslint-disable-next-line import/first
@@ -108,7 +116,7 @@ function fakeUserInfo() {
 }
 
 function fakeStore(overrides: Record<string, jest.Mock> = {}) {
-  return {
+  const store = {
     findInstallationsByTeam: jest.fn().mockResolvedValue([]),
     findAllInstallations: jest.fn().mockResolvedValue([]),
     find: jest.fn().mockResolvedValue(undefined),
@@ -121,6 +129,30 @@ function fakeStore(overrides: Record<string, jest.Mock> = {}) {
     deleteByTeam: jest.fn().mockResolvedValue(0),
     ...overrides,
   } as any;
+  // Replays RepoConnectionStore.replaceTeam's steps on the mocks above, so
+  // tests can assert on deleteByTeam/upsert. Atomicity is tested against a
+  // real database in store.test.ts.
+  store.replaceTeam ??= jest.fn(async (team: string, relisted: ReadonlySet<number>, fresh: any[]) => {
+    const carried = (await store.findVerifiedByTeam(team)).filter(
+      (row: any) => !relisted.has(Number(row.installation_id)),
+    );
+    await store.deleteByTeam(team);
+    for (const row of carried) {
+      await store.upsert({
+        team_id: row.team_id,
+        service_id: row.service_id,
+        repo_full_name: row.repo_full_name,
+        installation_id: Number(row.installation_id),
+        account_type: row.account_type,
+        created_by: row.created_by,
+      });
+    }
+    for (const row of fresh) {
+      await store.upsert(row);
+    }
+    return carried;
+  });
+  return store;
 }
 
 function fakeLogger() {
@@ -741,6 +773,55 @@ describe('GET /callback binding', () => {
     const { router, store } = buildRouter({});
     await dispatch(router, 'GET', `/callback?installation_id=22&state=${popupState('nfc', 'carol')}`);
     expect(store.upsert).not.toHaveBeenCalled();
+  });
+
+  it('refuses an installation exposing more repositories than it will check, without asking GitHub', async () => {
+    const repos = Array.from({ length: MAX_PERMISSION_CHECKS + 1 }, (_v, i) => `victim-org/r${i}`);
+    fetchMock.mockImplementation(
+      bindingStub({ accounts: ACCOUNTS, repos, permissions: Object.fromEntries(repos.map(r => [r, 'read'])) }),
+    );
+    const result = await resolveBindableRepos({
+      installationId: 22, user: 'carol', repos, appId: '1', privateKey: TEST_PRIVATE_KEY,
+    });
+    expect(result).toEqual({ ok: false, reason: expect.stringMatching(/select at most/) });
+    expect(fetchMock).not.toHaveBeenCalledWith(expect.stringContaining('/collaborators/'), expect.anything());
+  });
+
+  it('checks repository permissions a few at a time and keeps every readable one', async () => {
+    const repos = Array.from({ length: 30 }, (_v, i) => `victim-org/r${String(i).padStart(2, '0')}`);
+    const stub = bindingStub({ accounts: ACCOUNTS, repos });
+    let inFlight = 0;
+    let peak = 0;
+    fetchMock.mockImplementation(async (url: string) => {
+      if (!/\/collaborators\/carol\/permission$/.test(url)) return stub(url);
+      inFlight++;
+      peak = Math.max(peak, inFlight);
+      await new Promise(resolve => setTimeout(resolve, 5));
+      inFlight--;
+      const odd = Number(url.match(/r(\d+)\//)![1]) % 2 === 1;
+      return { ok: true, status: 200, json: async () => ({ permission: odd ? 'read' : 'none' }) };
+    });
+    const result = await resolveBindableRepos({
+      installationId: 22, user: 'carol', repos, appId: '1', privateKey: TEST_PRIVATE_KEY,
+    });
+    expect(peak).toBeGreaterThan(1);
+    expect(peak).toBeLessThanOrEqual(8);
+    expect(result).toEqual({ ok: true, repos: repos.filter((_r, i) => i % 2 === 1) });
+  });
+
+  it('refuses the whole binding when one of many permission checks fails', async () => {
+    const repos = Array.from({ length: 30 }, (_v, i) => `victim-org/r${i}`);
+    fetchMock.mockImplementation(
+      bindingStub({
+        accounts: ACCOUNTS,
+        repos,
+        permissions: { ...Object.fromEntries(repos.map(r => [r, 'read'])), 'victim-org/r17': 502 },
+      }),
+    );
+    const result = await resolveBindableRepos({
+      installationId: 22, user: 'carol', repos, appId: '1', privateKey: TEST_PRIVATE_KEY,
+    });
+    expect(result).toEqual({ ok: false, reason: expect.stringMatching(/r17 failed \(502\)/) });
   });
 
   it('binds only the repository named in an install-url state, not its siblings', async () => {

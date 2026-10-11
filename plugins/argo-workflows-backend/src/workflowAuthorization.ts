@@ -151,7 +151,7 @@ export async function authorizeWorkflowSubmission(options: {
   // name or repository is refused, not trimmed, so what is checked is what
   // is built.
   const component = String(parameters?.component_name ?? '');
-  if (IMAGE_TEMPLATES.has(templateName) && component.trim() && component !== component.trim()) {
+  if (IMAGE_TEMPLATES.has(templateName) && component !== component.trim()) {
     throw denied(`image name ${JSON.stringify(component)} has surrounding whitespace`);
   }
   if (IMAGE_TEMPLATES.has(templateName) && component) {

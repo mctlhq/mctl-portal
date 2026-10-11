@@ -318,6 +318,12 @@ type InstallationAccess = { ok: true; repos: string[] } | { ok: false; reason: s
 // Repository permissions that let a user read the repository.
 const READ_PERMISSIONS = new Set(['admin', 'maintain', 'write', 'triage', 'read']);
 
+// /callback asks GitHub once per repository of an organization installation.
+// The checks run a few at a time, and an installation exposing more than the
+// cap is refused with a reason rather than left to time out.
+const PERMISSION_CHECK_CONCURRENCY = 8;
+export const MAX_PERMISSION_CHECKS = 300;
+
 /**
  * Decides which of `repos` (all reachable through installation
  * `installationId`) the portal user `user` may bind. /callback is reachable
@@ -357,30 +363,57 @@ export async function resolveBindableRepos(options: {
       : { ok: false, reason: `installation belongs to another user (${account.login})` };
   }
 
-  const token = await getInstallationToken(installationId, appId, privateKey);
-  const bindable: string[] = [];
-  for (const repo of repos) {
-    if (!REPO_FULL_NAME_RE.test(repo)) {
-      return { ok: false, reason: `unexpected repository name ${repo}` };
-    }
-    const resp = await fetch(
-      `https://api.github.com/repos/${repo}/collaborators/${encodeURIComponent(user)}/permission`,
-      { headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json' } },
-    );
-    if (resp.status === 404) {
-      continue; // GitHub's answer for a user without access to this repository
-    }
-    if (!resp.ok) {
-      return { ok: false, reason: `permission check for ${repo} failed (${resp.status})` };
-    }
-    const body = (await resp.json()) as { permission?: unknown };
-    if (typeof body.permission !== 'string') {
-      return { ok: false, reason: `malformed permission answer for ${repo}` };
-    }
-    if (READ_PERMISSIONS.has(body.permission)) {
-      bindable.push(repo);
-    }
+  if (repos.length > MAX_PERMISSION_CHECKS) {
+    return {
+      ok: false,
+      reason: `installation exposes ${repos.length} repositories; select at most ${MAX_PERMISSION_CHECKS} on GitHub`,
+    };
   }
+  const token = await getInstallationToken(installationId, appId, privateKey);
+  const unexpected = repos.find(repo => !REPO_FULL_NAME_RE.test(repo));
+  if (unexpected !== undefined) {
+    return { ok: false, reason: `unexpected repository name ${unexpected}` };
+  }
+  // readable[i] answers repos[i]; the first failure stops further checks.
+  const readable: boolean[] = new Array(repos.length).fill(false);
+  let failure: string | undefined;
+  let next = 0;
+  const worker = async () => {
+    while (failure === undefined && next < repos.length) {
+      const i = next++;
+      const repo = repos[i];
+      let resp: Awaited<ReturnType<typeof fetch>>;
+      try {
+        resp = await fetch(
+          `https://api.github.com/repos/${repo}/collaborators/${encodeURIComponent(user)}/permission`,
+          { headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json' } },
+        );
+      } catch (err) {
+        failure ??= `permission check for ${repo} failed (${err})`;
+        throw err;
+      }
+      if (resp.status === 404) {
+        continue; // GitHub's answer for a user without access to this repository
+      }
+      if (!resp.ok) {
+        failure ??= `permission check for ${repo} failed (${resp.status})`;
+        return;
+      }
+      const body = (await resp.json()) as { permission?: unknown };
+      if (typeof body.permission !== 'string') {
+        failure ??= `malformed permission answer for ${repo}`;
+        return;
+      }
+      readable[i] = READ_PERMISSIONS.has(body.permission);
+    }
+  };
+  await Promise.all(
+    Array.from({ length: Math.min(PERMISSION_CHECK_CONCURRENCY, repos.length) }, () => worker()),
+  );
+  if (failure !== undefined) {
+    return { ok: false, reason: failure };
+  }
+  const bindable = repos.filter((_repo, i) => readable[i]);
   return bindable.length > 0
     ? { ok: true, repos: bindable }
     : { ok: false, reason: 'user has read access to none of the installation\'s repositories' };
@@ -888,15 +921,16 @@ export function createRouter(options: RouterOptions): Router {
       // list again (a popup/callback binding of selected organization repos,
       // another member's sync) are carried over exactly as they are. They are
       // never expanded to everything their installation can see: the user
-      // who bound them could read only some of it.
-      const carried = (await store.findVerifiedByTeam(team)).filter(
-        row => !installMap.has(Number(row.installation_id)),
-      );
-
-      if (installMap.size === 0 && carried.length === 0) {
-        logger.info(`No GitHub App installations found for sync, team=${team}, user=${user}`);
-        res.json({ repos: [] });
-        return;
+      // who bound them could read only some of it. This read only decides
+      // whether there is anything to do; replaceTeam re-reads them inside
+      // its transaction.
+      if (installMap.size === 0) {
+        const verified = await store.findVerifiedByTeam(team);
+        if (verified.length === 0) {
+          logger.info(`No GitHub App installations found for sync, team=${team}, user=${user}`);
+          res.json({ repos: [] });
+          return;
+        }
       }
 
       // Fetch repos from the installations this sync lists again. Any failure
@@ -908,34 +942,23 @@ export function createRouter(options: RouterOptions): Router {
           return repos.map(r => ({ repo: r, instId, ...meta }));
         }),
       );
-
-      // Replace all connections for this team (clean slate per sync)
-      await store.deleteByTeam(team);
-
       const allRepoEntries = repoResults.flat();
-      for (const row of carried) {
-        await store.upsert({
-          team_id: row.team_id,
-          service_id: row.service_id,
-          repo_full_name: row.repo_full_name,
-          installation_id: Number(row.installation_id),
-          account_type: row.account_type,
-          created_by: row.created_by,
-        });
-      }
 
-      // The fresh listing is written last, so where both name a repository
-      // the installation the user owns wins.
-      for (const entry of allRepoEntries) {
-        await store.upsert({
+      // Replace the team's rows in one transaction (clean slate per sync,
+      // carried rows kept). The fresh listing is written last, so where both
+      // name a repository the installation the user owns wins.
+      const carried = await store.replaceTeam(
+        team,
+        new Set(installMap.keys()),
+        allRepoEntries.map(entry => ({
           team_id: team,
           service_id: '_auto',
           repo_full_name: entry.repo,
           installation_id: entry.instId,
           account_type: entry.account_type,
           created_by: `sync:${auth.userId.toLowerCase()}`,
-        });
-      }
+        })),
+      );
       const allRepos = [...new Set([...allRepoEntries.map(e => e.repo), ...carried.map(r => r.repo_full_name)])].sort();
       const instSummary = [...entries.map(([id, m]) => `${m.login}(${id})`), `${carried.length} carried rows`].join(', ');
       logger.info(`Synced ${allRepos.length} repos for team=${team} from installations: ${instSummary}`);

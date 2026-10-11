@@ -437,7 +437,7 @@ describe('mctl:workflow:submit image name', () => {
     expect(submitWorkflow).not.toHaveBeenCalled();
   });
 
-  it.each([' mctl-api', 'shop ', 'brand-new\n'])('refuses a padded name %j instead of trimming it', async component => {
+  it.each([' mctl-api', 'shop ', 'brand-new\n', '   '])('refuses a padded name %j instead of trimming it', async component => {
     await expect(onboard('user:default/carol', component)).rejects.toThrow(/surrounding whitespace/);
     expect(submitWorkflow).not.toHaveBeenCalled();
   });
