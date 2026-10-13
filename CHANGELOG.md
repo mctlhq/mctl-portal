@@ -1,5 +1,13 @@
 # Changelog
 
+## [4.20.4](https://github.com/mctlhq/mctl-portal/compare/4.20.3...4.20.4) (2026-10-13)
+
+
+### Bug Fixes
+
+* **portal:** rate-limit the tenant and resource-usage routes ([a877e29](https://github.com/mctlhq/mctl-portal/commit/a877e29df43902265727003f6da0959c1ecfba5a))
+* **portal:** rate-limit the tenant and resource-usage routes ([1884414](https://github.com/mctlhq/mctl-portal/commit/18844145e826e3c8c63eeed4083e751e4ac35510))
+
 ## [4.20.3](https://github.com/mctlhq/mctl-portal/compare/4.20.2...4.20.3) (2026-10-13)
 
 
