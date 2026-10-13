@@ -449,3 +449,60 @@ describe('tenant data is scoped to members, admins and real users', () => {
     }
   });
 });
+
+describe('rate limits', () => {
+  let server: Server | undefined;
+
+  afterEach(done => {
+    if (server) {
+      server.close(() => done());
+      server = undefined;
+    } else {
+      done();
+    }
+  });
+
+  // Unauthenticated callers get a cheap 401, so the second call shows
+  // whether the limiter ran in front of the handler.
+  function startApp(): Promise<string> {
+    const options = {
+      logger: { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn(), child: jest.fn() },
+      httpAuth: { credentials: jest.fn().mockRejectedValue(new Error('no creds')) },
+      userInfo: { getUserInfo: jest.fn() },
+      store: { listAll: jest.fn().mockResolvedValue([]), listAllMembers: jest.fn().mockResolvedValue([]) },
+      argoClient: {},
+      argoNamespace: 'argo-workflows',
+      getGithubToken: jest.fn(),
+      rateLimits: { read: 1, write: 1 },
+    } as unknown as RouterOptions;
+    const app = express();
+    app.use(createRouter(options));
+    return new Promise(resolve => {
+      server = app.listen(0, () => resolve(`http://127.0.0.1:${(server!.address() as AddressInfo).port}`));
+    });
+  }
+
+  it.each([
+    ['GET', '/check-user?username=octocat'],
+    ['GET', '/tenants'],
+    ['GET', '/tenants/labs'],
+    ['POST', '/tenants'],
+    ['DELETE', '/tenants/labs'],
+    ['GET', '/me/tenant'],
+    ['GET', '/tenants/labs/members'],
+    ['POST', '/tenants/labs/members'],
+    ['DELETE', '/tenants/labs/members/alice'],
+    ['PUT', '/tenants/labs/members/alice/role'],
+  ])('%s %s is limited', async (method, route) => {
+    const base = await startApp();
+    const call = () =>
+      fetch(`${base}${route}`, { method, headers: { 'Content-Type': 'application/json' }, body: method === 'GET' ? undefined : '{}' });
+    expect((await call()).status).not.toBe(429);
+    expect((await call()).status).toBe(429);
+  });
+
+  it.each(['/health', '/config'])('%s is not limited', async route => {
+    const base = await startApp();
+    for (let i = 0; i < 3; i++) expect((await fetch(`${base}${route}`)).status).toBe(200);
+  });
+});

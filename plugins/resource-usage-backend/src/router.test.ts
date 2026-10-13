@@ -40,7 +40,10 @@ const noopLogger = { error: jest.fn(), warn: jest.fn(), info: jest.fn(), debug: 
 let server: Server | undefined;
 let k8sClient: { getNamespaceUsage: jest.Mock; getPodUsage: jest.Mock };
 
-function startApp(caller: { type: 'user' | 'service'; userRef?: string }): Promise<string> {
+function startApp(
+  caller: { type: 'user' | 'service'; userRef?: string },
+  rateLimits?: RouterOptions['rateLimits'],
+): Promise<string> {
   k8sClient = {
     getNamespaceUsage: jest.fn(async (ns: string) => ({ namespace: ns })),
     getPodUsage: jest.fn(async (ns: string) => [{ namespace: ns, name: 'pod-0' }]),
@@ -66,6 +69,7 @@ function startApp(caller: { type: 'user' | 'service'; userRef?: string }): Promi
     db: fakeDb(MEMBERSHIPS),
     isPostgres: false,
     k8sClient,
+    rateLimits,
   } as unknown as RouterOptions;
   const app = express();
   app.use(createRouter(options));
@@ -136,5 +140,13 @@ describe.each(['usage', 'pods'])('GET /namespaces/:ns/%s', route => {
     const res = await fetch(`${base}/namespaces/monitoring/${route}`);
     expect(res.status).toBe(200);
     expect(k8sCall()).toHaveBeenCalledWith('monitoring');
+  });
+});
+
+describe.each(['usage', 'pods'])('GET /namespaces/:ns/%s rate limit', route => {
+  it('answers 429 once the caller spends its budget', async () => {
+    const base = await startApp({ type: 'user', userRef: 'user:default/carol' }, { read: 1, write: 1 });
+    expect((await fetch(`${base}/namespaces/labs/${route}`)).status).toBe(200);
+    expect((await fetch(`${base}/namespaces/labs/${route}`)).status).toBe(429);
   });
 });
