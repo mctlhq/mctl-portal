@@ -8,6 +8,7 @@ import { TenantSync } from './tenantSync';
 import { createRouter } from './router';
 import { getGithubAppInstallationToken } from './githubAppToken';
 import { tenantStoreServiceRef } from './tenantStoreService';
+import { createCreatorPrincipalResolver } from './creatorPrincipal';
 
 export const tenantPlugin = createBackendPlugin({
   pluginId: 'tenant-management',
@@ -120,6 +121,21 @@ export const tenantPlugin = createBackendPlugin({
 
         const maxTeamsPerTenant = config.getOptionalNumber('tenantManagement.maxTeamsPerTenant') ?? 1;
 
+        // The portal's mctl-api credentials: the same surface:portal token and
+        // base URL the work-items plugin uses. Creating a tenant that names a
+        // creator resolves the creator's principal with them (mctl-api#377).
+        const mctlApiUrl = config.getOptionalString('workItems.baseUrl');
+        const surfaceToken = config.getOptionalString('workItems.surfaceToken');
+        const resolveCreatorPrincipal =
+          mctlApiUrl && surfaceToken
+            ? createCreatorPrincipalResolver({ baseUrl: mctlApiUrl, surfaceToken, logger })
+            : undefined;
+        if (!resolveCreatorPrincipal) {
+          logger.warn(
+            '[TenantPlugin] workItems.baseUrl/surfaceToken not set — POST /tenants refuses requests that name a creator.',
+          );
+        }
+
         // ── HTTP router ────────────────────────────────────────────────────
         const router = createRouter({
           logger,
@@ -132,6 +148,7 @@ export const tenantPlugin = createBackendPlugin({
           defaultQuotas,
           maxTeamsPerTenant,
           getGithubToken: getToken,
+          resolveCreatorPrincipal,
         });
         httpRouter.use(router);
         // Bearer-only operator dump; query-string tokens are rejected in the handler.

@@ -6,6 +6,7 @@ import { TenantStore } from './tenantStore';
 import { CreateTenantRequest, InviteMemberRequest, UpdateMemberRoleRequest } from './types';
 import { dump as yamlDump } from 'js-yaml';
 import { buildTenantCatalogEntities } from './catalogEntities';
+import { CreatorPrincipalError, CreatorPrincipalResolver, GITHUB_LOGIN } from './creatorPrincipal';
 
 export interface RouterOptions {
   logger: LoggerService;
@@ -34,6 +35,13 @@ export interface RouterOptions {
   };
   /** Maximum number of teams (Group entities) per tenant. Default: 1 */
   maxTeamsPerTenant?: number;
+  /**
+   * Resolves a creator's GitHub login to the canonical principal for the
+   * owner entry (mctl-api#377). Unset, POST /tenants refuses any request that
+   * names a creator: an owner without a principalId has no access once
+   * mctl-api authorizes by principal.
+   */
+  resolveCreatorPrincipal?: CreatorPrincipalResolver;
 }
 
 type AuthResult =
@@ -201,6 +209,7 @@ export function createRouter(opts: RouterOptions): Router {
     landingPageToken,
     getGithubToken,
     defaultQuotas,
+    resolveCreatorPrincipal,
   } = opts;
   const dq = defaultQuotas ?? {
     cpuReq: '1', cpuLim: '2',
@@ -366,6 +375,33 @@ export function createRouter(opts: RouterOptions): Router {
         return;
       }
 
+      // The owner entry is keyed by principal (mctl-api#377). Resolve it
+      // before anything is written; without it, refuse rather than create a
+      // tenant whose owner cannot reach it.
+      let creatorPrincipalId = '';
+      if (body.creatorUserId !== undefined && body.creatorUserId !== '') {
+        if (typeof body.creatorUserId !== 'string' || !GITHUB_LOGIN.test(body.creatorUserId)) {
+          res.status(400).json({ error: 'creatorUserId must be a GitHub login' });
+          return;
+        }
+        if (!resolveCreatorPrincipal) {
+          logger.error('[tenant-backend] creator principal resolution is not configured (workItems.baseUrl/surfaceToken)');
+          res.status(503).json({ error: 'Tenant creation is unavailable right now' });
+          return;
+        }
+        try {
+          creatorPrincipalId = await resolveCreatorPrincipal(body.creatorUserId);
+        } catch (err) {
+          if (err instanceof CreatorPrincipalError && err.status === 403) {
+            res.status(403).json({ error: err.message, code: err.code });
+            return;
+          }
+          logger.error(`[tenant-backend] creator principal for '${body.creatorUserId}' unresolved: ${err}`);
+          res.status(503).json({ error: 'Tenant creation is unavailable right now' });
+          return;
+        }
+      }
+
       logger.info(
         `[tenant-backend] Creating tenant '${body.tenantName}' requested by ${auth.callerInfo}`,
       );
@@ -412,6 +448,7 @@ export function createRouter(opts: RouterOptions): Router {
           `allow_internet_egress=${body.allowInternetEgress ? 'true' : 'false'}`,
           `contact_email=${body.contactEmail ?? ''}`,
           `creator_user_id=${body.creatorUserId ?? ''}`,
+          `creator_principal_id=${creatorPrincipalId}`,
         ],
         labels: { 'submitted-by': `backstage-${auth.callerInfo}` },
       });
