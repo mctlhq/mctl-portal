@@ -7,6 +7,7 @@ import { CreateTenantRequest, InviteMemberRequest, UpdateMemberRoleRequest } fro
 import { dump as yamlDump } from 'js-yaml';
 import { buildTenantCatalogEntities } from './catalogEntities';
 import { CreatorPrincipalError, CreatorPrincipalResolver, isGitHubLogin } from './creatorPrincipal';
+import { createRateLimiters, RateLimits } from './rateLimit';
 
 export interface RouterOptions {
   logger: LoggerService;
@@ -42,6 +43,8 @@ export interface RouterOptions {
    * mctl-api authorizes by principal.
    */
   resolveCreatorPrincipal?: CreatorPrincipalResolver;
+  /** Per-client budgets; defaults to DEFAULT_LIMITS. Tests lower them. */
+  rateLimits?: RateLimits;
 }
 
 type AuthResult =
@@ -210,6 +213,7 @@ export function createRouter(opts: RouterOptions): Router {
     getGithubToken,
     defaultQuotas,
     resolveCreatorPrincipal,
+    rateLimits,
   } = opts;
   const dq = defaultQuotas ?? {
     cpuReq: '1', cpuLim: '2',
@@ -217,6 +221,7 @@ export function createRouter(opts: RouterOptions): Router {
     pods: '10', pvcs: '2', services: '5',
   };
   const router = Router();
+  const limit = createRateLimiters(rateLimits);
   router.use(json());
 
   /**
@@ -247,7 +252,7 @@ export function createRouter(opts: RouterOptions): Router {
   // ── GET /check-user ───────────────────────────────────────────────────────
   // Look up a GitHub user. Used by the frontend to validate username before invite.
   // Requires authentication.
-  router.get('/check-user', async (req: Request, res: Response) => {
+  router.get('/check-user', limit.write, async (req: Request, res: Response) => {
     const auth = await resolveAuth(req, httpAuth, userInfo, landingPageToken, store);
     if (!auth.authorized) {
       res.status(401).json({ error: 'Authentication required' });
@@ -278,7 +283,7 @@ export function createRouter(opts: RouterOptions): Router {
 
 
   // Returns all tenants. Requires authentication.
-  router.get('/tenants', async (req: Request, res: Response) => {
+  router.get('/tenants', limit.read, async (req: Request, res: Response) => {
     const auth = await resolveAuth(req, httpAuth, userInfo, landingPageToken, store);
     if (!auth.authorized) {
       res.status(401).json({ error: 'Authentication required' });
@@ -305,7 +310,7 @@ export function createRouter(opts: RouterOptions): Router {
   // ── GET /tenants/:name ────────────────────────────────────────────────────
   // Returns a single tenant by name. Used by landing page to check availability.
   // Accessible with landing-page token (no Backstage session required).
-  router.get('/tenants/:name', async (req: Request, res: Response) => {
+  router.get('/tenants/:name', limit.read, async (req: Request, res: Response) => {
     const { name } = req.params;
     const auth = await resolveAuth(req, httpAuth, userInfo, landingPageToken, store);
     if (!auth.authorized) {
@@ -336,7 +341,7 @@ export function createRouter(opts: RouterOptions): Router {
   // ── POST /tenants ─────────────────────────────────────────────────────────
   // Creates a new tenant via wft-create-tenant Argo WorkflowTemplate.
   // Requires: admin user, service token, or landing-page token (JWT/static).
-  router.post('/tenants', async (req: Request, res: Response) => {
+  router.post('/tenants', limit.write, async (req: Request, res: Response) => {
     const auth = await resolveAuth(req, httpAuth, userInfo, landingPageToken, store);
 
     if (!auth.authorized) {
@@ -490,7 +495,7 @@ export function createRouter(opts: RouterOptions): Router {
   // retires services first and then removes the tenant from GitOps/K8s/Vault.
   // DB cleanup is performed later by tenant sync once the tenant disappears from Git.
   // Admin-only.
-  router.delete('/tenants/:name', async (req: Request, res: Response) => {
+  router.delete('/tenants/:name', limit.write, async (req: Request, res: Response) => {
     try {
       const auth = await resolveAuth(req, httpAuth, userInfo, landingPageToken, store);
       if (!auth.authorized) {
@@ -542,7 +547,7 @@ export function createRouter(opts: RouterOptions): Router {
 
   // ── GET /me/tenant ────────────────────────────────────────────────────────
   // Returns the tenant and role for the currently authenticated user.
-  router.get('/me/tenant', async (req: Request, res: Response) => {
+  router.get('/me/tenant', limit.read, async (req: Request, res: Response) => {
     const auth = await resolveAuth(req, httpAuth, userInfo, landingPageToken, store);
     if (!auth.authorized) {
       res.status(401).json({ error: 'Authentication required' });
@@ -573,7 +578,7 @@ export function createRouter(opts: RouterOptions): Router {
 
   // ── GET /tenants/:name/members ────────────────────────────────────────────
   // List all members of a tenant. Requires auth (any member or admin).
-  router.get('/tenants/:name/members', async (req: Request, res: Response) => {
+  router.get('/tenants/:name/members', limit.read, async (req: Request, res: Response) => {
     const { name } = req.params;
     const auth = await resolveAuth(req, httpAuth, userInfo, landingPageToken, store);
     if (!auth.authorized) {
@@ -604,7 +609,7 @@ export function createRouter(opts: RouterOptions): Router {
 
   // ── POST /tenants/:name/members ───────────────────────────────────────────
   // Invite a user to a tenant. Requires: tenant owner or admin.
-  router.post('/tenants/:name/members', async (req: Request, res: Response) => {
+  router.post('/tenants/:name/members', limit.write, async (req: Request, res: Response) => {
     const { name } = req.params;
     const auth = await resolveAuth(req, httpAuth, userInfo, landingPageToken, store);
     if (!auth.authorized) {
@@ -679,7 +684,7 @@ export function createRouter(opts: RouterOptions): Router {
 
   // ── DELETE /tenants/:name/members/:userId ─────────────────────────────────
   // Remove a member from a tenant. Requires: tenant owner or admin.
-  router.delete('/tenants/:name/members/:userId', async (req: Request, res: Response) => {
+  router.delete('/tenants/:name/members/:userId', limit.write, async (req: Request, res: Response) => {
     const { name, userId } = req.params;
     const auth = await resolveAuth(req, httpAuth, userInfo, landingPageToken, store);
     if (!auth.authorized) {
@@ -718,7 +723,7 @@ export function createRouter(opts: RouterOptions): Router {
 
   // ── PUT /tenants/:name/members/:userId/role ────────────────────────────────
   // Change a member's role. Requires: tenant owner or admin.
-  router.put('/tenants/:name/members/:userId/role', async (req: Request, res: Response) => {
+  router.put('/tenants/:name/members/:userId/role', limit.write, async (req: Request, res: Response) => {
     const { name, userId } = req.params;
     const auth = await resolveAuth(req, httpAuth, userInfo, landingPageToken, store);
     if (!auth.authorized) {
