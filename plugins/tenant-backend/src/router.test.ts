@@ -2,6 +2,7 @@ import express from 'express';
 import { Server } from 'http';
 import { AddressInfo } from 'net';
 import { createRouter, staticTokenEquals, RouterOptions } from './router';
+import { CreatorPrincipalError } from './creatorPrincipal';
 
 // /backstage/catalog.yaml serves PII (contact emails, member lists) and is
 // gated on a Bearer landing token. Query-string tokens must not work.
@@ -214,6 +215,123 @@ describe('landing-page token is not platform admin', () => {
     expect(
       (await fetch(`${base}/tenants/labs`, { method: 'DELETE', headers })).status,
     ).toBe(403);
+  });
+});
+
+// POST /tenants keys the owner entry by principal (mctl-api#377): a request
+// naming a creator gets the creator's principal from mctl-api first, and is
+// refused with nothing written when it cannot.
+describe('POST /tenants resolves the creator principal', () => {
+  const token = 'landing-secret-token';
+  const PID = 'prn_01M39HRB7JRXZ2PHW5VVB695YZ';
+  let server: Server | undefined;
+  const submitWorkflow = jest.fn().mockResolvedValue('create-tenant-abc');
+  const upsert = jest.fn().mockResolvedValue(undefined);
+  const addMember = jest.fn().mockResolvedValue(undefined);
+  const logger = { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn(), child: jest.fn() };
+
+  function startApp(resolveCreatorPrincipal?: (login: string) => Promise<string>): Promise<string> {
+    const options = {
+      logger,
+      httpAuth: { credentials: jest.fn().mockRejectedValue(new Error('no creds')) },
+      userInfo: { getUserInfo: jest.fn() },
+      store: { findByName: jest.fn().mockResolvedValue(undefined), upsert, addMember },
+      argoClient: { submitWorkflow },
+      argoNamespace: 'argo-workflows',
+      getGithubToken: jest.fn(),
+      landingPageToken: token,
+      resolveCreatorPrincipal,
+    } as unknown as RouterOptions;
+    const app = express();
+    app.use(createRouter(options));
+    return new Promise(resolve => {
+      server = app.listen(0, () => {
+        resolve(`http://127.0.0.1:${(server!.address() as AddressInfo).port}`);
+      });
+    });
+  }
+
+  const create = (base: string, extra: Record<string, unknown>) =>
+    fetch(`${base}/tenants`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ tenantName: 'acme', displayName: 'Acme', ...extra }),
+    });
+
+  const params = () => submitWorkflow.mock.calls[0][0].parameters as string[];
+
+  afterEach(done => {
+    submitWorkflow.mockClear();
+    upsert.mockClear();
+    addMember.mockClear();
+    if (server) {
+      server.close(() => done());
+      server = undefined;
+    } else {
+      done();
+    }
+  });
+
+  it('passes the creator principal to create-tenant', async () => {
+    const resolve = jest.fn().mockResolvedValue(PID);
+    const base = await startApp(resolve);
+    expect((await create(base, { creatorUserId: 'Octo-Cat' })).status).toBe(202);
+    expect(resolve).toHaveBeenCalledWith('Octo-Cat');
+    expect(params()).toContain('creator_user_id=Octo-Cat');
+    expect(params()).toContain(`creator_principal_id=${PID}`);
+  });
+
+  it('sends no principal when no creator is named', async () => {
+    const resolve = jest.fn();
+    const base = await startApp(resolve);
+    expect((await create(base, {})).status).toBe(202);
+    expect(resolve).not.toHaveBeenCalled();
+    expect(params()).toContain('creator_principal_id=');
+  });
+
+  it('refuses a creator that is not a GitHub login', async () => {
+    const resolve = jest.fn().mockResolvedValue(PID);
+    const base = await startApp(resolve);
+    for (const creatorUserId of ['octo cat', 'a:b', 'x'.repeat(40), 'a-'.repeat(20) + 'a', 42]) {
+      expect((await create(base, { creatorUserId })).status).toBe(400);
+    }
+    expect(resolve).not.toHaveBeenCalled();
+    expect(submitWorkflow).not.toHaveBeenCalled();
+    expect(upsert).not.toHaveBeenCalled();
+  });
+
+  it('refuses a named creator when resolution is not configured', async () => {
+    const base = await startApp(undefined);
+    expect((await create(base, { creatorUserId: 'octocat' })).status).toBe(503);
+    expect(logger.error).toHaveBeenCalledWith(expect.stringContaining('not configured'));
+    expect(submitWorkflow).not.toHaveBeenCalled();
+    expect(upsert).not.toHaveBeenCalled();
+    expect(addMember).not.toHaveBeenCalled();
+  });
+
+  it('refuses when the principal cannot be resolved', async () => {
+    const base = await startApp(jest.fn().mockRejectedValue(new CreatorPrincipalError(503, 'down')));
+    expect((await create(base, { creatorUserId: 'octocat' })).status).toBe(503);
+    expect(submitWorkflow).not.toHaveBeenCalled();
+    expect(upsert).not.toHaveBeenCalled();
+  });
+
+  it('treats an unexpected resolver error as unresolved', async () => {
+    const base = await startApp(jest.fn().mockRejectedValue(new Error('boom')));
+    expect((await create(base, { creatorUserId: 'octocat' })).status).toBe(503);
+    expect(submitWorkflow).not.toHaveBeenCalled();
+    expect(upsert).not.toHaveBeenCalled();
+  });
+
+  it('answers 403 for a disabled or refused creator', async () => {
+    const base = await startApp(
+      jest.fn().mockRejectedValue(new CreatorPrincipalError(403, 'not allowed', 'principal_disabled')),
+    );
+    const res = await create(base, { creatorUserId: 'octocat' });
+    expect(res.status).toBe(403);
+    expect((await res.json()).code).toBe('principal_disabled');
+    expect(submitWorkflow).not.toHaveBeenCalled();
+    expect(upsert).not.toHaveBeenCalled();
   });
 });
 

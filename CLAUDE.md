@@ -21,7 +21,7 @@ Backstage-based developer portal. Service catalog, templates, deploy UI.
 4. `oidc-provider-backend` — SSO provider
 5. `permission-backend-module-team-policy` — Team RBAC
 6. `resource-usage-backend` — Quota monitoring
-7. `tenant-backend` — Workspace management
+7. `tenant-backend` — Workspace management. `POST /tenants` resolves a named creator's GitHub login to the canonical principal through mctl-api (`POST /api/v1/surface-principals/github`, as `surface:portal` with `workItems.baseUrl`/`workItems.surfaceToken`) and passes it to `create-tenant` as `creator_principal_id`; if it cannot, it refuses with nothing written (mctl-api#377)
 8. `vault-secrets-backend` — Secret injection
 9. `work-items-backend` — Canonical WorkItem view via mctl-api. Authenticates as the `surface:portal` principal (`MCTL_SURFACE_PORTAL_TOKEN`) with `X-MCTL-Surface-Actor` (surface relay, mctl-api#350); never uses `MCTL_API_TOKEN`/admin credentials. The actor id is `user:<namespace>:<name>` (lowercased; both parts must be Backstage object names, so no `:` or `/`), pinned in CONTRACT.md "Actor id". mctl-api is the authorization authority. Mutations are off unless `workItems.actionsEnabled` is true (default false). See `plugins/work-items-backend/CONTRACT.md`
 
