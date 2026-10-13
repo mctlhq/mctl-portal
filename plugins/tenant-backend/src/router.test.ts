@@ -292,7 +292,7 @@ describe('POST /tenants resolves the creator principal', () => {
   it('refuses a creator that is not a GitHub login', async () => {
     const resolve = jest.fn().mockResolvedValue(PID);
     const base = await startApp(resolve);
-    for (const creatorUserId of ['octo cat', 'a:b', 'x'.repeat(40), 42]) {
+    for (const creatorUserId of ['octo cat', 'a:b', 'x'.repeat(40), 'a-'.repeat(20) + 'a', 42]) {
       expect((await create(base, { creatorUserId })).status).toBe(400);
     }
     expect(resolve).not.toHaveBeenCalled();

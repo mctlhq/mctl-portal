@@ -6,7 +6,7 @@ import { TenantStore } from './tenantStore';
 import { CreateTenantRequest, InviteMemberRequest, UpdateMemberRoleRequest } from './types';
 import { dump as yamlDump } from 'js-yaml';
 import { buildTenantCatalogEntities } from './catalogEntities';
-import { CreatorPrincipalError, CreatorPrincipalResolver, GITHUB_LOGIN } from './creatorPrincipal';
+import { CreatorPrincipalError, CreatorPrincipalResolver, isGitHubLogin } from './creatorPrincipal';
 
 export interface RouterOptions {
   logger: LoggerService;
@@ -380,7 +380,7 @@ export function createRouter(opts: RouterOptions): Router {
       // tenant whose owner cannot reach it.
       let creatorPrincipalId = '';
       if (body.creatorUserId !== undefined && body.creatorUserId !== '') {
-        if (typeof body.creatorUserId !== 'string' || !GITHUB_LOGIN.test(body.creatorUserId)) {
+        if (typeof body.creatorUserId !== 'string' || !isGitHubLogin(body.creatorUserId)) {
           res.status(400).json({ error: 'creatorUserId must be a GitHub login' });
           return;
         }

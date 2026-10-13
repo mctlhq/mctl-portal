@@ -83,9 +83,17 @@ describe('createCreatorPrincipalResolver', () => {
 
   it('never sends a value that is not a GitHub login', async () => {
     const base = await startApi(200, { principalId: PID });
-    for (const login of ['', 'octo cat', 'a:b', '-octo', 'octo\nX-Evil: 1']) {
+    for (const login of ['', 'octo cat', 'a:b', '-octo', 'octo\nX-Evil: 1', 'x'.repeat(40), 'a-'.repeat(20) + 'a']) {
       await expect(resolver(base)(login)).rejects.toBeInstanceOf(CreatorPrincipalError);
     }
     expect(seen).toEqual([]);
+  });
+
+  // 39 characters with inner hyphens is the longest login GitHub allows.
+  it('accepts the longest hyphenated login', async () => {
+    const base = await startApi(200, { principalId: PID });
+    const login = 'a-'.repeat(19) + 'a';
+    expect(login).toHaveLength(39);
+    await expect(resolver(base)(login)).resolves.toBe(PID);
   });
 });

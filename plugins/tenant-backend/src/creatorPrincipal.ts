@@ -12,8 +12,17 @@ import { LoggerService } from '@backstage/backend-plugin-api';
  * principal".
  */
 
-/** GitHub's login grammar: alphanumerics and single inner hyphens, ≤ 39. */
-export const GITHUB_LOGIN = /^[A-Za-z0-9](?:[A-Za-z0-9]|-[A-Za-z0-9]){0,38}$/;
+const GITHUB_LOGIN = /^[A-Za-z0-9](?:[A-Za-z0-9]|-[A-Za-z0-9])*$/;
+const MAX_GITHUB_LOGIN = 39;
+
+/**
+ * GitHub's login grammar: alphanumerics and single inner hyphens, at most 39
+ * characters. The length is checked on its own: a repetition bound in the
+ * pattern counts groups, and `-x` is two characters.
+ */
+export function isGitHubLogin(login: string): boolean {
+  return login.length <= MAX_GITHUB_LOGIN && GITHUB_LOGIN.test(login);
+}
 
 const PRINCIPAL_ID = /^prn_[0-9A-HJKMNP-TV-Z]{26}$/;
 
@@ -42,7 +51,7 @@ export function createCreatorPrincipalResolver(options: {
   const { surfaceToken, logger } = options;
 
   return async (login: string): Promise<string> => {
-    if (!GITHUB_LOGIN.test(login)) {
+    if (!isGitHubLogin(login)) {
       throw new CreatorPrincipalError(503, 'creator login is not a GitHub login');
     }
     let resp: Response;
