@@ -1,5 +1,14 @@
 # Changelog
 
+## [4.20.3](https://github.com/mctlhq/mctl-portal/compare/4.20.2...4.20.3) (2026-10-13)
+
+
+### Bug Fixes
+
+* **tenant:** bound creator logins to 39 characters ([26f3783](https://github.com/mctlhq/mctl-portal/commit/26f3783b33fe17eb7203a2cda419d52eaee4a517))
+* **tenant:** key the new tenant's owner by principal ([8852af5](https://github.com/mctlhq/mctl-portal/commit/8852af54637ff3832bbad1bf0aacb185e791cfcc))
+* **tenant:** key the new tenant's owner by principal ([d9a0667](https://github.com/mctlhq/mctl-portal/commit/d9a0667d730654d41394057ce5ec6292528c2a41))
+
 ## [4.20.2](https://github.com/mctlhq/mctl-portal/compare/4.20.1...4.20.2) (2026-10-11)
 
 
