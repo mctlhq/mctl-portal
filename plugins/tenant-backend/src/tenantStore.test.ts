@@ -241,6 +241,42 @@ describe('TenantStore.addMember', () => {
   });
 });
 
+describe('TenantStore.addMember keying', () => {
+  const PID = 'prn_01M45DR1GWC87109EH88VBJX25';
+
+  it('keeps the principal and login when an invite re-adds the member', async () => {
+    const { store, knex } = await freshStore();
+    currentKnex = knex;
+    await store.seedMember('labs', { userId: 'heidi', role: 'owner', catalogKey: 'login', principalId: PID });
+    await store.addMember({
+      tenantName: 'labs',
+      userId: 'heidi',
+      role: 'developer',
+      invitedAt: new Date().toISOString(),
+      invitedBy: 'test',
+    });
+    const m = await store.getMemberByTenant('labs', 'heidi');
+    expect(m).toMatchObject({ role: 'developer', principalId: PID });
+  });
+
+  it('rewrites the keying when the caller states it', async () => {
+    const { store, knex } = await freshStore();
+    currentKnex = knex;
+    await store.seedMember('labs', { userId: 'ivan', role: 'owner', catalogKey: 'login' });
+    await store.addMember({
+      tenantName: 'labs',
+      userId: 'ivan',
+      role: 'owner',
+      invitedAt: new Date().toISOString(),
+      invitedBy: 'test',
+      catalogKey: 'login',
+      principalId: PID,
+      login: 'ivan',
+    });
+    expect((await store.getMemberByTenant('labs', 'ivan'))?.principalId).toBe(PID);
+  });
+});
+
 describe('TenantStore.updateMemberRole / removeMember', () => {
   it('updates a role in place', async () => {
     const { store, knex } = await freshStore();

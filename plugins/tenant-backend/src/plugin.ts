@@ -9,6 +9,7 @@ import { createRouter } from './router';
 import { getGithubAppInstallationToken } from './githubAppToken';
 import { tenantStoreServiceRef } from './tenantStoreService';
 import { createCreatorPrincipalResolver } from './creatorPrincipal';
+import { createZitadelCustomerResolver } from './zitadelCustomer';
 
 export const tenantPlugin = createBackendPlugin({
   pluginId: 'tenant-management',
@@ -130,6 +131,10 @@ export const tenantPlugin = createBackendPlugin({
           mctlApiUrl && surfaceToken
             ? createCreatorPrincipalResolver({ baseUrl: mctlApiUrl, surfaceToken, logger })
             : undefined;
+        const resolveZitadelCustomer =
+          mctlApiUrl && surfaceToken
+            ? createZitadelCustomerResolver({ baseUrl: mctlApiUrl, surfaceToken, logger })
+            : undefined;
         if (!resolveCreatorPrincipal) {
           logger.warn(
             '[TenantPlugin] workItems.baseUrl/surfaceToken not set — POST /tenants refuses requests that name a creator.',
@@ -149,6 +154,7 @@ export const tenantPlugin = createBackendPlugin({
           maxTeamsPerTenant,
           getGithubToken: getToken,
           resolveCreatorPrincipal,
+          resolveZitadelCustomer,
         });
         httpRouter.use(router);
         // Bearer-only operator dump; query-string tokens are rejected in the handler.

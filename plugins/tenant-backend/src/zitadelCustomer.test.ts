@@ -89,6 +89,7 @@ describe('createZitadelCustomerResolver', () => {
     [200, { principalId: 'prn_short', githubId: '77', githubLogin: 'alice' }],
     [200, { principalId: PID, githubId: 'x', githubLogin: 'alice' }],
     [200, { principalId: PID, githubId: '77' }],
+    [200, { principalId: PID, githubId: '77', githubLogin: 'alice\nX: 1' }],
     [200, 'not json'],
   ])('reads %i %p as unavailable, not a verdict on the customer', async (status, body) => {
     answer(status, body);

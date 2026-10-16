@@ -169,9 +169,19 @@ export class TenantStore {
         role: member.role,
         invited_at: member.invitedAt,
         invited_by: member.invitedBy,
+        catalog_key: member.catalogKey ?? 'login',
+        principal_id: member.principalId ?? null,
+        login: member.login ?? null,
       })
       .onConflict(['tenant_name', 'user_id'])
-      .merge(['role']);
+      // A caller that says how the member is keyed (tenant creation)
+      // rewrites the keying; one that does not (an invite, which is also how
+      // a role is changed) keeps what the row holds.
+      .merge(
+        member.catalogKey
+          ? ['role', 'catalog_key', 'principal_id', 'login']
+          : ['role'],
+      );
   }
 
   /** Remove a member from a tenant */
