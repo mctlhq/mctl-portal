@@ -24,7 +24,8 @@ export function isGitHubLogin(login: string): boolean {
   return login.length <= MAX_GITHUB_LOGIN && GITHUB_LOGIN.test(login);
 }
 
-const PRINCIPAL_ID = /^prn_[0-9A-HJKMNP-TV-Z]{26}$/;
+/** mctl-api's principal id shape (ValidPrincipalID in internal/auth). */
+export const PRINCIPAL_ID = /^prn_[0-9A-HJKMNP-TV-Z]{26}$/;
 
 const TIMEOUT_MS = 10_000;
 

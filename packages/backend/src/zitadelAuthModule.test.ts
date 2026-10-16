@@ -1,10 +1,18 @@
 import { NotFoundError } from '@backstage/errors';
+import { ZitadelCustomerError } from '@internal/plugin-tenant-backend';
 import {
+  accountKindOf,
   createZitadelSignInResolver,
+  customerSignInOptions,
   githubLoginOf,
   registerZitadelProvider,
   ZITADEL_AUTH_PROVIDER_ID,
 } from './zitadelAuthModule';
+
+const CUSTOMERS = '395272528420931285';
+const STAFF_ORG = '111111111111111111';
+const OWNER = 'urn:zitadel:iam:user:resourceowner:id';
+const staff = (claims: Record<string, unknown>) => ({ [OWNER]: STAFF_ORG, ...claims });
 
 const logger = { info: jest.fn(), warn: jest.fn() };
 
@@ -118,12 +126,12 @@ describe('githubLoginOf', () => {
 });
 
 describe('createZitadelSignInResolver', () => {
-  const resolver = createZitadelSignInResolver(logger);
+  const resolver = createZitadelSignInResolver(logger, { organizationId: CUSTOMERS });
 
   it('signs a mapped catalog User in as that entity', async () => {
     const ctx = context(['carol']);
     await expect(
-      resolver(signInInfo(profile({ 'mctl:github_login': 'Carol' })), ctx),
+      resolver(signInInfo(profile(staff({ 'mctl:github_login': 'Carol' }))), ctx),
     ).resolves.toEqual({ token: 'catalog-token-for-carol' });
     expect(ctx.signInWithCatalogUser).toHaveBeenCalledWith({
       entityRef: { name: 'carol' },
@@ -134,7 +142,7 @@ describe('createZitadelSignInResolver', () => {
     const ctx = context(['carol']);
     await expect(
       resolver(
-        signInInfo(profile({ sub: '3141', email: 'carol@example.com' })),
+        signInInfo(profile(staff({ sub: '3141', email: 'carol@example.com' }))),
         ctx,
       ),
     ).rejects.toMatchObject({
@@ -151,12 +159,31 @@ describe('createZitadelSignInResolver', () => {
   it('refuses a mapped login without a catalog User and issues no token', async () => {
     const ctx = context(['carol']);
     await expect(
-      resolver(signInInfo(profile({ 'mctl:github_login': 'stranger' })), ctx),
+      resolver(signInInfo(profile(staff({ 'mctl:github_login': 'stranger' }))), ctx),
     ).rejects.toMatchObject({
       name: 'NotAllowedError',
       message: expect.stringMatching(/not a member/),
     });
     expect(ctx.issueToken).not.toHaveBeenCalled();
+  });
+
+  // A refresh may carry no ID token; userinfo then decides, and ZITADEL
+  // puts the organization claim there when the scope was requested.
+  it('signs staff in from userinfo when a refresh returned no ID token', async () => {
+    const ctx = context(['carol']);
+    await expect(
+      resolver(signInInfo(profile(undefined, staff({ 'mctl:github_login': 'carol' }))), ctx),
+    ).resolves.toEqual({ token: 'catalog-token-for-carol' });
+  });
+
+  // A session opened before the resourceowner scope was configured: its
+  // refresh keeps the old scopes, so it is refused and signs in again.
+  it('refuses a refresh whose userinfo carries no organization', async () => {
+    const ctx = context(['carol']);
+    await expect(
+      resolver(signInInfo(profile(undefined, { 'mctl:github_login': 'carol' })), ctx),
+    ).rejects.toMatchObject({ name: 'NotAllowedError', message: expect.stringMatching(/Sign in again/) });
+    expect(ctx.signInWithCatalogUser).not.toHaveBeenCalled();
   });
 
   it('propagates catalog failures instead of signing in', async () => {
@@ -165,8 +192,136 @@ describe('createZitadelSignInResolver', () => {
       new Error('catalog unavailable'),
     );
     await expect(
-      resolver(signInInfo(profile({ 'mctl:github_login': 'carol' })), ctx),
+      resolver(signInInfo(profile(staff({ 'mctl:github_login': 'carol' }))), ctx),
     ).rejects.toThrow('catalog unavailable');
     expect(ctx.issueToken).not.toHaveBeenCalled();
+  });
+});
+
+describe('accountKindOf', () => {
+  it.each([
+    ['another organization', { [OWNER]: STAFF_ORG }, 'staff'],
+    ['the customers organization', { [OWNER]: CUSTOMERS }, 'customer'],
+    ['a hook claim on another organization', { [OWNER]: STAFF_ORG, 'mctl:github_id': '42' }, 'customer'],
+    ['a hook refusal', { [OWNER]: STAFF_ORG, 'mctl:refused': 'login_reserved' }, 'customer'],
+    ['no organization claim', { 'mctl:github_login': 'carol' }, 'unknown'],
+    ['an empty organization claim', { [OWNER]: '' }, 'unknown'],
+    ['a non-string organization claim', { [OWNER]: 42 }, 'unknown'],
+  ])('reads %s', (_name, claims, kind) => {
+    expect(accountKindOf(claims, CUSTOMERS)).toBe(kind);
+  });
+
+  it('is unknown when no customers organization is configured', () => {
+    expect(accountKindOf({ [OWNER]: STAFF_ORG }, undefined)).toBe('unknown');
+  });
+});
+
+describe('createZitadelSignInResolver for customers', () => {
+  const BOB = 'prn_01M45DR1GWC87109EH88VBJX25';
+  // Bob registered `alice` after Alice, a staff member signed in as
+  // user:default/alice, gave it up.
+  const bobClaims = {
+    sub: '900',
+    [OWNER]: CUSTOMERS,
+    'mctl:org': 'customers',
+    'mctl:idp': 'github',
+    'mctl:github_id': '77',
+    'mctl:github_login': 'alice',
+  };
+  const resolveTo = (principalId: string) =>
+    jest.fn(async () => ({ principalId, githubId: '77', githubLogin: 'alice' }));
+
+  it('signs a customer in as their principal-keyed User, never by login', async () => {
+    const resolve = resolveTo(BOB);
+    const ctx = context(['alice', BOB.toLowerCase()]);
+    await expect(
+      createZitadelSignInResolver(logger, { organizationId: CUSTOMERS, resolve })(
+        signInInfo(profile(bobClaims)),
+        ctx,
+      ),
+    ).resolves.toEqual({ token: `catalog-token-for-${BOB.toLowerCase()}` });
+    expect(resolve).toHaveBeenCalledWith('header.payload.signature', 'signin');
+    expect(ctx.signInWithCatalogUser).toHaveBeenCalledTimes(1);
+    expect(ctx.signInWithCatalogUser).toHaveBeenCalledWith({ entityRef: { name: BOB.toLowerCase() } });
+  });
+
+  it('refuses a customer without a principal-keyed User', async () => {
+    const ctx = context(['alice']);
+    await expect(
+      createZitadelSignInResolver(logger, { organizationId: CUSTOMERS, resolve: resolveTo(BOB) })(
+        signInInfo(profile(bobClaims)),
+        ctx,
+      ),
+    ).rejects.toMatchObject({ name: 'NotAllowedError', message: expect.stringMatching(/not a member/) });
+  });
+
+  it.each([
+    ['mctl-api refuses the customer', new ZitadelCustomerError('refused', 'no', 'customer_conflict'), /cannot sign in/],
+    ['mctl-api is unavailable', new ZitadelCustomerError('unavailable', 'down'), /unavailable/],
+    ['the call throws something else', new Error('boom'), /unavailable/],
+  ])('refuses without a catalog lookup when %s', async (_name, err, message) => {
+    const ctx = context(['alice']);
+    const resolve = jest.fn(async () => {
+      throw err;
+    });
+    await expect(
+      createZitadelSignInResolver(logger, { organizationId: CUSTOMERS, resolve })(
+        signInInfo(profile(bobClaims)),
+        ctx,
+      ),
+    ).rejects.toMatchObject({ name: 'NotAllowedError', message: expect.stringMatching(message) });
+    expect(ctx.signInWithCatalogUser).not.toHaveBeenCalled();
+  });
+
+  it('refuses a customer when mctl-api is not configured', async () => {
+    const ctx = context(['alice']);
+    await expect(
+      createZitadelSignInResolver(logger, { organizationId: CUSTOMERS })(signInInfo(profile(bobClaims)), ctx),
+    ).rejects.toMatchObject({ name: 'NotAllowedError', message: expect.stringMatching(/unavailable/) });
+    expect(ctx.signInWithCatalogUser).not.toHaveBeenCalled();
+  });
+
+  it('refuses a customer refresh without an ID token instead of reading userinfo', async () => {
+    const resolve = resolveTo(BOB);
+    const ctx = context(['alice', BOB.toLowerCase()]);
+    await expect(
+      createZitadelSignInResolver(logger, { organizationId: CUSTOMERS, resolve })(
+        signInInfo(profile(undefined, bobClaims)),
+        ctx,
+      ),
+    ).rejects.toMatchObject({ name: 'NotAllowedError', message: expect.stringMatching(/Sign in again/) });
+    expect(resolve).not.toHaveBeenCalled();
+    expect(ctx.signInWithCatalogUser).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['carries no organization claim', { 'mctl:github_login': 'alice' }, { organizationId: CUSTOMERS }, /Sign in again/],
+    ['meets no configured customers organization', staff({ 'mctl:github_login': 'alice' }), {}, /unavailable/],
+  ])('refuses a token that %s rather than sign it in by login', async (_name, claims, opts, message) => {
+    const ctx = context(['alice']);
+    await expect(
+      createZitadelSignInResolver(logger, opts)(signInInfo(profile(claims)), ctx),
+    ).rejects.toMatchObject({ name: 'NotAllowedError', message: expect.stringMatching(message) });
+    expect(ctx.signInWithCatalogUser).not.toHaveBeenCalled();
+  });
+});
+
+describe('customerSignInOptions', () => {
+  const config = (values: Record<string, string>) => ({ getOptionalString: (k: string) => values[k] });
+  const log = { warn: jest.fn(), error: jest.fn() };
+
+  it('wires the organization and the mctl-api resolver', () => {
+    const o = customerSignInOptions(
+      config({ 'zitadelCustomers.organizationId': CUSTOMERS, 'workItems.baseUrl': 'http://api', 'workItems.surfaceToken': 't' }),
+      log,
+    );
+    expect(o.organizationId).toBe(CUSTOMERS);
+    expect(o.resolve).toEqual(expect.any(Function));
+  });
+
+  it('leaves both unset, and says so, without configuration', () => {
+    const o = customerSignInOptions(config({ 'zitadelCustomers.organizationId': '' }), log);
+    expect(o).toEqual({ organizationId: undefined, resolve: undefined });
+    expect(log.warn).toHaveBeenCalledWith(expect.stringContaining('every ZITADEL sign-in is refused'));
   });
 });

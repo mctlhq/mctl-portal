@@ -14,3 +14,8 @@ export type {
   InviteMemberRequest,
   UpdateMemberRoleRequest,
 } from './types';
+export {
+  createZitadelCustomerResolver,
+  ZitadelCustomerError,
+} from './zitadelCustomer';
+export type { ZitadelCustomer, ZitadelCustomerResolver, ZitadelPurpose } from './zitadelCustomer';

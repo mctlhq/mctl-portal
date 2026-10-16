@@ -81,3 +81,52 @@ describe('TenantSync stale removal', () => {
     expect(store.delete).not.toHaveBeenCalled();
   });
 });
+
+describe('TenantSync member keys', () => {
+  const realFetch = (global as any).fetch;
+  afterEach(() => {
+    (global as any).fetch = realFetch;
+  });
+
+  it('seeds principal-keyed entries by principal and skips one it cannot key', async () => {
+    const pid = 'prn_01M45DR1GWC87109EH88VBJX25';
+    const body = [
+      'tenant:',
+      '  name: bobs',
+      '  members:',
+      `    - userId: alice`,
+      `      principalId: ${pid}`,
+      '      role: owner',
+      '      catalogKey: principal',
+      '    - userId: mallory',
+      '      role: developer',
+      '      catalogKey: principal',
+      '    - userId: carol',
+      '      role: viewer',
+    ].join('\n');
+    (global as any).fetch = jest.fn(async (url: string) =>
+      /\/contents\/tenants$/.test(url)
+        ? { ok: true, status: 200, json: async () => [{ name: 'bobs', type: 'dir' }] }
+        : {
+            ok: true,
+            status: 200,
+            json: async () => ({ encoding: 'base64', content: Buffer.from(body).toString('base64') }),
+          },
+    );
+    const store = {
+      upsert: jest.fn().mockResolvedValue(undefined),
+      seedMember: jest.fn().mockResolvedValue(undefined),
+      listNames: jest.fn().mockResolvedValue(['bobs']),
+      delete: jest.fn().mockResolvedValue(undefined),
+    } as any;
+    const log = logger();
+    await new TenantSync(store, log, {
+      githubOrg: 'o', repoName: 'r', tenantsPath: 'tenants', getGithubToken: async () => 't', syncIntervalMinutes: 5,
+    }).sync();
+    expect(store.seedMember.mock.calls).toEqual([
+      ['bobs', { userId: pid.toLowerCase(), role: 'owner', catalogKey: 'principal', principalId: pid, login: 'alice' }],
+      ['bobs', { userId: 'carol', role: 'viewer', catalogKey: 'login' }],
+    ]);
+    expect(log.warn).toHaveBeenCalledWith(expect.stringContaining('member 1 (userId="mallory", principalId=undefined) skipped'));
+  });
+});
