@@ -8,6 +8,8 @@ import { dump as yamlDump } from 'js-yaml';
 import { buildTenantCatalogEntities } from './catalogEntities';
 import { CreatorPrincipalError, CreatorPrincipalResolver, isGitHubLogin } from './creatorPrincipal';
 import { createRateLimiters, RateLimits } from './rateLimit';
+import { CatalogKey } from './memberKeys';
+import { ZitadelCustomer, ZitadelCustomerError, ZitadelCustomerResolver } from './zitadelCustomer';
 
 export interface RouterOptions {
   logger: LoggerService;
@@ -43,9 +45,17 @@ export interface RouterOptions {
    * mctl-api authorizes by principal.
    */
   resolveCreatorPrincipal?: CreatorPrincipalResolver;
+  /**
+   * Resolves a self-service customer's ZITADEL ID token to the principal
+   * (stage C2). Unset, a landing request with creatorIdToken is refused.
+   */
+  resolveZitadelCustomer?: ZitadelCustomerResolver;
   /** Per-client budgets; defaults to DEFAULT_LIMITS. Tests lower them. */
   rateLimits?: RateLimits;
 }
+
+/** A tenant name: the Kubernetes namespace it becomes. */
+const TENANT_NAME = /^[a-z0-9][a-z0-9-]{1,62}$/;
 
 type AuthResult =
   | {
@@ -213,6 +223,7 @@ export function createRouter(opts: RouterOptions): Router {
     getGithubToken,
     defaultQuotas,
     resolveCreatorPrincipal,
+    resolveZitadelCustomer,
     rateLimits,
   } = opts;
   const dq = defaultQuotas ?? {
@@ -237,6 +248,96 @@ export function createRouter(opts: RouterOptions): Router {
     if (!res.ok) throw new Error(`GitHub API error: HTTP ${res.status}`);
     const data = await res.json() as { login: string; name: string | null; avatar_url: string };
     return { login: data.login, name: data.name, avatarUrl: data.avatar_url };
+  }
+
+  type Creator = {
+    /** tenant_members.user_id / catalog name. */
+    userId: string;
+    login: string;
+    principalId: string;
+    catalogKey: CatalogKey;
+  };
+  type CreatorResult = { creator?: Creator } | { status: number; body: Record<string, unknown> };
+
+  /**
+   * Who becomes the owner of a tenant being created, keyed by principal:
+   * - landing page, creatorIdToken: a self-service customer, resolved by
+   *   mctl-api from the site's ID token (purpose create) and keyed by
+   *   principal in the catalog;
+   * - landing page, creatorUserId: the legacy GitHub OAuth flow, by login;
+   * - the portal (admins): only the caller themself, by the server-side
+   *   identity; a body naming anyone else is refused.
+   * Nothing named, no owner.
+   */
+  async function resolveCreator(body: CreateTenantRequest, auth: { isLanding: boolean; userId?: string }): Promise<CreatorResult> {
+    const named = (v: unknown) => v !== undefined && v !== '';
+    if (named(body.creatorIdToken)) {
+      if (!auth.isLanding) {
+        return { status: 400, body: { error: 'creatorIdToken is accepted from the landing page only' } };
+      }
+      if (named(body.creatorUserId)) {
+        return { status: 400, body: { error: 'creatorIdToken and creatorUserId are exclusive' } };
+      }
+      if (typeof body.creatorIdToken !== 'string') {
+        return { status: 400, body: { error: 'creatorIdToken must be a string' } };
+      }
+      const customer = await resolveCustomer(body.creatorIdToken);
+      if ('status' in customer) return customer;
+      return {
+        creator: {
+          userId: customer.principalId.toLowerCase(),
+          login: customer.githubLogin,
+          principalId: customer.principalId,
+          catalogKey: 'principal',
+        },
+      };
+    }
+    if (!named(body.creatorUserId)) return {};
+    if (typeof body.creatorUserId !== 'string' || !isGitHubLogin(body.creatorUserId)) {
+      return { status: 400, body: { error: 'creatorUserId must be a GitHub login' } };
+    }
+    if (!auth.isLanding && body.creatorUserId.toLowerCase() !== auth.userId) {
+      return { status: 400, body: { error: 'creatorUserId must be the caller' } };
+    }
+    if (!resolveCreatorPrincipal) {
+      logger.error('[tenant-backend] creator principal resolution is not configured (workItems.baseUrl/surfaceToken)');
+      return { status: 503, body: { error: 'Tenant creation is unavailable right now' } };
+    }
+    try {
+      const principalId = await resolveCreatorPrincipal(body.creatorUserId);
+      return {
+        creator: {
+          userId: body.creatorUserId.toLowerCase(),
+          login: body.creatorUserId,
+          principalId,
+          catalogKey: 'login',
+        },
+      };
+    } catch (err) {
+      if (err instanceof CreatorPrincipalError && err.status === 403) {
+        return { status: 403, body: { error: err.message, code: err.code } };
+      }
+      logger.error(`[tenant-backend] creator principal for '${body.creatorUserId}' unresolved: ${err}`);
+      return { status: 503, body: { error: 'Tenant creation is unavailable right now' } };
+    }
+  }
+
+  /** A customer by the site's ID token, or the answer to send instead. */
+  async function resolveCustomer(
+    idToken: string,
+  ): Promise<ZitadelCustomer | { status: number; body: Record<string, unknown> }> {
+    if (!resolveZitadelCustomer) {
+      logger.error('[tenant-backend] ZITADEL customer resolution is not configured (workItems.baseUrl/surfaceToken)');
+      return { status: 503, body: { error: 'Tenant creation is unavailable right now' } };
+    }
+    try {
+      return await resolveZitadelCustomer(idToken, 'create');
+    } catch (err) {
+      if (err instanceof ZitadelCustomerError && err.kind === 'refused') {
+        return { status: 403, body: { error: 'This account cannot create a workspace', code: err.code } };
+      }
+      return { status: 503, body: { error: 'Tenant creation is unavailable right now' } };
+    }
   }
 
   // ── GET /health ───────────────────────────────────────────────────────────
@@ -338,6 +439,51 @@ export function createRouter(opts: RouterOptions): Router {
     }
   });
 
+  // ── POST /tenants/availability ──────────────────────────────────────────
+  // The landing page's name check for a self-service customer (stage C2):
+  // body {name, creatorIdToken}. The token is resolved first (purpose
+  // create), so a refused or disabled account hears so before it picks a
+  // name; then the name, and whether the customer already has a workspace.
+  router.post('/tenants/availability', limit.write, async (req: Request, res: Response) => {
+    const auth = await resolveAuth(req, httpAuth, userInfo, landingPageToken, store);
+    if (!auth.authorized) {
+      res.status(401).json({ error: 'Authentication required' });
+      return;
+    }
+    if (!auth.isLanding) {
+      res.status(403).json({ error: 'Only the landing page checks availability' });
+      return;
+    }
+    const { name, creatorIdToken } = (req.body ?? {}) as { name?: unknown; creatorIdToken?: unknown };
+    if (typeof name !== 'string' || !TENANT_NAME.test(name)) {
+      res.status(400).json({ error: `name must match ${TENANT_NAME.source}` });
+      return;
+    }
+    if (typeof creatorIdToken !== 'string' || !creatorIdToken) {
+      res.status(400).json({ error: 'creatorIdToken is required' });
+      return;
+    }
+    try {
+      const customer = await resolveCustomer(creatorIdToken);
+      if ('status' in customer) {
+        res.status(customer.status).json(customer.body);
+        return;
+      }
+      if (await store.getMemberTenant(customer.principalId.toLowerCase())) {
+        res.json({ name, available: false, reason: 'creator_has_tenant' });
+        return;
+      }
+      if (await store.findByName(name)) {
+        res.json({ name, available: false, reason: 'name_taken' });
+        return;
+      }
+      res.json({ name, available: true });
+    } catch (err: any) {
+      logger.error(`[tenant-backend] POST /tenants/availability error: ${err}`);
+      res.status(500).json({ error: 'Internal error' });
+    }
+  });
+
   // ── POST /tenants ─────────────────────────────────────────────────────────
   // Creates a new tenant via wft-create-tenant Argo WorkflowTemplate.
   // Requires: admin user, service token, or landing-page token (JWT/static).
@@ -366,9 +512,9 @@ export function createRouter(opts: RouterOptions): Router {
         res.status(400).json({ error: 'displayName is required' });
         return;
       }
-      if (!/^[a-z0-9][a-z0-9-]{1,62}$/.test(body.tenantName)) {
+      if (!TENANT_NAME.test(body.tenantName)) {
         res.status(400).json({
-          error: 'tenantName must match ^[a-z0-9][a-z0-9-]{1,62}$',
+          error: `tenantName must match ${TENANT_NAME.source}`,
         });
         return;
       }
@@ -383,26 +529,18 @@ export function createRouter(opts: RouterOptions): Router {
       // The owner entry is keyed by principal (mctl-api#377). Resolve it
       // before anything is written; without it, refuse rather than create a
       // tenant whose owner cannot reach it.
-      let creatorPrincipalId = '';
-      if (body.creatorUserId !== undefined && body.creatorUserId !== '') {
-        if (typeof body.creatorUserId !== 'string' || !isGitHubLogin(body.creatorUserId)) {
-          res.status(400).json({ error: 'creatorUserId must be a GitHub login' });
-          return;
-        }
-        if (!resolveCreatorPrincipal) {
-          logger.error('[tenant-backend] creator principal resolution is not configured (workItems.baseUrl/surfaceToken)');
-          res.status(503).json({ error: 'Tenant creation is unavailable right now' });
-          return;
-        }
-        try {
-          creatorPrincipalId = await resolveCreatorPrincipal(body.creatorUserId);
-        } catch (err) {
-          if (err instanceof CreatorPrincipalError && err.status === 403) {
-            res.status(403).json({ error: err.message, code: err.code });
-            return;
-          }
-          logger.error(`[tenant-backend] creator principal for '${body.creatorUserId}' unresolved: ${err}`);
-          res.status(503).json({ error: 'Tenant creation is unavailable right now' });
+      const resolved = await resolveCreator(body, auth);
+      if ('status' in resolved) {
+        res.status(resolved.status).json(resolved.body);
+        return;
+      }
+      const { creator } = resolved;
+      if (creator?.catalogKey === 'principal') {
+        // One workspace per customer: refused here, before anything is
+        // written, rather than leave a tenant the owner was never added to.
+        const elsewhere = await store.getMemberTenant(creator.userId);
+        if (elsewhere) {
+          res.status(409).json({ error: 'This account already has a workspace', code: 'creator_has_tenant' });
           return;
         }
       }
@@ -452,8 +590,9 @@ export function createRouter(opts: RouterOptions): Router {
           `quota_pods=${body.quotaPods ?? dq.pods}`,
           `allow_internet_egress=${body.allowInternetEgress ? 'true' : 'false'}`,
           `contact_email=${body.contactEmail ?? ''}`,
-          `creator_user_id=${body.creatorUserId ?? ''}`,
-          `creator_principal_id=${creatorPrincipalId}`,
+          `creator_user_id=${creator?.login ?? ''}`,
+          `creator_principal_id=${creator?.principalId ?? ''}`,
+          `creator_catalog_key=${creator?.catalogKey ?? 'login'}`,
         ],
         labels: { 'submitted-by': `backstage-${auth.callerInfo}` },
       });
@@ -464,18 +603,22 @@ export function createRouter(opts: RouterOptions): Router {
         workflowUrl: `https://workflows.mctl.me/workflows/${argoNamespace}/${workflowName}`,
       });
 
-      // If creatorUserId is provided, register the creator as owner immediately
-      if (body.creatorUserId) {
+      // Register the creator as owner immediately; TenantSync confirms it
+      // from values.yaml once the workflow has committed it.
+      if (creator) {
         try {
           await store.addMember({
             tenantName: body.tenantName,
-            userId: body.creatorUserId.toLowerCase(),
+            userId: creator.userId,
             role: 'owner',
             invitedAt: new Date().toISOString(),
             invitedBy: 'system',
+            catalogKey: creator.catalogKey,
+            principalId: creator.principalId,
+            ...(creator.catalogKey === 'principal' ? { login: creator.login } : {}),
           });
           logger.info(
-            `[tenant-backend] Registered creator '${body.creatorUserId}' as owner of '${body.tenantName}'`,
+            `[tenant-backend] Registered creator '${creator.userId}' as owner of '${body.tenantName}'`,
           );
         } catch (memberErr: any) {
           // Non-fatal — log and continue

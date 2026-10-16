@@ -169,6 +169,9 @@ export class TenantStore {
         role: member.role,
         invited_at: member.invitedAt,
         invited_by: member.invitedBy,
+        catalog_key: member.catalogKey ?? 'login',
+        principal_id: member.principalId ?? null,
+        login: member.login ?? null,
       })
       .onConflict(['tenant_name', 'user_id'])
       .merge(['role']);

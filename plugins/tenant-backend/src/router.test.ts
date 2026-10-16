@@ -3,6 +3,7 @@ import { Server } from 'http';
 import { AddressInfo } from 'net';
 import { createRouter, staticTokenEquals, RouterOptions } from './router';
 import { CreatorPrincipalError } from './creatorPrincipal';
+import { ZitadelCustomerError } from './zitadelCustomer';
 
 // /backstage/catalog.yaml serves PII (contact emails, member lists) and is
 // gated on a Bearer landing token. Query-string tokens must not work.
@@ -504,5 +505,212 @@ describe('rate limits', () => {
   it.each(['/health', '/config'])('%s is not limited', async route => {
     const base = await startApp();
     for (let i = 0; i < 3; i++) expect((await fetch(`${base}${route}`)).status).toBe(200);
+  });
+});
+
+// Stage C2: the landing page creates a workspace for a self-service customer
+// from the site's ZITADEL ID token. mctl-api resolves it (purpose create);
+// the owner entry is keyed by principal, never by the login the token names.
+describe('self-service customers create their workspace by principal', () => {
+  const token = 'landing-secret-token';
+  const BOB = 'prn_01M45DR1GWC87109EH88VBJX25';
+  let server: Server | undefined;
+  const submitWorkflow = jest.fn().mockResolvedValue('create-tenant-abc');
+  const upsert = jest.fn().mockResolvedValue(undefined);
+  const addMember = jest.fn().mockResolvedValue(undefined);
+  const memberTenant: Record<string, string> = {};
+  const logger = { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn(), child: jest.fn() };
+  // Bob registered the login `alice` after Alice, a login-keyed member of
+  // labs, gave it up.
+  const bob = { principalId: BOB, githubId: '77', githubLogin: 'alice' };
+
+  function startApp(
+    resolveZitadelCustomer?: (idToken: string, purpose: string) => Promise<unknown>,
+    caller?: string,
+  ): Promise<string> {
+    const options = {
+      logger,
+      httpAuth: {
+        credentials: jest.fn(async (_req: any, opts?: { allow?: string[] }) => {
+          if (caller && opts?.allow?.includes('user')) {
+            return { principal: { type: 'user', userEntityRef: `user:default/${caller}` } };
+          }
+          throw new Error('no creds');
+        }),
+      },
+      userInfo: {
+        getUserInfo: jest.fn(async (c: any) => ({ ownershipEntityRefs: [c.principal.userEntityRef] })),
+      },
+      store: {
+        findByName: jest.fn(async (name: string) => (name === 'labs' ? { name } : undefined)),
+        upsert,
+        addMember,
+        getMemberTenant: jest.fn(async (userId: string) =>
+          memberTenant[userId] ? { tenantName: memberTenant[userId], role: 'owner' } : undefined,
+        ),
+        getMemberByTenant: jest.fn(async (tenant: string, userId: string) =>
+          tenant === 'admins' && userId === 'root' ? { role: 'owner' } : undefined,
+        ),
+      },
+      argoClient: { submitWorkflow },
+      argoNamespace: 'argo-workflows',
+      getGithubToken: jest.fn(),
+      landingPageToken: token,
+      resolveCreatorPrincipal: jest.fn().mockResolvedValue('prn_01M39HRB7JRXZ2PHW5VVB695YZ'),
+      resolveZitadelCustomer,
+    } as unknown as RouterOptions;
+    const app = express();
+    app.use(createRouter(options));
+    return new Promise(resolve => {
+      server = app.listen(0, '127.0.0.1', () => {
+        resolve(`http://127.0.0.1:${(server!.address() as AddressInfo).port}`);
+      });
+    });
+  }
+
+  const post = (base: string, path: string, body: Record<string, unknown>, landing = true) =>
+    fetch(`${base}${path}`, {
+      method: 'POST',
+      headers: {
+        ...(landing ? { authorization: `Bearer ${token}` } : {}),
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify(body),
+    });
+  const create = (base: string, extra: Record<string, unknown>, landing = true) =>
+    post(base, '/tenants', { tenantName: 'bobs', displayName: 'Bobs', ...extra }, landing);
+  const params = () => submitWorkflow.mock.calls[0][0].parameters as string[];
+
+  afterEach(done => {
+    submitWorkflow.mockClear();
+    upsert.mockClear();
+    addMember.mockClear();
+    for (const k of Object.keys(memberTenant)) delete memberTenant[k];
+    if (server) {
+      server.close(() => done());
+      server = undefined;
+    } else {
+      done();
+    }
+  });
+
+  it('keys the owner by principal and passes the login only for display', async () => {
+    const resolve = jest.fn().mockResolvedValue(bob);
+    const base = await startApp(resolve);
+    expect((await create(base, { creatorIdToken: 'site-id-token' })).status).toBe(202);
+    expect(resolve).toHaveBeenCalledWith('site-id-token', 'create');
+    expect(params()).toEqual(
+      expect.arrayContaining([
+        'creator_user_id=alice',
+        `creator_principal_id=${BOB}`,
+        'creator_catalog_key=principal',
+      ]),
+    );
+    expect(addMember).toHaveBeenCalledWith(
+      expect.objectContaining({
+        tenantName: 'bobs',
+        userId: BOB.toLowerCase(),
+        role: 'owner',
+        catalogKey: 'principal',
+        principalId: BOB,
+        login: 'alice',
+      }),
+    );
+  });
+
+  it('keeps the legacy landing creator login-keyed', async () => {
+    const base = await startApp(jest.fn());
+    expect((await create(base, { creatorUserId: 'carol' })).status).toBe(202);
+    expect(params()).toContain('creator_catalog_key=login');
+    expect(addMember).toHaveBeenCalledWith(expect.objectContaining({ userId: 'carol', catalogKey: 'login' }));
+  });
+
+  it('refuses a customer who already has a workspace before writing anything', async () => {
+    memberTenant[BOB.toLowerCase()] = 'first';
+    const base = await startApp(jest.fn().mockResolvedValue(bob));
+    const r = await create(base, { creatorIdToken: 'site-id-token' });
+    expect(r.status).toBe(409);
+    expect((await r.json()).code).toBe('creator_has_tenant');
+    expect(upsert).not.toHaveBeenCalled();
+    expect(submitWorkflow).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['mctl-api refuses the customer', new ZitadelCustomerError('refused', 'no', 'principal_disabled'), 403],
+    ['mctl-api is unavailable', new ZitadelCustomerError('unavailable', 'down'), 503],
+    ['the resolver throws something else', new Error('boom'), 503],
+  ])('writes nothing when %s', async (_name, err, status) => {
+    const base = await startApp(jest.fn().mockRejectedValue(err));
+    expect((await create(base, { creatorIdToken: 'site-id-token' })).status).toBe(status);
+    expect(upsert).not.toHaveBeenCalled();
+    expect(submitWorkflow).not.toHaveBeenCalled();
+  });
+
+  it('writes nothing when customer resolution is not configured', async () => {
+    const base = await startApp(undefined);
+    expect((await create(base, { creatorIdToken: 'site-id-token' })).status).toBe(503);
+    expect(submitWorkflow).not.toHaveBeenCalled();
+  });
+
+  it('refuses a token together with a login, or a token that is not a string', async () => {
+    const resolve = jest.fn().mockResolvedValue(bob);
+    const base = await startApp(resolve);
+    expect((await create(base, { creatorIdToken: 't', creatorUserId: 'alice' })).status).toBe(400);
+    expect((await create(base, { creatorIdToken: ['t'] })).status).toBe(400);
+    expect(resolve).not.toHaveBeenCalled();
+    expect(submitWorkflow).not.toHaveBeenCalled();
+  });
+
+  it('accepts creatorIdToken from the landing page only', async () => {
+    const resolve = jest.fn().mockResolvedValue(bob);
+    const base = await startApp(resolve, 'root');
+    expect((await create(base, { creatorIdToken: 'site-id-token' }, false)).status).toBe(400);
+    expect(resolve).not.toHaveBeenCalled();
+  });
+
+  it('lets a portal admin name only themself as creator', async () => {
+    const base = await startApp(jest.fn(), 'root');
+    expect((await create(base, { creatorUserId: 'someone-else' }, false)).status).toBe(400);
+    expect(submitWorkflow).not.toHaveBeenCalled();
+    expect((await create(base, { creatorUserId: 'Root' }, false)).status).toBe(202);
+    expect(params()).toEqual(expect.arrayContaining(['creator_user_id=Root', 'creator_catalog_key=login']));
+  });
+
+  describe('POST /tenants/availability', () => {
+    it('answers for a resolvable customer and a free name', async () => {
+      const resolve = jest.fn().mockResolvedValue(bob);
+      const base = await startApp(resolve);
+      const r = await post(base, '/tenants/availability', { name: 'bobs', creatorIdToken: 'site-id-token' });
+      expect(r.status).toBe(200);
+      expect(await r.json()).toEqual({ name: 'bobs', available: true });
+      expect(resolve).toHaveBeenCalledWith('site-id-token', 'create');
+    });
+
+    it('reports a taken name and an existing workspace', async () => {
+      const base = await startApp(jest.fn().mockResolvedValue(bob));
+      expect(await (await post(base, '/tenants/availability', { name: 'labs', creatorIdToken: 't' })).json()).toEqual(
+        { name: 'labs', available: false, reason: 'name_taken' },
+      );
+      memberTenant[BOB.toLowerCase()] = 'first';
+      expect(await (await post(base, '/tenants/availability', { name: 'bobs', creatorIdToken: 't' })).json()).toEqual(
+        { name: 'bobs', available: false, reason: 'creator_has_tenant' },
+      );
+    });
+
+    it('answers a refused customer before the name', async () => {
+      const base = await startApp(jest.fn().mockRejectedValue(new ZitadelCustomerError('refused', 'no', 'customer_conflict')));
+      const r = await post(base, '/tenants/availability', { name: 'bobs', creatorIdToken: 't' });
+      expect(r.status).toBe(403);
+      expect((await r.json()).code).toBe('customer_conflict');
+    });
+
+    it('validates its input and serves the landing page only', async () => {
+      const resolve = jest.fn().mockResolvedValue(bob);
+      const base = await startApp(resolve, 'root');
+      expect((await post(base, '/tenants/availability', { name: 'Bad_Name', creatorIdToken: 't' })).status).toBe(400);
+      expect((await post(base, '/tenants/availability', { name: 'bobs' })).status).toBe(400);
+      expect((await post(base, '/tenants/availability', { name: 'bobs', creatorIdToken: 't' }, false)).status).toBe(403);
+      expect(resolve).not.toHaveBeenCalled();
+    });
   });
 });

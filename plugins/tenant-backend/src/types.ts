@@ -52,8 +52,18 @@ export interface CreateTenantRequest {
   quotaMemoryLim?: string;
   quotaPods?: string;
   allowInternetEgress?: boolean;
-  /** GitHub username of the tenant creator — will be added as owner automatically */
+  /**
+   * GitHub login of the tenant creator, added as owner. From the landing
+   * page: anyone's (legacy GitHub OAuth flow). From the portal: only the
+   * caller's own.
+   */
   creatorUserId?: string;
+  /**
+   * Landing page only: the mctl-web site's ZITADEL ID token of a
+   * self-service customer, who becomes the owner keyed by principal (stage
+   * C2). Exclusive with creatorUserId.
+   */
+  creatorIdToken?: string;
 }
 
 // ─── Member management ────────────────────────────────────────────────────────
