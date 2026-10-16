@@ -1,5 +1,5 @@
 import { LoggerService } from '@backstage/backend-plugin-api';
-import { PRINCIPAL_ID } from './memberKeys';
+import { isGitHubLogin, PRINCIPAL_ID } from './creatorPrincipal';
 
 /**
  * Resolves a self-service customer (ZITADEL organization `customers`) to the
@@ -123,7 +123,9 @@ export function createZitadelCustomerResolver(options: {
       if (
         typeof principalId === 'string' && PRINCIPAL_ID.test(principalId) &&
         typeof githubId === 'string' && GITHUB_ID.test(githubId) &&
-        typeof githubLogin === 'string' && githubLogin
+        // The login goes into Argo parameters and values.yaml, where
+        // TenantSync holds it to the same shape.
+        typeof githubLogin === 'string' && isGitHubLogin(githubLogin)
       ) {
         return { principalId, githubId, githubLogin };
       }

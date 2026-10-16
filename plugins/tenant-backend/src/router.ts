@@ -273,7 +273,7 @@ export function createRouter(opts: RouterOptions): Router {
     const named = (v: unknown) => v !== undefined && v !== '';
     if (named(body.creatorIdToken)) {
       if (!auth.isLanding) {
-        return { status: 400, body: { error: 'creatorIdToken is accepted from the landing page only' } };
+        return { status: 403, body: { error: 'creatorIdToken is accepted from the landing page only' } };
       }
       if (named(body.creatorUserId)) {
         return { status: 400, body: { error: 'creatorIdToken and creatorUserId are exclusive' } };
@@ -335,6 +335,10 @@ export function createRouter(opts: RouterOptions): Router {
     } catch (err) {
       if (err instanceof ZitadelCustomerError && err.kind === 'refused') {
         return { status: 403, body: { error: 'This account cannot create a workspace', code: err.code } };
+      }
+      // The resolver logs what it models; anything else is a portal bug.
+      if (!(err instanceof ZitadelCustomerError)) {
+        logger.error(`[tenant-backend] ZITADEL customer resolution failed: ${err}`);
       }
       return { status: 503, body: { error: 'Tenant creation is unavailable right now' } };
     }
@@ -444,7 +448,9 @@ export function createRouter(opts: RouterOptions): Router {
   // body {name, creatorIdToken}. The token is resolved first (purpose
   // create), so a refused or disabled account hears so before it picks a
   // name; then the name, and whether the customer already has a workspace.
-  router.post('/tenants/availability', limit.write, async (req: Request, res: Response) => {
+  // The read budget, as for GET /tenants/:name: the site calls it while the
+  // customer types, and a shared write bucket would starve POST /tenants.
+  router.post('/tenants/availability', limit.read, async (req: Request, res: Response) => {
     const auth = await resolveAuth(req, httpAuth, userInfo, landingPageToken, store);
     if (!auth.authorized) {
       res.status(401).json({ error: 'Authentication required' });

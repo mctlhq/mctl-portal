@@ -174,7 +174,7 @@ export class TenantStore {
         login: member.login ?? null,
       })
       .onConflict(['tenant_name', 'user_id'])
-      .merge(['role']);
+      .merge(['role', 'catalog_key', 'principal_id', 'login']);
   }
 
   /** Remove a member from a tenant */

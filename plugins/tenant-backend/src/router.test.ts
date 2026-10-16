@@ -646,6 +646,13 @@ describe('self-service customers create their workspace by principal', () => {
     expect(submitWorkflow).not.toHaveBeenCalled();
   });
 
+  it('logs a resolver failure it does not model', async () => {
+    logger.error.mockClear();
+    const base = await startApp(jest.fn().mockRejectedValue(new TypeError('boom')));
+    expect((await create(base, { creatorIdToken: 'site-id-token' })).status).toBe(503);
+    expect(logger.error).toHaveBeenCalledWith(expect.stringContaining('TypeError: boom'));
+  });
+
   it('writes nothing when customer resolution is not configured', async () => {
     const base = await startApp(undefined);
     expect((await create(base, { creatorIdToken: 'site-id-token' })).status).toBe(503);
@@ -664,7 +671,7 @@ describe('self-service customers create their workspace by principal', () => {
   it('accepts creatorIdToken from the landing page only', async () => {
     const resolve = jest.fn().mockResolvedValue(bob);
     const base = await startApp(resolve, 'root');
-    expect((await create(base, { creatorIdToken: 'site-id-token' }, false)).status).toBe(400);
+    expect((await create(base, { creatorIdToken: 'site-id-token' }, false)).status).toBe(403);
     expect(resolve).not.toHaveBeenCalled();
   });
 
