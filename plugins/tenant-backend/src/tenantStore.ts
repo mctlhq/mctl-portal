@@ -13,6 +13,9 @@ export class CustomerHasTenantError extends Error {}
 export class TenantExistsError extends Error {}
 
 // A unique-constraint violation, on Postgres (23505) or SQLite (tests).
+// better-sqlite3 reports SQLITE_CONSTRAINT_UNIQUE in `code` too, but the
+// message is what knex has surfaced across driver versions; the store tests
+// run on SQLite, so a change in either breaks them rather than passing.
 function isUniqueViolation(err: any): boolean {
   return err?.code === '23505' || /UNIQUE constraint failed/.test(String(err?.message));
 }

@@ -591,7 +591,7 @@ export function createRouter(opts: RouterOptions): Router {
             return;
           }
           if (err instanceof TenantExistsError) {
-            res.status(409).json({ error: err.message });
+            res.status(409).json({ error: err.message, code: 'name_taken' });
             return;
           }
           throw err;

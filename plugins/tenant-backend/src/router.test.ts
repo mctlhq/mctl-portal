@@ -666,7 +666,10 @@ describe('self-service customers create their workspace by principal', () => {
   it('refuses a name taken since the existence check without submitting a workflow', async () => {
     createCustomerTenant.mockRejectedValue(new TenantExistsError("Tenant 'bobs' already exists"));
     const base = await startApp(jest.fn().mockResolvedValue(bob));
-    expect((await create(base, { creatorIdToken: 'site-id-token' })).status).toBe(409);
+    const r = await create(base, { creatorIdToken: 'site-id-token' });
+    expect(r.status).toBe(409);
+    // The same reason POST /tenants/availability gives.
+    expect((await r.json()).code).toBe('name_taken');
     expect(submitWorkflow).not.toHaveBeenCalled();
   });
 
