@@ -71,7 +71,7 @@ describe('principal-keyed members (stage C2)', () => {
 
   it('names the customer by principal and shows the login only as display', () => {
     const u = user(BOB.toLowerCase())!;
-    expect(u.spec?.profile).toEqual({ displayName: 'alice' });
+    expect(u.spec?.profile).toEqual({ displayName: 'alice (customer)' });
     expect(u.spec?.memberOf).toEqual(['bobs']);
     expect(u.metadata.annotations).toEqual(
       expect.objectContaining({ 'mctl.me/principal-id': BOB, 'mctl.me/github-login': 'alice' }),

@@ -2,13 +2,13 @@ import { Router, Request, Response, json } from 'express';
 import { createHmac, timingSafeEqual } from 'crypto';
 import { HttpAuthService, LoggerService, UserInfoService } from '@backstage/backend-plugin-api';
 import { ArgoWorkflowsClient } from '@internal/plugin-argo-workflows-backend';
-import { TenantStore } from './tenantStore';
+import { CustomerHasTenantError, TenantExistsError, TenantStore } from './tenantStore';
 import { CreateTenantRequest, InviteMemberRequest, UpdateMemberRoleRequest } from './types';
 import { dump as yamlDump } from 'js-yaml';
 import { buildTenantCatalogEntities } from './catalogEntities';
 import { CreatorPrincipalError, CreatorPrincipalResolver, isGitHubLogin } from './creatorPrincipal';
 import { createRateLimiters, RateLimits } from './rateLimit';
-import { CatalogKey } from './memberKeys';
+import { CatalogKey, ROLES } from './memberKeys';
 import { ZitadelCustomer, ZitadelCustomerError, ZitadelCustomerResolver } from './zitadelCustomer';
 
 export interface RouterOptions {
@@ -528,7 +528,7 @@ export function createRouter(opts: RouterOptions): Router {
       // Check if tenant already exists in DB cache
       const existing = await store.findByName(body.tenantName);
       if (existing) {
-        res.status(409).json({ error: `Tenant '${body.tenantName}' already exists` });
+        res.status(409).json({ error: `Tenant '${body.tenantName}' already exists`, code: 'name_taken' });
         return;
       }
 
@@ -541,15 +541,6 @@ export function createRouter(opts: RouterOptions): Router {
         return;
       }
       const { creator } = resolved;
-      if (creator?.catalogKey === 'principal') {
-        // One workspace per customer: refused here, before anything is
-        // written, rather than leave a tenant the owner was never added to.
-        const elsewhere = await store.getMemberTenant(creator.userId);
-        if (elsewhere) {
-          res.status(409).json({ error: 'This account already has a workspace', code: 'creator_has_tenant' });
-          return;
-        }
-      }
 
       logger.info(
         `[tenant-backend] Creating tenant '${body.tenantName}' requested by ${auth.callerInfo}`,
@@ -557,7 +548,7 @@ export function createRouter(opts: RouterOptions): Router {
 
       // Write to DB immediately so the tenant is visible in Backstage catalog
       // without waiting for TenantSync (which polls git every 5 min).
-      await store.upsert({
+      const tenantRecord = {
         name: body.tenantName,
         displayName: body.displayName,
         description: body.description ?? '',
@@ -577,11 +568,41 @@ export function createRouter(opts: RouterOptions): Router {
           allowInternetEgress: body.allowInternetEgress ?? false,
         },
         syncedAt: new Date().toISOString(),
-      });
+      };
+      const customer = creator?.catalogKey === 'principal' ? creator : undefined;
+      if (customer) {
+        // One workspace per customer, held by the store: the tenant and its
+        // owner are written together, so a concurrent second request for the
+        // same customer gets 409 and leaves nothing behind.
+        try {
+          await store.createCustomerTenant(tenantRecord, {
+            tenantName: body.tenantName,
+            userId: customer.userId,
+            role: 'owner',
+            invitedAt: new Date().toISOString(),
+            invitedBy: 'system',
+            catalogKey: 'principal',
+            principalId: customer.principalId,
+            login: customer.login,
+          });
+        } catch (err) {
+          if (err instanceof CustomerHasTenantError) {
+            res.status(409).json({ error: err.message, code: 'creator_has_tenant' });
+            return;
+          }
+          if (err instanceof TenantExistsError) {
+            res.status(409).json({ error: err.message, code: 'name_taken' });
+            return;
+          }
+          throw err;
+        }
+      } else {
+        await store.upsert(tenantRecord);
+      }
       logger.info(`[tenant-backend] Tenant '${body.tenantName}' written to DB`);
 
       // Submit Argo WorkflowTemplate (handles K8s namespace, Vault, ArgoCD RBAC)
-      const workflowName = await argoClient.submitWorkflow({
+      const workflowSpec: Parameters<ArgoWorkflowsClient['submitWorkflow']>[0] = {
         resourceKind: 'ClusterWorkflowTemplate',
         resourceName: 'create-tenant',
         namespace: argoNamespace,
@@ -601,7 +622,20 @@ export function createRouter(opts: RouterOptions): Router {
           `creator_catalog_key=${creator?.catalogKey ?? 'login'}`,
         ],
         labels: { 'submitted-by': `backstage-${auth.callerInfo}` },
-      });
+      };
+      let workflowName: string;
+      try {
+        workflowName = await argoClient.submitWorkflow(workflowSpec);
+      } catch (err) {
+        // A customer's reservation without a workflow would hold their one
+        // workspace forever; release it so they can try again.
+        if (customer) {
+          await store.delete(body.tenantName).catch(e =>
+            logger.error(`[tenant-backend] Could not release '${body.tenantName}' after a failed submit: ${e}`),
+          );
+        }
+        throw err;
+      }
 
       res.status(202).json({
         message: `Tenant creation workflow submitted`,
@@ -609,9 +643,10 @@ export function createRouter(opts: RouterOptions): Router {
         workflowUrl: `https://workflows.mctl.me/workflows/${argoNamespace}/${workflowName}`,
       });
 
-      // Register the creator as owner immediately; TenantSync confirms it
-      // from values.yaml once the workflow has committed it.
-      if (creator) {
+      // Register a login-keyed creator as owner; TenantSync confirms it
+      // from values.yaml once the workflow has committed it. A customer's
+      // owner row was written with the tenant above.
+      if (creator && !customer) {
         try {
           await store.addMember({
             tenantName: body.tenantName,
@@ -621,7 +656,6 @@ export function createRouter(opts: RouterOptions): Router {
             invitedBy: 'system',
             catalogKey: creator.catalogKey,
             principalId: creator.principalId,
-            ...(creator.catalogKey === 'principal' ? { login: creator.login } : {}),
           });
           logger.info(
             `[tenant-backend] Registered creator '${creator.userId}' as owner of '${body.tenantName}'`,
@@ -785,12 +819,14 @@ export function createRouter(opts: RouterOptions): Router {
         return;
       }
       const userId = body.userId.toLowerCase().trim();
-      if (!/^[a-z0-9]([a-z0-9-]{0,37}[a-z0-9])?$/i.test(userId)) {
+      // The shape TenantSync holds values.yaml members to (seedMemberOf): a
+      // looser one would invite someone the next sync then skips.
+      if (!isGitHubLogin(userId)) {
         res.status(400).json({ error: 'Invalid GitHub username format' });
         return;
       }
       const role = body.role ?? 'developer';
-      if (!['owner', 'developer', 'viewer'].includes(role)) {
+      if (!(ROLES as readonly string[]).includes(role)) {
         res.status(400).json({ error: 'role must be owner, developer, or viewer' });
         return;
       }
@@ -893,7 +929,7 @@ export function createRouter(opts: RouterOptions): Router {
       }
       const body: UpdateMemberRoleRequest = req.body;
       const { role } = body;
-      if (!role || !['owner', 'developer', 'viewer'].includes(role)) {
+      if (!role || !(ROLES as readonly string[]).includes(role)) {
         res.status(400).json({ error: 'role must be owner, developer, or viewer' });
         return;
       }

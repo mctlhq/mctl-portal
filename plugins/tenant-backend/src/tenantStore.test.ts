@@ -1,5 +1,5 @@
 import knexLib, { Knex } from 'knex';
-import { TenantStore } from './tenantStore';
+import { CustomerHasTenantError, TenantExistsError, TenantStore } from './tenantStore';
 import { Tenant } from './types';
 import { SeedMember } from './memberKeys';
 
@@ -274,6 +274,67 @@ describe('TenantStore.addMember keying', () => {
       login: 'ivan',
     });
     expect((await store.getMemberByTenant('labs', 'ivan'))?.principalId).toBe(PID);
+  });
+});
+
+describe('TenantStore.createCustomerTenant', () => {
+  const PID = 'prn_01M45DR1GWC87109EH88VBJX25';
+  const owner = (tenantName: string) => ({
+    tenantName,
+    userId: PID.toLowerCase(),
+    role: 'owner' as const,
+    invitedAt: new Date().toISOString(),
+    invitedBy: 'system',
+    catalogKey: 'principal' as const,
+    principalId: PID,
+    login: 'alice',
+  });
+
+  it('writes the tenant and its principal-keyed owner', async () => {
+    const { store, knex } = await freshStore();
+    currentKnex = knex;
+    await store.createCustomerTenant(makeTenant('bobs'), owner('bobs'));
+    expect(await store.findByName('bobs')).toBeDefined();
+    expect(await store.getMemberByTenant('bobs', PID.toLowerCase())).toMatchObject({
+      role: 'owner', catalogKey: 'principal', principalId: PID, login: 'alice',
+    });
+  });
+
+  it('lets only one of two concurrent requests for a customer through, leaving no second tenant', async () => {
+    const { store, knex } = await freshStore();
+    currentKnex = knex;
+    const results = await Promise.allSettled([
+      store.createCustomerTenant(makeTenant('first'), owner('first')),
+      store.createCustomerTenant(makeTenant('second'), owner('second')),
+    ]);
+    expect(results.filter(r => r.status === 'fulfilled')).toHaveLength(1);
+    const rejected = results.find(r => r.status === 'rejected') as PromiseRejectedResult;
+    expect(rejected.reason).toBeInstanceOf(CustomerHasTenantError);
+    expect((await store.listAll()).map(t => t.name)).toHaveLength(1);
+  });
+
+  it('refuses a taken name without touching the tenant that holds it', async () => {
+    const { store, knex } = await freshStore();
+    currentKnex = knex;
+    await store.upsert(makeTenant('labs', { displayName: 'Labs' }));
+    await expect(store.createCustomerTenant(makeTenant('labs', { displayName: 'Mine' }), owner('labs')))
+      .rejects.toBeInstanceOf(TenantExistsError);
+    expect((await store.findByName('labs'))?.displayName).toBe('Labs');
+    expect(await store.getMemberByTenant('labs', PID.toLowerCase())).toBeUndefined();
+  });
+
+  it('refuses seeding a customer into a second tenant', async () => {
+    const { store, knex } = await freshStore();
+    currentKnex = knex;
+    await store.createCustomerTenant(makeTenant('first'), owner('first'));
+    await expect(
+      store.seedMember('second', { userId: PID.toLowerCase(), role: 'owner', catalogKey: 'principal', principalId: PID }),
+      // Not toThrow(): the driver's error comes from another realm in the
+      // repo-wide run and fails jest's Error check there.
+    ).rejects.toHaveProperty('message', expect.stringContaining('UNIQUE constraint failed'));
+    // Login-keyed staff may still belong to several tenants.
+    await store.seedMember('first', { userId: 'root', role: 'owner', catalogKey: 'login' });
+    await store.seedMember('second', { userId: 'root', role: 'owner', catalogKey: 'login' });
   });
 });
 

@@ -112,7 +112,15 @@ export class TenantSync {
           await this.store.upsert(result.tenant);
           // Seed members from values.yaml (add-only, skips users in other tenants)
           for (const m of result.members) {
-            await this.store.seedMember(result.tenant.name, m);
+            try {
+              await this.store.seedMember(result.tenant.name, m);
+            } catch (err) {
+              // One bad entry, e.g. a customer's principal in a second
+              // tenant (refused by the store), must not stop the others.
+              this.logger.warn(
+                `[TenantSync] ${result.tenant.name} member ${m.userId} (principalId=${m.principalId ?? 'none'}) not seeded: ${err}`,
+              );
+            }
           }
           syncedNames.push(dir);
         }

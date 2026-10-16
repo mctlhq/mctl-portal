@@ -115,7 +115,9 @@ describe('TenantSync member keys', () => {
     );
     const store = {
       upsert: jest.fn().mockResolvedValue(undefined),
-      seedMember: jest.fn().mockResolvedValue(undefined),
+      // The store refuses the first entry (e.g. a customer already seeded
+      // into another tenant); the rest are still seeded.
+      seedMember: jest.fn().mockRejectedValueOnce(new Error('UNIQUE constraint failed')).mockResolvedValue(undefined),
       listNames: jest.fn().mockResolvedValue(['bobs']),
       delete: jest.fn().mockResolvedValue(undefined),
     } as any;
@@ -128,5 +130,6 @@ describe('TenantSync member keys', () => {
       ['bobs', { userId: 'carol', role: 'viewer', catalogKey: 'login' }],
     ]);
     expect(log.warn).toHaveBeenCalledWith(expect.stringContaining('member 1 (userId="mallory", principalId=undefined) skipped'));
+    expect(log.warn).toHaveBeenCalledWith(expect.stringContaining(`bobs member ${pid.toLowerCase()} (principalId=${pid}) not seeded`));
   });
 });

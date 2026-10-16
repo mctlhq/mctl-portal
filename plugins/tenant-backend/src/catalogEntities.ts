@@ -173,7 +173,9 @@ function userAnnotations(member: TenantMember): Record<string, string> {
 
 function displayNameOf(member: TenantMember): string {
   if (member.catalogKey === 'principal') {
-    return member.login ?? member.principalId ?? member.userId;
+    // The login alone would read exactly like a staff User who held it
+    // first; the entity names differ, but people read display names.
+    return `${member.login ?? member.principalId ?? member.userId} (customer)`;
   }
   return member.userId;
 }
