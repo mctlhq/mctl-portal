@@ -61,8 +61,14 @@ export class TenantStore {
     ];
     for (const [column, add] of memberColumns) {
       if (!(await knex.schema.hasColumn('tenant_members', column))) {
-        await knex.schema.alterTable('tenant_members', add);
-        this.logger.info(`[TenantStore] Added tenant_members.${column}`);
+        try {
+          await knex.schema.alterTable('tenant_members', add);
+          this.logger.info(`[TenantStore] Added tenant_members.${column}`);
+        } catch (e) {
+          // Another replica starting at the same time may have added it
+          // between the check and the ALTER; only its absence is an error.
+          if (!(await knex.schema.hasColumn('tenant_members', column))) throw e;
+        }
       }
     }
   }

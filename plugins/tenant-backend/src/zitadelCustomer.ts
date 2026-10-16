@@ -57,13 +57,17 @@ const GITHUB_ID = /^[1-9][0-9]{0,19}$/;
  * The token's `sub`, read without verification: it only names the actor,
  * and mctl-api refuses the call unless it equals the verified subject.
  */
+const ZITADEL_ID = /^[0-9]{1,64}$/;
+
 export function unverifiedSubjectOf(idToken: string): string | undefined {
   const parts = idToken.split('.');
   if (parts.length !== 3) return undefined;
   try {
     const payload: unknown = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8'));
     const sub = (payload as Record<string, unknown> | null)?.sub;
-    return typeof sub === 'string' && sub ? sub : undefined;
+    // ZITADEL ids are numeric. Anything else is not one of its tokens, and
+    // the subject goes into a request header.
+    return typeof sub === 'string' && ZITADEL_ID.test(sub) ? sub : undefined;
   } catch {
     return undefined;
   }

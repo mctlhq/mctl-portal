@@ -15,7 +15,7 @@ describe('unverifiedSubjectOf', () => {
     expect(unverifiedSubjectOf(idToken({ sub: '900' }))).toBe('900');
   });
 
-  it.each([['not.a.jwt'], ['two.parts'], [idToken({ sub: 1 })], [idToken({})]])(
+  it.each([['not.a.jwt'], ['two.parts'], [idToken({ sub: 1 })], [idToken({})], [idToken({ sub: '900\r\nX-Evil: 1' })], [idToken({ sub: 'alice' })]])(
     'reads no subject from %p',
     t => {
       expect(unverifiedSubjectOf(t)).toBeUndefined();

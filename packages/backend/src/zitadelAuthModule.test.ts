@@ -167,6 +167,25 @@ describe('createZitadelSignInResolver', () => {
     expect(ctx.issueToken).not.toHaveBeenCalled();
   });
 
+  // A refresh may carry no ID token; userinfo then decides, and ZITADEL
+  // puts the organization claim there when the scope was requested.
+  it('signs staff in from userinfo when a refresh returned no ID token', async () => {
+    const ctx = context(['carol']);
+    await expect(
+      resolver(signInInfo(profile(undefined, staff({ 'mctl:github_login': 'carol' }))), ctx),
+    ).resolves.toEqual({ token: 'catalog-token-for-carol' });
+  });
+
+  // A session opened before the resourceowner scope was configured: its
+  // refresh keeps the old scopes, so it is refused and signs in again.
+  it('refuses a refresh whose userinfo carries no organization', async () => {
+    const ctx = context(['carol']);
+    await expect(
+      resolver(signInInfo(profile(undefined, { 'mctl:github_login': 'carol' })), ctx),
+    ).rejects.toMatchObject({ name: 'NotAllowedError' });
+    expect(ctx.signInWithCatalogUser).not.toHaveBeenCalled();
+  });
+
   it('propagates catalog failures instead of signing in', async () => {
     const ctx = context([]);
     ctx.signInWithCatalogUser.mockRejectedValue(

@@ -1,4 +1,4 @@
-import { isGitHubLogin } from './creatorPrincipal';
+import { isGitHubLogin, PRINCIPAL_ID } from './creatorPrincipal';
 
 /**
  * What a tenant member's catalog User is named by (mctl-web
@@ -12,12 +12,12 @@ import { isGitHubLogin } from './creatorPrincipal';
  *   hands to the next person who registers it) must never name them.
  *
  * GitHub logins never contain `_`, so a principal-keyed name (`prn_...`)
- * cannot collide with a login-keyed one.
+ * cannot collide with a login-keyed one, provided a login-keyed userId is
+ * held to the GitHub login shape (seedMemberOf).
  */
 export type CatalogKey = 'login' | 'principal';
 
-/** mctl-api's principal id shape (ValidPrincipalID in internal/auth). */
-export const PRINCIPAL_ID = /^prn_[0-9A-HJKMNP-TV-Z]{26}$/;
+export { PRINCIPAL_ID };
 
 /** One member entry of values.yaml, resolved to the row the portal stores. */
 export interface SeedMember {
@@ -71,6 +71,11 @@ export function seedMemberOf(raw: unknown): SeedMemberResult {
   }
   if (!userId) {
     return { error: 'no userId' };
+  }
+  // Not merely tidiness: a login-keyed `prn_...` would be named exactly like
+  // that principal's customer and join their entity to this tenant.
+  if (!isGitHubLogin(userId)) {
+    return { error: 'login-keyed userId is not a GitHub login' };
   }
   return {
     member: {

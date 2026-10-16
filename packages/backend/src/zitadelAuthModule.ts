@@ -34,10 +34,14 @@ import {
  * claim, which ZITADEL emits for the portal's clients from metadata only the
  * IaC writes (mctlhq/mctl-portal#150). The ID token is read when the result
  * has one: openid-client has verified it (signature, issuer, audience,
- * nonce). A token response without an ID token, which ZITADEL returns on
- * refresh and could in principle return on any exchange, falls back to the
- * userinfo response, which the backend fetched from the issuer with this
- * session's access token.
+ * nonce). A token response without an ID token falls back to the userinfo
+ * response, which the backend fetched from the issuer with this session's
+ * access token. ZITADEL documents an ID token on the refresh grant too, and
+ * puts the same reserved claims (urn:zitadel:iam:user:resourceowner:id) in
+ * userinfo when the scope was requested, so either source classifies the
+ * account. A refresh reuses the scopes of the original sign-in: a session
+ * opened before the resourceowner scope was configured cannot be classified
+ * and has to sign in again, once.
  *
  * No other claim is ever used in its place: e-mail, preferred_username and
  * sub are not GitHub logins, and guessing one would sign a person in as

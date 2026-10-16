@@ -48,6 +48,15 @@ describe('seedMemberOf', () => {
     });
   });
 
+  it.each([['prn_01m45dr1gwc87109eh88vbjx25'], ['prn_01M45DR1GWC87109EH88VBJX25'], ['a/b'], ['a'.repeat(40)]])(
+    'refuses login-keyed userId %p that is not a GitHub login',
+    userId => {
+      expect(seedMemberOf({ userId, role: 'owner' })).toEqual({
+        error: 'login-keyed userId is not a GitHub login',
+      });
+    },
+  );
+
   it('refuses a login-keyed entry without a userId', () => {
     expect(seedMemberOf({ principalId: PID, role: 'owner' })).toEqual({ error: 'no userId' });
   });
