@@ -1,5 +1,27 @@
 # Changelog
 
+## [4.21.0](https://github.com/mctlhq/mctl-portal/compare/4.20.4...4.21.0) (2026-10-16)
+
+
+### Features
+
+* **portal:** customers create their workspace by principal (C2) ([219bc11](https://github.com/mctlhq/mctl-portal/commit/219bc110a7e1b82130d395d9d460c98729e7044a))
+* **portal:** customers create their workspace by principal (C2) ([06b56a1](https://github.com/mctlhq/mctl-portal/commit/06b56a158974f58e1f6eaf5e67f0b10c9a6e862b))
+* **portal:** principal-keyed catalog users for customers accounts ([9fa2179](https://github.com/mctlhq/mctl-portal/commit/9fa2179a9b3d0b3db535c7b8334b4e99f21d2aa5))
+* **portal:** principal-keyed catalog users for customers accounts ([924f624](https://github.com/mctlhq/mctl-portal/commit/924f6248fb2f2ca2f3522399e10ef0ba8fcb37f6))
+
+
+### Bug Fixes
+
+* **portal:** tell an unclassifiable session to sign in again ([497fa57](https://github.com/mctlhq/mctl-portal/commit/497fa575337a9ce3689701076aa0ac70c7806992))
+* **tenant:** code name_taken on the existence-check 409 too ([fb129dc](https://github.com/mctlhq/mctl-portal/commit/fb129dc61127cc6e82138f51849f9c42ea88edd0))
+* **tenant:** enforce one workspace per customer in the store ([7e6cf3f](https://github.com/mctlhq/mctl-portal/commit/7e6cf3fd491bb8a46b2bbf094aad39c7c894b900))
+* **tenant:** enforce one workspace per customer in the store ([ff08785](https://github.com/mctlhq/mctl-portal/commit/ff08785f936a1bf51855910e2f21efc91b5d7648))
+* **tenant:** give a taken name its own 409 code ([970d743](https://github.com/mctlhq/mctl-portal/commit/970d743e0bb7621e01b7fd702ef1d13047d0fac9))
+* **tenant:** hold login-keyed members to the GitHub login shape ([7528c49](https://github.com/mctlhq/mctl-portal/commit/7528c4957d779ac8315ad2e5ae55ec8892e11c5e))
+* **tenant:** keep a member's principal when an invite re-adds it ([8b12b0f](https://github.com/mctlhq/mctl-portal/commit/8b12b0fe272a82e840ee6de4e442dfdc51b9793f))
+* **tenant:** log unmodelled customer-resolution failures ([d216586](https://github.com/mctlhq/mctl-portal/commit/d21658651c2089f5dde262779ebab988c57c6602))
+
 ## [4.20.4](https://github.com/mctlhq/mctl-portal/compare/4.20.3...4.20.4) (2026-10-13)
 
 
