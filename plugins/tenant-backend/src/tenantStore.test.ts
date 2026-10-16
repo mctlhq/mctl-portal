@@ -1,6 +1,12 @@
 import knexLib, { Knex } from 'knex';
 import { TenantStore } from './tenantStore';
 import { Tenant } from './types';
+import { SeedMember } from './memberKeys';
+
+// A login-keyed values.yaml member, as seedMemberOf resolves one.
+function byLogin(userId: string, role: string): SeedMember {
+  return { userId, role, catalogKey: 'login' };
+}
 
 function makeStore(knex: Knex): TenantStore {
   const db = { getClient: async () => knex } as any;
@@ -43,11 +49,49 @@ afterEach(async () => {
 });
 
 describe('TenantStore.seedMember', () => {
+  it('records a principal-keyed member and reads it back as one', async () => {
+    const { store, knex } = await freshStore();
+    currentKnex = knex;
+    const pid = 'prn_01M45DR1GWC87109EH88VBJX25';
+    await store.seedMember('bobs', {
+      userId: pid.toLowerCase(), role: 'owner', catalogKey: 'principal', principalId: pid, login: 'alice',
+    });
+    await store.seedMember('labs', byLogin('alice', 'owner'));
+    const [bob] = await store.listMembershipsForUser(pid.toLowerCase());
+    expect(bob).toEqual(
+      expect.objectContaining({ tenantName: 'bobs', catalogKey: 'principal', principalId: pid, login: 'alice' }),
+    );
+    // The login names only the login-keyed member.
+    const byAlice = await store.listMembershipsForUser('alice');
+    expect(byAlice.map(m => m.tenantName)).toEqual(['labs']);
+    expect(byAlice[0].catalogKey).toBeUndefined();
+  });
+
+  it('adds the principal columns to a table created before them', async () => {
+    const knex = knexLib({ client: 'better-sqlite3', connection: ':memory:', useNullAsDefault: true });
+    currentKnex = knex;
+    await knex.schema.createTable('tenant_members', t => {
+      t.string('tenant_name').notNullable();
+      t.string('user_id').notNullable();
+      t.string('role').notNullable().defaultTo('developer');
+      t.timestamp('invited_at').notNullable().defaultTo(knex.fn.now());
+      t.string('invited_by').notNullable();
+      t.primary(['tenant_name', 'user_id']);
+    });
+    await knex('tenant_members').insert({ tenant_name: 'labs', user_id: 'alice', role: 'owner', invited_by: 'system' });
+    const store = makeStore(knex);
+    await store.init();
+    await store.init();
+    const [alice] = await store.listMembers('labs');
+    expect(alice.userId).toBe('alice');
+    expect(alice.catalogKey).toBeUndefined();
+  });
+
   it('seeds a user into multiple tenants without conflict', async () => {
     const { store, knex } = await freshStore();
     currentKnex = knex;
-    await store.seedMember('admins', 'mashkovd', 'owner');
-    await store.seedMember('ovk', 'mashkovd', 'owner');
+    await store.seedMember('admins', byLogin('mashkovd', 'owner'));
+    await store.seedMember('ovk', byLogin('mashkovd', 'owner'));
     const rows = await store.listMembershipsForUser('mashkovd');
     expect(rows.map(r => r.tenantName).sort()).toEqual(['admins', 'ovk']);
   });
@@ -55,8 +99,8 @@ describe('TenantStore.seedMember', () => {
   it('upserts role idempotently within the same tenant', async () => {
     const { store, knex } = await freshStore();
     currentKnex = knex;
-    await store.seedMember('labs', 'alice', 'developer');
-    await store.seedMember('labs', 'alice', 'owner');
+    await store.seedMember('labs', byLogin('alice', 'developer'));
+    await store.seedMember('labs', byLogin('alice', 'owner'));
     const rows = await store.listMembershipsForUser('alice');
     expect(rows).toHaveLength(1);
     expect(rows[0].role).toBe('owner');
@@ -67,7 +111,7 @@ describe('TenantStore.addMember', () => {
   it('rejects when the user is already in a different tenant', async () => {
     const { store, knex } = await freshStore();
     currentKnex = knex;
-    await store.seedMember('ovk', 'bob', 'developer');
+    await store.seedMember('ovk', byLogin('bob', 'developer'));
     await expect(
       store.addMember({
         tenantName: 'labs',
@@ -84,8 +128,8 @@ describe('TenantStore.listMembershipsForUser', () => {
   it('returns all rows ordered by tenant_name', async () => {
     const { store, knex } = await freshStore();
     currentKnex = knex;
-    await store.seedMember('ovk', 'carol', 'owner');
-    await store.seedMember('admins', 'carol', 'owner');
+    await store.seedMember('ovk', byLogin('carol', 'owner'));
+    await store.seedMember('admins', byLogin('carol', 'owner'));
     const rows = await store.listMembershipsForUser('carol');
     expect(rows.map(r => r.tenantName)).toEqual(['admins', 'ovk']);
   });
@@ -95,8 +139,8 @@ describe('TenantStore.getMemberByTenant', () => {
   it('returns only the matching tenant row', async () => {
     const { store, knex } = await freshStore();
     currentKnex = knex;
-    await store.seedMember('admins', 'dave', 'owner');
-    await store.seedMember('ovk', 'dave', 'developer');
+    await store.seedMember('admins', byLogin('dave', 'owner'));
+    await store.seedMember('ovk', byLogin('dave', 'developer'));
     expect((await store.getMemberByTenant('admins', 'dave'))?.role).toBe('owner');
     expect((await store.getMemberByTenant('ovk', 'dave'))?.role).toBe('developer');
     expect(await store.getMemberByTenant('labs', 'dave')).toBeUndefined();
@@ -152,7 +196,7 @@ describe('TenantStore.delete', () => {
     const { store, knex } = await freshStore();
     currentKnex = knex;
     await store.upsert(makeTenant('labs'));
-    await store.seedMember('labs', 'eve', 'owner');
+    await store.seedMember('labs', byLogin('eve', 'owner'));
     await store.delete('labs');
     expect(await store.findByName('labs')).toBeUndefined();
     expect(await store.listMembershipsForUser('eve')).toHaveLength(0);
@@ -201,7 +245,7 @@ describe('TenantStore.updateMemberRole / removeMember', () => {
   it('updates a role in place', async () => {
     const { store, knex } = await freshStore();
     currentKnex = knex;
-    await store.seedMember('labs', 'grace', 'developer');
+    await store.seedMember('labs', byLogin('grace', 'developer'));
     await store.updateMemberRole('labs', 'grace', 'owner');
     expect((await store.getMemberByTenant('labs', 'grace'))?.role).toBe('owner');
   });
@@ -209,8 +253,8 @@ describe('TenantStore.updateMemberRole / removeMember', () => {
   it('removes only the targeted membership', async () => {
     const { store, knex } = await freshStore();
     currentKnex = knex;
-    await store.seedMember('labs', 'heidi', 'developer');
-    await store.seedMember('labs', 'ivan', 'developer');
+    await store.seedMember('labs', byLogin('heidi', 'developer'));
+    await store.seedMember('labs', byLogin('ivan', 'developer'));
     await store.removeMember('labs', 'heidi');
     expect(await store.getMemberByTenant('labs', 'heidi')).toBeUndefined();
     expect((await store.listMembers('labs')).map(m => m.userId)).toEqual(['ivan']);
@@ -221,7 +265,7 @@ describe('TenantStore.getMemberTenant', () => {
   it('returns the single tenant/role for a user or undefined', async () => {
     const { store, knex } = await freshStore();
     currentKnex = knex;
-    await store.seedMember('ovk', 'judy', 'owner');
+    await store.seedMember('ovk', byLogin('judy', 'owner'));
     expect(await store.getMemberTenant('judy')).toEqual({ tenantName: 'ovk', role: 'owner' });
     expect(await store.getMemberTenant('nobody')).toBeUndefined();
   });

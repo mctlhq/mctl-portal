@@ -1,3 +1,5 @@
+import { CatalogKey } from './memberKeys';
+
 /**
  * Tenant data as stored in the database cache and returned by the API.
  * Sourced from platform-gitops/tenants/{name}/values.yaml in mctl-gitops.
@@ -59,11 +61,20 @@ export interface CreateTenantRequest {
 /** A user's membership in a tenant */
 export interface TenantMember {
   tenantName: string;
-  /** GitHub username (lowercase) */
+  /**
+   * The catalog User name: the GitHub login (lowercase) for a login-keyed
+   * member, the lowercased principal id for a principal-keyed one.
+   */
   userId: string;
   role: 'owner' | 'developer' | 'viewer';
   invitedAt: string;
   invitedBy: string;
+  /** How userId was chosen; absent means 'login' (see memberKeys.ts). */
+  catalogKey?: CatalogKey;
+  /** The canonical principal id, when values.yaml names one. */
+  principalId?: string;
+  /** A principal-keyed member's GitHub login, for display only. */
+  login?: string;
 }
 
 /** Input for inviting a user to a tenant */
@@ -95,8 +106,10 @@ export interface TenantValuesYaml {
     };
     /** Optional seed members — synced to DB on startup (add-only, won't remove API-managed members) */
     members?: Array<{
-      userId: string;
+      userId?: string;
+      principalId?: string;
       role: 'owner' | 'developer' | 'viewer';
+      catalogKey?: CatalogKey;
     }>;
   };
 }

@@ -140,13 +140,10 @@ export function buildTenantCatalogEntities(
         metadata: {
           name: userId,
           namespace: 'default',
-          annotations: {
-            'github.com/user-login': userId,
-            'mctl.me/tenant-role': member.role,
-          },
+          annotations: { ...userAnnotations(member), 'mctl.me/tenant-role': member.role },
         },
         spec: {
-          profile: { displayName: userId },
+          profile: { displayName: displayNameOf(member) },
           memberOf,
           owner: `group:default/${member.tenantName}`,
         },
@@ -155,4 +152,28 @@ export function buildTenantCatalogEntities(
   }
 
   return docs;
+}
+
+/**
+ * A login-keyed User is the GitHub account of its login. A principal-keyed
+ * one (a self-service customer, memberKeys.ts) carries its login only as
+ * mctl.me/github-login: `github.com/user-login` is what GitHub-aware plugins
+ * match a person by, and the login can pass to someone else, so it would
+ * make the next holder of the login look like this user.
+ */
+function userAnnotations(member: TenantMember): Record<string, string> {
+  if (member.catalogKey !== 'principal') {
+    return { 'github.com/user-login': member.userId };
+  }
+  return {
+    ...(member.principalId ? { 'mctl.me/principal-id': member.principalId } : {}),
+    ...(member.login ? { 'mctl.me/github-login': member.login } : {}),
+  };
+}
+
+function displayNameOf(member: TenantMember): string {
+  if (member.catalogKey === 'principal') {
+    return member.login ?? member.principalId ?? member.userId;
+  }
+  return member.userId;
 }

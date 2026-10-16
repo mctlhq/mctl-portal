@@ -1,6 +1,7 @@
 import { DatabaseService, LoggerService } from '@backstage/backend-plugin-api';
 import { Tenant, TenantMember } from './types';
 import { isPostgresClient } from './membershipLookup';
+import { SeedMember } from './memberKeys';
 
 /** Schema of github-app-connect's repo_connections table on Postgres. */
 const GITHUB_APP_CONNECT_SCHEMA = 'github-app-connect';
@@ -48,6 +49,21 @@ export class TenantStore {
         table.index(['user_id'], 'idx_tenant_members_user');
       });
       this.logger.info('[TenantStore] Created tenant_members table');
+    }
+
+    // Principal-keyed members (stage C2): how user_id was chosen, the
+    // principal and the display login. Added in place; rows from before
+    // read as login-keyed.
+    const memberColumns: Array<[string, (t: any) => void]> = [
+      ['catalog_key', t => t.string('catalog_key').notNullable().defaultTo('login')],
+      ['principal_id', t => t.string('principal_id').nullable()],
+      ['login', t => t.string('login').nullable()],
+    ];
+    for (const [column, add] of memberColumns) {
+      if (!(await knex.schema.hasColumn('tenant_members', column))) {
+        await knex.schema.alterTable('tenant_members', add);
+        this.logger.info(`[TenantStore] Added tenant_members.${column}`);
+      }
     }
   }
 
@@ -166,20 +182,26 @@ export class TenantStore {
    * (e.g. a platform admin who is also a member of a product tenant), so no
    * single-tenant constraint is enforced here. That constraint lives only in
    * addMember() which handles user-initiated invites.
+   *
+   * member.userId is the catalog name seedMemberOf chose; how it was chosen
+   * is recorded with it, so a principal-keyed row is never read as a login.
    */
-  async seedMember(tenantName: string, userId: string, role: string): Promise<void> {
+  async seedMember(tenantName: string, member: SeedMember): Promise<void> {
     const knex = await this.db.getClient();
-    const normalized = userId.toLowerCase().trim();
+    const normalized = member.userId.toLowerCase().trim();
     await knex('tenant_members')
       .insert({
         tenant_name: tenantName,
         user_id: normalized,
-        role,
+        role: member.role,
         invited_at: new Date(),
         invited_by: 'system',
+        catalog_key: member.catalogKey,
+        principal_id: member.principalId ?? null,
+        login: member.login ?? null,
       })
       .onConflict(['tenant_name', 'user_id'])
-      .merge(['role']);
+      .merge(['role', 'catalog_key', 'principal_id', 'login']);
   }
 
   /** Update a member's role */
@@ -238,6 +260,9 @@ function rowToMember(row: any): TenantMember {
     invitedAt:
       row.invited_at instanceof Date ? row.invited_at.toISOString() : String(row.invited_at),
     invitedBy: row.invited_by,
+    ...(row.catalog_key === 'principal' ? { catalogKey: 'principal' as const } : {}),
+    ...(row.principal_id ? { principalId: row.principal_id } : {}),
+    ...(row.login ? { login: row.login } : {}),
   };
 }
 

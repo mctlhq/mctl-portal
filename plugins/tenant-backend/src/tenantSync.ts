@@ -2,6 +2,7 @@ import yaml from 'js-yaml';
 import { LoggerService } from '@backstage/backend-plugin-api';
 import { TenantStore } from './tenantStore';
 import { Tenant, TenantValuesYaml } from './types';
+import { SeedMember, seedMemberOf } from './memberKeys';
 
 // The GitHub contents API lists at most this many entries of a directory.
 const CONTENTS_LISTING_LIMIT = 1000;
@@ -111,7 +112,7 @@ export class TenantSync {
           await this.store.upsert(result.tenant);
           // Seed members from values.yaml (add-only, skips users in other tenants)
           for (const m of result.members) {
-            await this.store.seedMember(result.tenant.name, m.userId, m.role);
+            await this.store.seedMember(result.tenant.name, m);
           }
           syncedNames.push(dir);
         }
@@ -143,7 +144,7 @@ export class TenantSync {
     this.logger.info(`[TenantSync] Sync complete. ${syncedNames.length} tenants synced.`);
   }
 
-  private async fetchTenant(dirName: string, syncedAt: string, githubToken: string): Promise<{ tenant: Tenant; members: Array<{ userId: string; role: string }> } | null> {
+  private async fetchTenant(dirName: string, syncedAt: string, githubToken: string): Promise<{ tenant: Tenant; members: SeedMember[] } | null> {
     const { githubOrg, repoName, tenantsPath } = this.opts;
     const url = `https://api.github.com/repos/${githubOrg}/${repoName}/contents/${tenantsPath}/${dirName}/values.yaml`;
 
@@ -203,10 +204,17 @@ export class TenantSync {
       syncedAt,
     };
 
-    const members = (t.members ?? []).map(m => ({
-      userId: m.userId,
-      role: m.role ?? 'owner',
-    }));
+    // An entry that cannot be keyed as it asks is skipped, not seeded under
+    // another name (seedMemberOf).
+    const members: SeedMember[] = [];
+    for (const [i, raw] of (Array.isArray(t.members) ? t.members : []).entries()) {
+      const parsed = seedMemberOf(raw);
+      if ('error' in parsed) {
+        this.logger.warn(`[TenantSync] ${dirName}/values.yaml member ${i} skipped: ${parsed.error}`);
+        continue;
+      }
+      members.push(parsed.member);
+    }
 
     return { tenant, members };
   }
