@@ -8,7 +8,7 @@ import { dump as yamlDump } from 'js-yaml';
 import { buildTenantCatalogEntities } from './catalogEntities';
 import { CreatorPrincipalError, CreatorPrincipalResolver, isGitHubLogin } from './creatorPrincipal';
 import { createRateLimiters, RateLimits } from './rateLimit';
-import { CatalogKey } from './memberKeys';
+import { CatalogKey, ROLES } from './memberKeys';
 import { ZitadelCustomer, ZitadelCustomerError, ZitadelCustomerResolver } from './zitadelCustomer';
 
 export interface RouterOptions {
@@ -826,7 +826,7 @@ export function createRouter(opts: RouterOptions): Router {
         return;
       }
       const role = body.role ?? 'developer';
-      if (!['owner', 'developer', 'viewer'].includes(role)) {
+      if (!(ROLES as readonly string[]).includes(role)) {
         res.status(400).json({ error: 'role must be owner, developer, or viewer' });
         return;
       }
@@ -929,7 +929,7 @@ export function createRouter(opts: RouterOptions): Router {
       }
       const body: UpdateMemberRoleRequest = req.body;
       const { role } = body;
-      if (!role || !['owner', 'developer', 'viewer'].includes(role)) {
+      if (!role || !(ROLES as readonly string[]).includes(role)) {
         res.status(400).json({ error: 'role must be owner, developer, or viewer' });
         return;
       }
