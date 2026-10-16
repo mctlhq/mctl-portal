@@ -528,7 +528,7 @@ export function createRouter(opts: RouterOptions): Router {
       // Check if tenant already exists in DB cache
       const existing = await store.findByName(body.tenantName);
       if (existing) {
-        res.status(409).json({ error: `Tenant '${body.tenantName}' already exists` });
+        res.status(409).json({ error: `Tenant '${body.tenantName}' already exists`, code: 'name_taken' });
         return;
       }
 

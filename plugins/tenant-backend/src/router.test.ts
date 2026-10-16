@@ -663,6 +663,14 @@ describe('self-service customers create their workspace by principal', () => {
     expect(submitWorkflow).not.toHaveBeenCalled();
   });
 
+  it('gives a taken name the code name_taken, as availability does', async () => {
+    const base = await startApp(jest.fn().mockResolvedValue(bob));
+    const r = await post(base, '/tenants', { tenantName: 'labs', displayName: 'Labs', creatorIdToken: 'site-id-token' });
+    expect(r.status).toBe(409);
+    expect((await r.json()).code).toBe('name_taken');
+    expect(createCustomerTenant).not.toHaveBeenCalled();
+  });
+
   it('refuses a name taken since the existence check without submitting a workflow', async () => {
     createCustomerTenant.mockRejectedValue(new TenantExistsError("Tenant 'bobs' already exists"));
     const base = await startApp(jest.fn().mockResolvedValue(bob));
