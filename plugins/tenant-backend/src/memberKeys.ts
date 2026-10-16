@@ -30,6 +30,8 @@ export interface SeedMember {
   login?: string;
 }
 
+export const ROLES = ['owner', 'developer', 'viewer'] as const;
+
 export type SeedMemberResult = { member: SeedMember } | { error: string };
 
 /**
@@ -43,7 +45,14 @@ export function seedMemberOf(raw: unknown): SeedMemberResult {
     return { error: 'not a mapping' };
   }
   const m = raw as Record<string, unknown>;
-  const role = typeof m.role === 'string' && m.role ? m.role : 'owner';
+  // Held to the roles the catalog and the membership checks compare
+  // against: a role they do not recognise (`Viewer`, `admin`) or none at all
+  // would otherwise grant more than values.yaml asked for, so it is an
+  // error, never a default.
+  const role = m.role;
+  if (typeof role !== 'string' || !(ROLES as readonly string[]).includes(role)) {
+    return { error: `role must be one of ${ROLES.join(', ')}, got ${JSON.stringify(role ?? null)}` };
+  }
   const principalId =
     typeof m.principalId === 'string' && PRINCIPAL_ID.test(m.principalId)
       ? m.principalId

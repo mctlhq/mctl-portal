@@ -61,6 +61,15 @@ describe('seedMemberOf', () => {
     expect(seedMemberOf({ principalId: PID, role: 'owner' })).toEqual({ error: 'no userId' });
   });
 
+  it.each([[undefined], [null], [''], [123], ['Viewer'], ['admin'], [['owner']]])(
+    'refuses role %p instead of defaulting it',
+    role => {
+      expect(seedMemberOf({ userId: 'alice', role })).toEqual({
+        error: expect.stringMatching(/^role must be one of owner, developer, viewer/),
+      });
+    },
+  );
+
   it('refuses an entry that is not a mapping', () => {
     expect(seedMemberOf('alice')).toEqual({ error: 'not a mapping' });
   });

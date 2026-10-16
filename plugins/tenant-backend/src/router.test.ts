@@ -3,6 +3,7 @@ import { Server } from 'http';
 import { AddressInfo } from 'net';
 import { createRouter, staticTokenEquals, RouterOptions } from './router';
 import { CreatorPrincipalError } from './creatorPrincipal';
+import { CustomerHasTenantError, TenantExistsError } from './tenantStore';
 import { ZitadelCustomerError } from './zitadelCustomer';
 
 // /backstage/catalog.yaml serves PII (contact emails, member lists) and is
@@ -442,6 +443,22 @@ describe('tenant data is scoped to members, admins and real users', () => {
     expect(JSON.stringify(body)).not.toContain('owner@example.com');
   });
 
+  // The same shape TenantSync holds values.yaml members to: a looser one
+  // would invite someone the next sync skips.
+  it.each([['a--b'], ['-ab'], ['ab-'], ['prn_01m45dr1gwc87109eh88vbjx25']])(
+    'refuses to invite %p, which is not a GitHub login',
+    async userId => {
+      const base = await startApp();
+      const res = await fetch(`${base}/tenants/labs/members`, {
+        method: 'POST',
+        headers: { 'x-test-caller': 'user:root', 'content-type': 'application/json' },
+        body: JSON.stringify({ userId, role: 'developer' }),
+      });
+      expect(res.status).toBe(400);
+      expect((await res.json()).error).toBe('Invalid GitHub username format');
+    },
+  );
+
   it('shows members and admins the full tenant', async () => {
     const base = await startApp();
     for (const caller of ['user:carol', 'user:root']) {
@@ -518,6 +535,8 @@ describe('self-service customers create their workspace by principal', () => {
   const submitWorkflow = jest.fn().mockResolvedValue('create-tenant-abc');
   const upsert = jest.fn().mockResolvedValue(undefined);
   const addMember = jest.fn().mockResolvedValue(undefined);
+  const createCustomerTenant = jest.fn().mockResolvedValue(undefined);
+  const deleteTenant = jest.fn().mockResolvedValue(undefined);
   const memberTenant: Record<string, string> = {};
   const logger = { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn(), child: jest.fn() };
   // Bob registered the login `alice` after Alice, a login-keyed member of
@@ -545,6 +564,8 @@ describe('self-service customers create their workspace by principal', () => {
         findByName: jest.fn(async (name: string) => (name === 'labs' ? { name } : undefined)),
         upsert,
         addMember,
+        createCustomerTenant,
+        delete: deleteTenant,
         getMemberTenant: jest.fn(async (userId: string) =>
           memberTenant[userId] ? { tenantName: memberTenant[userId], role: 'owner' } : undefined,
         ),
@@ -582,9 +603,11 @@ describe('self-service customers create their workspace by principal', () => {
   const params = () => submitWorkflow.mock.calls[0][0].parameters as string[];
 
   afterEach(done => {
-    submitWorkflow.mockClear();
+    submitWorkflow.mockReset().mockResolvedValue('create-tenant-abc');
     upsert.mockClear();
     addMember.mockClear();
+    createCustomerTenant.mockReset().mockResolvedValue(undefined);
+    deleteTenant.mockClear();
     for (const k of Object.keys(memberTenant)) delete memberTenant[k];
     if (server) {
       server.close(() => done());
@@ -606,7 +629,9 @@ describe('self-service customers create their workspace by principal', () => {
         'creator_catalog_key=principal',
       ]),
     );
-    expect(addMember).toHaveBeenCalledWith(
+    // Written with the tenant, before the workflow: not upsert + addMember.
+    expect(createCustomerTenant).toHaveBeenCalledWith(
+      expect.objectContaining({ name: 'bobs' }),
       expect.objectContaining({
         tenantName: 'bobs',
         userId: BOB.toLowerCase(),
@@ -616,6 +641,9 @@ describe('self-service customers create their workspace by principal', () => {
         login: 'alice',
       }),
     );
+    expect(createCustomerTenant.mock.invocationCallOrder[0]).toBeLessThan(submitWorkflow.mock.invocationCallOrder[0]);
+    expect(upsert).not.toHaveBeenCalled();
+    expect(addMember).not.toHaveBeenCalled();
   });
 
   it('keeps the legacy landing creator login-keyed', async () => {
@@ -625,14 +653,28 @@ describe('self-service customers create their workspace by principal', () => {
     expect(addMember).toHaveBeenCalledWith(expect.objectContaining({ userId: 'carol', catalogKey: 'login' }));
   });
 
-  it('refuses a customer who already has a workspace before writing anything', async () => {
-    memberTenant[BOB.toLowerCase()] = 'first';
+  it('refuses a customer who already has a workspace without submitting a workflow', async () => {
+    createCustomerTenant.mockRejectedValue(new CustomerHasTenantError('This account already has a workspace'));
     const base = await startApp(jest.fn().mockResolvedValue(bob));
     const r = await create(base, { creatorIdToken: 'site-id-token' });
     expect(r.status).toBe(409);
     expect((await r.json()).code).toBe('creator_has_tenant');
     expect(upsert).not.toHaveBeenCalled();
     expect(submitWorkflow).not.toHaveBeenCalled();
+  });
+
+  it('refuses a name taken since the existence check without submitting a workflow', async () => {
+    createCustomerTenant.mockRejectedValue(new TenantExistsError("Tenant 'bobs' already exists"));
+    const base = await startApp(jest.fn().mockResolvedValue(bob));
+    expect((await create(base, { creatorIdToken: 'site-id-token' })).status).toBe(409);
+    expect(submitWorkflow).not.toHaveBeenCalled();
+  });
+
+  it("releases the customer's reservation when the workflow cannot be submitted", async () => {
+    submitWorkflow.mockRejectedValue(new Error('argo down'));
+    const base = await startApp(jest.fn().mockResolvedValue(bob));
+    expect((await create(base, { creatorIdToken: 'site-id-token' })).status).toBe(500);
+    expect(deleteTenant).toHaveBeenCalledWith('bobs');
   });
 
   it.each([

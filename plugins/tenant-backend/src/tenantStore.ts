@@ -6,6 +6,17 @@ import { SeedMember } from './memberKeys';
 /** Schema of github-app-connect's repo_connections table on Postgres. */
 const GITHUB_APP_CONNECT_SCHEMA = 'github-app-connect';
 
+/** A self-service customer already owns a workspace (one per principal). */
+export class CustomerHasTenantError extends Error {}
+
+/** The tenant name is already taken. */
+export class TenantExistsError extends Error {}
+
+// A unique-constraint violation, on Postgres (23505) or SQLite (tests).
+function isUniqueViolation(err: any): boolean {
+  return err?.code === '23505' || /UNIQUE constraint failed/.test(String(err?.message));
+}
+
 /**
  * TenantStore: PostgreSQL-backed cache of tenant definitions.
  * Synced periodically from GitHub (platform-gitops/tenants/{name}/values.yaml).
@@ -71,22 +82,21 @@ export class TenantStore {
         }
       }
     }
+
+    // One workspace per self-service customer, held by the database rather
+    // than by a check a concurrent request can pass too. Login-keyed rows
+    // are exempt: staff legitimately belong to several tenants.
+    await knex.raw(
+      `CREATE UNIQUE INDEX IF NOT EXISTS uq_tenant_members_principal ` +
+        `ON tenant_members (user_id) WHERE catalog_key = 'principal'`,
+    );
   }
 
   /** Upsert a tenant (insert or update on conflict) */
   async upsert(tenant: Tenant): Promise<void> {
     const knex = await this.db.getClient();
     await knex('tenants')
-      .insert({
-        name: tenant.name,
-        display_name: tenant.displayName,
-        description: tenant.description ?? null,
-        github_team: tenant.githubTeam ?? null,
-        contact_email: tenant.contactEmail ?? null,
-        quotas: JSON.stringify(tenant.quotas),
-        networking: JSON.stringify(tenant.networking),
-        synced_at: tenant.syncedAt,
-      })
+      .insert(tenantRow(tenant))
       .onConflict('name')
       .merge([
         'display_name',
@@ -97,6 +107,40 @@ export class TenantStore {
         'networking',
         'synced_at',
       ]);
+  }
+
+  /**
+   * Writes a self-service customer's tenant and its principal-keyed owner
+   * together, or neither: a second request for the same customer, however
+   * close in time, fails here with CustomerHasTenantError and leaves no
+   * tenant behind. A taken name fails with TenantExistsError instead of
+   * overwriting the tenant that holds it.
+   */
+  async createCustomerTenant(tenant: Tenant, owner: TenantMember): Promise<void> {
+    const knex = await this.db.getClient();
+    await knex.transaction(async trx => {
+      try {
+        await trx('tenants').insert(tenantRow(tenant));
+      } catch (err) {
+        if (isUniqueViolation(err)) throw new TenantExistsError(`Tenant '${tenant.name}' already exists`);
+        throw err;
+      }
+      try {
+        await trx('tenant_members').insert({
+          tenant_name: tenant.name,
+          user_id: owner.userId.toLowerCase().trim(),
+          role: owner.role,
+          invited_at: owner.invitedAt,
+          invited_by: owner.invitedBy,
+          catalog_key: 'principal',
+          principal_id: owner.principalId ?? null,
+          login: owner.login ?? null,
+        });
+      } catch (err) {
+        if (isUniqueViolation(err)) throw new CustomerHasTenantError('This account already has a workspace');
+        throw err;
+      }
+    });
   }
 
   /** Get all tenants */
@@ -292,5 +336,18 @@ function rowToTenant(row: any): Tenant {
     quotas: typeof row.quotas === 'string' ? JSON.parse(row.quotas) : row.quotas,
     networking: typeof row.networking === 'string' ? JSON.parse(row.networking) : row.networking,
     syncedAt: row.synced_at instanceof Date ? row.synced_at.toISOString() : row.synced_at,
+  };
+}
+
+function tenantRow(tenant: Tenant) {
+  return {
+    name: tenant.name,
+    display_name: tenant.displayName,
+    description: tenant.description ?? null,
+    github_team: tenant.githubTeam ?? null,
+    contact_email: tenant.contactEmail ?? null,
+    quotas: JSON.stringify(tenant.quotas),
+    networking: JSON.stringify(tenant.networking),
+    synced_at: tenant.syncedAt,
   };
 }
