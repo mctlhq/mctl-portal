@@ -182,7 +182,7 @@ describe('createZitadelSignInResolver', () => {
     const ctx = context(['carol']);
     await expect(
       resolver(signInInfo(profile(undefined, { 'mctl:github_login': 'carol' })), ctx),
-    ).rejects.toMatchObject({ name: 'NotAllowedError' });
+    ).rejects.toMatchObject({ name: 'NotAllowedError', message: expect.stringMatching(/Sign in again/) });
     expect(ctx.signInWithCatalogUser).not.toHaveBeenCalled();
   });
 
@@ -295,13 +295,13 @@ describe('createZitadelSignInResolver for customers', () => {
   });
 
   it.each([
-    ['carries no organization claim', { 'mctl:github_login': 'alice' }, { organizationId: CUSTOMERS }],
-    ['meets no configured customers organization', staff({ 'mctl:github_login': 'alice' }), {}],
-  ])('refuses a token that %s rather than sign it in by login', async (_name, claims, opts) => {
+    ['carries no organization claim', { 'mctl:github_login': 'alice' }, { organizationId: CUSTOMERS }, /Sign in again/],
+    ['meets no configured customers organization', staff({ 'mctl:github_login': 'alice' }), {}, /unavailable/],
+  ])('refuses a token that %s rather than sign it in by login', async (_name, claims, opts, message) => {
     const ctx = context(['alice']);
     await expect(
       createZitadelSignInResolver(logger, opts)(signInInfo(profile(claims)), ctx),
-    ).rejects.toMatchObject({ name: 'NotAllowedError', message: expect.stringMatching(/unavailable/) });
+    ).rejects.toMatchObject({ name: 'NotAllowedError', message: expect.stringMatching(message) });
     expect(ctx.signInWithCatalogUser).not.toHaveBeenCalled();
   });
 });

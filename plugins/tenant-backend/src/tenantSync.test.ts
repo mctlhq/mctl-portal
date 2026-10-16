@@ -127,6 +127,6 @@ describe('TenantSync member keys', () => {
       ['bobs', { userId: pid.toLowerCase(), role: 'owner', catalogKey: 'principal', principalId: pid, login: 'alice' }],
       ['bobs', { userId: 'carol', role: 'viewer', catalogKey: 'login' }],
     ]);
-    expect(log.warn).toHaveBeenCalledWith(expect.stringContaining('member 1 skipped'));
+    expect(log.warn).toHaveBeenCalledWith(expect.stringContaining('member 1 (userId="mallory", principalId=undefined) skipped'));
   });
 });

@@ -210,7 +210,11 @@ export class TenantSync {
     for (const [i, raw] of (Array.isArray(t.members) ? t.members : []).entries()) {
       const parsed = seedMemberOf(raw);
       if ('error' in parsed) {
-        this.logger.warn(`[TenantSync] ${dirName}/values.yaml member ${i} skipped: ${parsed.error}`);
+        const r = (raw ?? {}) as Record<string, unknown>;
+        this.logger.warn(
+          `[TenantSync] ${dirName}/values.yaml member ${i} ` +
+            `(userId=${JSON.stringify(r.userId)}, principalId=${JSON.stringify(r.principalId)}) skipped: ${parsed.error}`,
+        );
         continue;
       }
       members.push(parsed.member);

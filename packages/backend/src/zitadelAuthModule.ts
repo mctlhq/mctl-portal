@@ -115,6 +115,8 @@ const NOT_A_MEMBER =
   'Register a team at mctl.ai or ask a team owner to invite you. ' +
   'Access is available about a minute after you are added.';
 
+const SESSION_EXPIRED = 'Your session has expired. Sign in again.';
+
 const UNAVAILABLE =
   'Signing in is unavailable right now. Try again in a few minutes.';
 
@@ -142,7 +144,11 @@ export function createZitadelSignInResolver(
         `ZITADEL sign-in refused: the organization of sub=${sub} could not be observed` +
           (customers.organizationId ? '' : ' (no customers organization configured)'),
       );
-      throw new NotAllowedError(UNAVAILABLE);
+      // Configured, the usual cause is a session opened before the
+      // resourceowner scope was requested: retrying its refresh never helps.
+      throw new NotAllowedError(
+        customers.organizationId ? SESSION_EXPIRED : UNAVAILABLE,
+      );
     }
 
     let name: string;
@@ -195,7 +201,7 @@ async function customerEntityName(
   const idToken = profile.tokenset?.id_token;
   if (!idToken) {
     logger.warn(`ZITADEL customer sign-in refused for sub=${sub}: no ID token`);
-    throw new NotAllowedError('Your session has expired. Sign in again.');
+    throw new NotAllowedError(SESSION_EXPIRED);
   }
   try {
     const { principalId } = await resolve(idToken, 'signin');
