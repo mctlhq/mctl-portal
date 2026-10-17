@@ -67,19 +67,19 @@ export class WorkspaceReadyOutbox {
     await this.db.transaction(async tx => {
       await lockTenantLifecycle(tx, access.tenant);
       if (!(await this.customerStillPresent(tx, access.tenant, access.principalId))) return;
-    await tx(TABLE)
-      .insert({
-        id,
-        tenant_name: access.tenant,
-        principal_id: access.principalId,
-        recipient,
-        snapshot: JSON.stringify(access),
-        payload: JSON.stringify(renderWorkspaceReady(access, recipient, from)),
-        status: 'pending',
-      })
-      .onConflict(['tenant_name', 'principal_id'])
-      .ignore();
-    });
+      await tx(TABLE)
+        .insert({
+          id,
+          tenant_name: access.tenant,
+          principal_id: access.principalId,
+          recipient,
+          snapshot: JSON.stringify(access),
+          payload: JSON.stringify(renderWorkspaceReady(access, recipient, from)),
+          status: 'pending',
+        })
+        .onConflict(['tenant_name', 'principal_id'])
+        .ignore();
+      });
     return id;
   }
 

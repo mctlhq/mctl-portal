@@ -1,3 +1,4 @@
+import { WorkspaceReadyOutbox } from './workspaceReadyEmail';
 import knexLib, { Knex } from 'knex';
 import { CustomerHasTenantError, TenantExistsError, TenantStore } from './tenantStore';
 import { Tenant } from './types';
@@ -441,6 +442,35 @@ const pgUrl = process.env.TENANT_TEST_PG_URL;
     for (const table of ['oidc_sessions','oidc_codes','oidc_access_tokens','oidc_forward_auth_codes','oidc_forward_auth_sessions']) {
       expect(await admin(table).withSchema('oidc-provider').select('user_id')).toEqual([{user_id:'bob'}]);
     }
+  });
+
+  it('serializes ready-email work with deletion and refuses stale post-delete preparation', async () => {
+    const store = makeStore(knex);
+    await store.init();
+    await store.upsert(makeTenant('acme'));
+    const pid = 'prn_01M45DR1GWC87109EH88VBJX25';
+    await store.seedMember('acme', { userId: pid.toLowerCase(), principalId: pid, login: 'alice', catalogKey: 'principal', role: 'owner' });
+    const outbox = new WorkspaceReadyOutbox(knex);
+    await outbox.init();
+    const access = { tenant: 'acme', principalId: pid, account: 'alice@mctl.ai', role: 'owner', observedAt: new Date().toISOString(), status: 'ready', environments: [], capabilities: [], mcp: 'blocked', accessUrl: 'https://app.mctl.ai/workspace/access' } as any;
+    const blocker = await knex.transaction();
+    await blocker.raw('SELECT pg_advisory_xact_lock(hashtext(?))', ['tenant-lifecycle|acme']);
+    let settled = false;
+    const preparation = outbox.prepare(access, 'alice@example.com').then(id => { settled = true; return id; });
+    await new Promise(resolve => setTimeout(resolve, 50));
+    expect(settled).toBe(false);
+    await blocker.commit();
+    const id = await preparation;
+    const delivery = await outbox.claim(id, Date.now());
+    expect(delivery).toBeDefined();
+    await expect(store.delete('acme')).rejects.toThrow('in flight');
+    await outbox.finish(delivery!, 'provider-id', Date.now());
+    await store.delete('acme');
+    await outbox.prepare(access, 'alice@example.com');
+    expect(await outbox.claim(id, Date.now())).toBeUndefined();
+    const row = await knex('workspace_ready_emails').where({ id }).first();
+    expect(row.recipient).toBe('');
+    expect(row.payload).toBe('{}');
   });
 
   it('keeps the tenant when the connection cleanup fails', async () => {
