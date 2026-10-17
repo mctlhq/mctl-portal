@@ -23,6 +23,44 @@ export const zitadelAuthApiRef: ApiRef<
   OpenIdConnectApi & ProfileInfoApi & BackstageIdentityApi & SessionApi
 > = createApiRef({ id: 'auth.zitadel' });
 
+/**
+ * The backend auth provider id of the customer entry, "Sign in with GitHub"
+ * (mctl-web#158), which is also its route (/api/auth/zitadel-customer). It
+ * must equal ZITADEL_CUSTOMER_AUTH_PROVIDER_ID in
+ * packages/backend/src/zitadelAuthModule.ts; both tests pin it.
+ */
+export const ZITADEL_CUSTOMER_AUTH_PROVIDER_ID = 'zitadel-customer';
+
+/**
+ * The customer sign-in through ZITADEL: auth provider `zitadel-customer`,
+ * which sends ZITADEL to the customers organization and its GitHub IdP.
+ */
+export const zitadelCustomerAuthApiRef: ApiRef<
+  OpenIdConnectApi & ProfileInfoApi & BackstageIdentityApi & SessionApi
+> = createApiRef({ id: 'auth.zitadel-customer' });
+
+// A ZITADEL resource id is digits, as the backend requires.
+const ZITADEL_ID = /^\d+$/;
+
+/**
+ * Whether the sign-in page offers the customer entry: only with both
+ * `zitadelCustomers` ids, the same condition under which the backend
+ * registers `zitadel-customer` (customerGitHubScopes in
+ * zitadelAuthModule.ts). The ids only decide what is offered; the backend
+ * decides who signs in.
+ */
+export function customerEntryEnabled(
+  organizationId: string | undefined,
+  githubIdpId: string | undefined,
+): boolean {
+  return (
+    !!organizationId &&
+    !!githubIdpId &&
+    ZITADEL_ID.test(organizationId) &&
+    ZITADEL_ID.test(githubIdpId)
+  );
+}
+
 /** Which providers the sign-in page offers (`auth.signIn`). */
 export type SignInMode = 'github' | 'zitadel' | 'both';
 
@@ -38,6 +76,20 @@ const ZITADEL_PROVIDER: SignInProvider = {
   title: 'MCTL account',
   message: 'Sign in with your MCTL account',
   apiRef: zitadelAuthApiRef,
+};
+
+// Next to the customer entry, the ZITADEL sign-in is labelled as staff's.
+const ZITADEL_STAFF_PROVIDER: SignInProvider = {
+  ...ZITADEL_PROVIDER,
+  title: 'Sign in with MCTL (staff, ZITADEL)',
+  message: 'MCTL staff sign in with their MCTL account',
+};
+
+const ZITADEL_CUSTOMER_PROVIDER: SignInProvider = {
+  id: 'zitadel-customer-auth-provider',
+  title: 'Sign in with GitHub',
+  message: 'MCTL customers sign in with their GitHub account',
+  apiRef: zitadelCustomerAuthApiRef,
 };
 
 const GITHUB_PROVIDER: SignInProvider = {
@@ -56,13 +108,22 @@ const LEGACY_GITHUB_PROVIDER: SignInProvider = {
  * The providers of a sign-in mode, the preferred one first. Absent means
  * `github`, today's behaviour; the config schema (packages/app/config.d.ts)
  * refuses any other value at startup, so a typo never reaches this point.
+ * With `customerEntry` (customerEntryEnabled), the modes that offer ZITADEL
+ * put the customer entry before the staff one, as mctl-api's OAuth chooser
+ * does; `github` never offers it.
  */
-export function signInProviders(mode: string | undefined): SignInProvider[] {
+export function signInProviders(
+  mode: string | undefined,
+  customerEntry = false,
+): SignInProvider[] {
+  const zitadel = customerEntry
+    ? [ZITADEL_CUSTOMER_PROVIDER, ZITADEL_STAFF_PROVIDER]
+    : [ZITADEL_PROVIDER];
   switch (mode ?? 'github') {
     case 'zitadel':
-      return [ZITADEL_PROVIDER];
+      return zitadel;
     case 'both':
-      return [ZITADEL_PROVIDER, LEGACY_GITHUB_PROVIDER];
+      return [...zitadel, LEGACY_GITHUB_PROVIDER];
     default:
       return [GITHUB_PROVIDER];
   }

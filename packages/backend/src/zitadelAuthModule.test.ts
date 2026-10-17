@@ -1,12 +1,17 @@
+import { createServer, Server } from 'node:http';
+import { AddressInfo } from 'node:net';
+import { ConfigReader } from '@backstage/config';
 import { NotFoundError } from '@backstage/errors';
 import { ZitadelCustomerError } from '@internal/plugin-tenant-backend';
 import {
   accountKindOf,
   createZitadelSignInResolver,
+  customerGitHubScopes,
   customerSignInOptions,
   githubLoginOf,
   registerZitadelProvider,
   ZITADEL_AUTH_PROVIDER_ID,
+  ZITADEL_CUSTOMER_AUTH_PROVIDER_ID,
 } from './zitadelAuthModule';
 
 const CUSTOMERS = '395272528420931285';
@@ -30,6 +35,121 @@ describe('registerZitadelProvider', () => {
     expect(registerProvider).toHaveBeenCalledWith(
       expect.objectContaining({ providerId: 'oidc' }),
     );
+  });
+});
+
+const GITHUB_IDP = '395272528420931999';
+const ORG_SCOPE = `urn:zitadel:iam:org:id:${CUSTOMERS}`;
+const IDP_SCOPE = `urn:zitadel:iam:org:idp:id:${GITHUB_IDP}`;
+
+describe('customer GitHub entry (mctl-web#158)', () => {
+  // A ZITADEL stand-in that serves only discovery: the start route builds
+  // the authorize URL from it without calling anything else.
+  let server: Server;
+  let issuer: string;
+  beforeAll(async () => {
+    server = createServer((_req, res) => {
+      res.setHeader('Content-Type', 'application/json');
+      res.end(
+        JSON.stringify({
+          issuer,
+          authorization_endpoint: `${issuer}/oauth/v2/authorize`,
+          token_endpoint: `${issuer}/oauth/v2/token`,
+          userinfo_endpoint: `${issuer}/oidc/v1/userinfo`,
+          jwks_uri: `${issuer}/oauth/v2/keys`,
+        }),
+      );
+    });
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+    issuer = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  });
+  afterAll(() => new Promise(resolve => server.close(resolve)));
+
+  function registered(customers: Parameters<typeof registerZitadelProvider>[2]) {
+    const registerProvider = jest.fn();
+    registerZitadelProvider({ registerProvider }, logger, customers);
+    return new Map<string, any>(
+      registerProvider.mock.calls.map(([p]) => [p.providerId, p.factory]),
+    );
+  }
+
+  // The scopes of the ZITADEL authorize redirect that /api/auth/<id>/start
+  // answers with, through the real oidc authenticator and auth-node route
+  // handlers. The staff provider's config is the production one: only the
+  // resourceowner scope.
+  async function authorizeScopes(factory: any, providerId: string): Promise<string[]> {
+    const handlers = factory({
+      providerId,
+      appUrl: 'https://app.example',
+      baseUrl: 'https://app.example/api/auth',
+      isOriginAllowed: () => true,
+      globalConfig: { appUrl: 'https://app.example', baseUrl: 'https://app.example/api/auth', isOriginAllowed: () => true },
+      config: new ConfigReader({
+        production: {
+          metadataUrl: `${issuer}/.well-known/openid-configuration`,
+          clientId: 'portal',
+          clientSecret: 'secret',
+          prompt: 'auto',
+          additionalScopes: ['urn:zitadel:iam:user:resourceowner'],
+        },
+      }),
+      logger,
+      resolverContext: {},
+    });
+    const req: any = {
+      query: { env: 'production', scope: 'openid profile email offline_access' },
+      cookies: {},
+      session: {},
+      method: 'GET',
+      url: `/${providerId}/start?env=production`,
+      get: () => undefined,
+    };
+    const headers: Record<string, string> = {};
+    const res: any = {
+      cookie: jest.fn(),
+      setHeader: (k: string, v: string) => {
+        headers[k] = v;
+      },
+      end: jest.fn(),
+    };
+    req.res = res;
+    res.req = req;
+    await handlers.start(req, res);
+    const location = new URL(headers.Location);
+    expect(location.origin + location.pathname).toBe(`${issuer}/oauth/v2/authorize`);
+    return (location.searchParams.get('scope') ?? '').split(' ');
+  }
+
+  it('is provider zitadel-customer, pinned with the frontend', () => {
+    // packages/app/src/signIn.test.ts pins the same id; a mismatch is a 404.
+    expect(ZITADEL_CUSTOMER_AUTH_PROVIDER_ID).toBe('zitadel-customer');
+  });
+
+  it('sends ZITADEL to the customers organization and its GitHub IdP', async () => {
+    const providers = registered({ organizationId: CUSTOMERS, githubIdpId: GITHUB_IDP });
+    expect([...providers.keys()]).toEqual(['oidc', 'zitadel-customer']);
+    const scopes = await authorizeScopes(providers.get('zitadel-customer'), 'zitadel-customer');
+    expect(scopes).toEqual(
+      expect.arrayContaining(['openid', 'urn:zitadel:iam:user:resourceowner', ORG_SCOPE, IDP_SCOPE]),
+    );
+  });
+
+  it('leaves the staff sign-in without organization or IdP scopes', async () => {
+    const providers = registered({ organizationId: CUSTOMERS, githubIdpId: GITHUB_IDP });
+    const scopes = await authorizeScopes(providers.get('oidc'), 'oidc');
+    expect(scopes).toContain('urn:zitadel:iam:user:resourceowner');
+    expect(scopes.filter(s => s.startsWith('urn:zitadel:iam:org:'))).toEqual([]);
+  });
+
+  it.each([
+    ['no IdP id', { organizationId: CUSTOMERS }],
+    ['no organization', { githubIdpId: GITHUB_IDP }],
+    ['neither', {}],
+    ['a malformed IdP id', { organizationId: CUSTOMERS, githubIdpId: `${GITHUB_IDP} urn:zitadel:iam:org:project:roles` }],
+    ['a malformed organization', { organizationId: 'customers', githubIdpId: GITHUB_IDP }],
+  ])('is not registered with %s', (_name, customers) => {
+    expect([...registered(customers).keys()]).toEqual(['oidc']);
+    expect(customerGitHubScopes(customers)).toBeNull();
   });
 });
 
@@ -316,12 +436,21 @@ describe('customerSignInOptions', () => {
       log,
     );
     expect(o.organizationId).toBe(CUSTOMERS);
+    expect(o.githubIdpId).toBeUndefined();
     expect(o.resolve).toEqual(expect.any(Function));
   });
 
+  it('reads the GitHub IdP of the customer entry', () => {
+    const o = customerSignInOptions(
+      config({ 'zitadelCustomers.organizationId': CUSTOMERS, 'zitadelCustomers.githubIdpId': GITHUB_IDP }),
+      log,
+    );
+    expect(customerGitHubScopes(o)).toEqual([ORG_SCOPE, IDP_SCOPE]);
+  });
+
   it('leaves both unset, and says so, without configuration', () => {
-    const o = customerSignInOptions(config({ 'zitadelCustomers.organizationId': '' }), log);
-    expect(o).toEqual({ organizationId: undefined, resolve: undefined });
+    const o = customerSignInOptions(config({ 'zitadelCustomers.organizationId': '', 'zitadelCustomers.githubIdpId': '' }), log);
+    expect(o).toEqual({ organizationId: undefined, githubIdpId: undefined, resolve: undefined });
     expect(log.warn).toHaveBeenCalledWith(expect.stringContaining('every ZITADEL sign-in is refused'));
   });
 });

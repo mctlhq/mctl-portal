@@ -8,4 +8,21 @@ export interface Config {
      */
     signIn?: 'github' | 'zitadel' | 'both';
   };
+  /**
+   * The ZITADEL organization of self-service customers. Both ids are public
+   * (they appear in every customer authorization URL); the sign-in page
+   * offers the customer entry, "Sign in with GitHub", only with both.
+   */
+  zitadelCustomers?: {
+    /**
+     * ZITADEL id of the customers organization.
+     * @visibility frontend
+     */
+    organizationId?: string;
+    /**
+     * ZITADEL id of the customers organization's GitHub IdP.
+     * @visibility frontend
+     */
+    githubIdpId?: string;
+  };
 }

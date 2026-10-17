@@ -1,8 +1,11 @@
 import { githubAuthApiRef } from '@backstage/core-plugin-api';
 import {
+  customerEntryEnabled,
   signInProviders,
   ZITADEL_AUTH_PROVIDER_ID,
+  ZITADEL_CUSTOMER_AUTH_PROVIDER_ID,
   zitadelAuthApiRef,
+  zitadelCustomerAuthApiRef,
 } from './signIn';
 
 describe('ZITADEL_AUTH_PROVIDER_ID', () => {
@@ -45,5 +48,53 @@ describe('signInProviders', () => {
       githubAuthApiRef,
     ]);
     expect(providers[1].title).toMatch(/legacy/);
+  });
+});
+
+describe('customer entry (mctl-web#158)', () => {
+  const ORG = '395272528420931285';
+  const IDP = '395272528420931999';
+
+  it('is provider zitadel-customer, the backend provider id', () => {
+    // Pinned on both sides with packages/backend/src/zitadelAuthModule.test.ts.
+    expect(ZITADEL_CUSTOMER_AUTH_PROVIDER_ID).toBe('zitadel-customer');
+  });
+
+  it('is enabled only with both ZITADEL ids', () => {
+    expect(customerEntryEnabled(ORG, IDP)).toBe(true);
+    expect(customerEntryEnabled(ORG, undefined)).toBe(false);
+    expect(customerEntryEnabled(undefined, IDP)).toBe(false);
+    expect(customerEntryEnabled('', '')).toBe(false);
+    expect(customerEntryEnabled(ORG, `${IDP} urn:zitadel:iam:org:project:roles`)).toBe(false);
+    expect(customerEntryEnabled('customers', IDP)).toBe(false);
+  });
+
+  it('comes before the staff sign-in for zitadel', () => {
+    const providers = signInProviders('zitadel', true);
+    expect(providers.map(p => p.apiRef)).toEqual([
+      zitadelCustomerAuthApiRef,
+      zitadelAuthApiRef,
+    ]);
+    expect(providers.map(p => p.title)).toEqual([
+      'Sign in with GitHub',
+      'Sign in with MCTL (staff, ZITADEL)',
+    ]);
+  });
+
+  it('keeps GitHub as legacy last for both', () => {
+    expect(signInProviders('both', true).map(p => p.apiRef)).toEqual([
+      zitadelCustomerAuthApiRef,
+      zitadelAuthApiRef,
+      githubAuthApiRef,
+    ]);
+  });
+
+  it('is never offered without ZITADEL', () => {
+    expect(signInProviders('github', true).map(p => p.apiRef)).toEqual([
+      githubAuthApiRef,
+    ]);
+    expect(signInProviders(undefined, true).map(p => p.apiRef)).toEqual([
+      githubAuthApiRef,
+    ]);
   });
 });
