@@ -301,11 +301,9 @@ export function createRouter(opts: RouterOptions): Router {
         }
         observedUser = caller.userId;
         if (!opts.readWorkspaceAccess) {
-          res
-            .status(503)
-            .json({
-              error: 'Workspace access could not be verified. Try again later.',
-            });
+          res.status(503).json({
+            error: 'Workspace access could not be verified. Try again later.',
+          });
           return;
         }
         const memberships = await store.listMembershipsForUser(caller.userId);
@@ -328,11 +326,9 @@ export function createRouter(opts: RouterOptions): Router {
             reason: err instanceof Error ? err.message : 'unknown error',
           },
         );
-        res
-          .status(503)
-          .json({
-            error: 'Workspace access could not be verified. Try again later.',
-          });
+        res.status(503).json({
+          error: 'Workspace access could not be verified. Try again later.',
+        });
       }
     },
   );
@@ -344,13 +340,19 @@ export function createRouter(opts: RouterOptions): Router {
   async function lookupGithubUser(
     username: string,
   ): Promise<{ login: string; name: string | null; avatarUrl: string } | null> {
+    if (!/^[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,37}[a-zA-Z0-9])?$/.test(username)) {
+      throw new Error('Invalid GitHub username');
+    }
     const token = await getGithubToken();
-    const res = await fetch(`https://api.github.com/users/${username}`, {
-      headers: {
-        Authorization: `token ${token}`,
-        Accept: 'application/vnd.github+json',
+    const res = await fetch(
+      `https://api.github.com/users/${encodeURIComponent(username)}`,
+      {
+        headers: {
+          Authorization: `token ${token}`,
+          Accept: 'application/vnd.github+json',
+        },
       },
-    });
+    );
     if (res.status === 404) return null;
     if (!res.ok) throw new Error(`GitHub API error: HTTP ${res.status}`);
     const data = (await res.json()) as {
@@ -751,12 +753,10 @@ export function createRouter(opts: RouterOptions): Router {
       // Check if tenant already exists in DB cache
       const existing = await store.findByName(body.tenantName);
       if (existing) {
-        res
-          .status(409)
-          .json({
-            error: `Tenant '${body.tenantName}' already exists`,
-            code: 'name_taken',
-          });
+        res.status(409).json({
+          error: `Tenant '${body.tenantName}' already exists`,
+          code: 'name_taken',
+        });
         return;
       }
 
@@ -950,11 +950,9 @@ export function createRouter(opts: RouterOptions): Router {
           'monitoring',
         ];
         if (reserved.includes(name)) {
-          res
-            .status(400)
-            .json({
-              error: `Tenant '${name}' is protected and cannot be deleted`,
-            });
+          res.status(400).json({
+            error: `Tenant '${name}' is protected and cannot be deleted`,
+          });
           return;
         }
 
