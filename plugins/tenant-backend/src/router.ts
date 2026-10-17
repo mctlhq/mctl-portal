@@ -854,6 +854,8 @@ export function createRouter(opts: RouterOptions): Router {
             `tenant_name=${body.tenantName}`,
             `display_name=${body.displayName}`,
             `description=${body.description ?? ''}`,
+            // Preserve the workflow parameter contract without private data.
+            'contact_email=',
             `quota_cpu_req=${body.quotaCpuReq ?? dq.cpuReq}`,
             `quota_cpu_lim=${body.quotaCpuLim ?? dq.cpuLim}`,
             `quota_memory_req=${body.quotaMemoryReq ?? dq.memReq}`,

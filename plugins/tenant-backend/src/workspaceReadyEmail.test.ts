@@ -268,3 +268,40 @@ it('does not report acceptance when another worker owns the delivery lease', asy
   ).rejects.toThrow('lost its delivery lease');
   expect((await db('workspace_ready_emails').first()).status).toBe('pending');
 });
+
+it.each(['recipient', 'capability'])(
+  'refreshes a never-dispatched snapshot after refusal and %s change',
+  async change => {
+    const f = await fixture();
+    const withMcp = {
+      ...access,
+      capabilities: [
+        ...access.capabilities,
+        { id: 'mcp', label: 'MCP', url: 'https://api.mctl.ai/mcp' },
+      ],
+      mcp: 'available',
+    };
+    f.readAccess.mockResolvedValue(withMcp);
+    f.fetchImpl.mockResolvedValueOnce(new Response('{}', { status: 403 }));
+    await f.process();
+    f.advance(60_001);
+    if (change === 'recipient')
+      f.store.findByName.mockResolvedValue({
+        contactEmail: 'corrected@example.com',
+      });
+    else f.readAccess.mockResolvedValue(access);
+    await f.process();
+    expect((await db('workspace_ready_emails').first()).status).toBe('pending');
+    await f.process();
+    expect((await db('workspace_ready_emails').first()).status).toBe(
+      'accepted',
+    );
+    const sent = JSON.parse(f.fetchImpl.mock.calls[1][1].body);
+    if (change === 'recipient')
+      expect(sent.to).toEqual(['corrected@example.com']);
+    else expect(sent.text).not.toContain('https://api.mctl.ai/mcp');
+    expect(f.fetchImpl.mock.calls[1][1].headers['Idempotency-Key']).toBe(
+      f.fetchImpl.mock.calls[0][1].headers['Idempotency-Key'],
+    );
+  },
+);

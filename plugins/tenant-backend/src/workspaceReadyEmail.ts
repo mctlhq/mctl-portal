@@ -174,6 +174,32 @@ export class WorkspaceReadyOutbox {
       });
   }
 
+  async refreshUnsent(
+    delivery: Delivery,
+    access: WorkspaceAccess,
+    recipient: string,
+    from?: string,
+  ) {
+    if (delivery.had_prior_attempt)
+      throw new Error('Cannot replace an ambiguous delivery snapshot');
+    const changed = await this.db(TABLE)
+      .where({
+        id: delivery.id,
+        lease_token: delivery.lease_token,
+        status: 'pending',
+      })
+      .update({
+        recipient,
+        snapshot: JSON.stringify(access),
+        payload: JSON.stringify(renderWorkspaceReady(access, recipient, from)),
+        first_attempt_ms: null,
+        lease_until_ms: null,
+        lease_token: null,
+      });
+    if (changed !== 1)
+      throw new Error('Ready email snapshot lost its delivery lease');
+  }
+
   async reconcile(delivery: Delivery) {
     const changed = await this.db(TABLE)
       .where({
@@ -262,7 +288,18 @@ export function createWorkspaceReadyProcessor(options: {
           // An ambiguous first attempt may already have been delivered. A new
           // generation/key could duplicate it, so operator reconciliation is
           // required instead of silently starting a new notification.
-          await options.outbox.reconcile(delivery);
+          if (delivery.had_prior_attempt) {
+            await options.outbox.reconcile(delivery);
+          } else {
+            // All prior sends were explicitly refused, so no delivery can be
+            // duplicated. Keep the same key and retry a fresh snapshot.
+            await options.outbox.refreshUnsent(
+              delivery,
+              current,
+              tenant.contactEmail,
+              options.from,
+            );
+          }
           retries.delete(key);
           continue;
         }

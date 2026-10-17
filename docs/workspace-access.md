@@ -96,3 +96,14 @@ backoff, rather than silently skipping a promised notification. For an existing
 workspace affected by historical sync erasure, restore the address only from
 the verified ZITADEL customer mapped to its current canonical owner; never put
 it into GitOps values or log the address.
+
+Customer `creatorIdToken` requests require a valid `contactEmail` or receive 400
+before any write. The deployed mctl-web 7.8.1 worker already sends the verified
+session email in this field. The workflow still receives `contact_email=` as
+an empty compatibility parameter; private contact data is never forwarded.
+
+A frozen snapshot can be replaced under its delivery lease only when no prior
+ambiguous/crashed attempt exists (all earlier sends were explicitly refused).
+The provider idempotency key remains unchanged. If Resend remembers the old
+refused payload, retries wait out its key retention rather than minting a new
+key. Any earlier ambiguous attempt instead requires provider reconciliation.

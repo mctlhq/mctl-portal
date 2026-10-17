@@ -790,7 +790,7 @@ describe('self-service customers create their workspace by principal', () => {
     }
   });
 
-  it.each([undefined, '', 'invalid', 'x'.repeat(255)])(
+  it.each([undefined, '', 'invalid', `${'x'.repeat(250)}@example.com`])(
     'refuses a customer without a valid private contact: %s',
     async contactEmail => {
       const base = await startApp(jest.fn().mockResolvedValue(bob));
@@ -831,7 +831,9 @@ describe('self-service customers create their workspace by principal', () => {
         'creator_catalog_key=principal',
       ]),
     );
-    expect(params().some(p => p.startsWith('contact_email='))).toBe(false);
+    expect(params().filter(p => p.startsWith('contact_email='))).toEqual([
+      'contact_email=',
+    ]);
     // Written with the tenant, before the workflow: not upsert + addMember.
     expect(createCustomerTenant).toHaveBeenCalledWith(
       expect.objectContaining({ name: 'bobs' }),
