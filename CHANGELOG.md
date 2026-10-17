@@ -1,5 +1,13 @@
 # Changelog
 
+## [4.21.1](https://github.com/mctlhq/mctl-portal/compare/4.21.0...4.21.1) (2026-10-17)
+
+
+### Bug Fixes
+
+* **catalog:** show tenant identities by declared owner ([2aee96a](https://github.com/mctlhq/mctl-portal/commit/2aee96a13118b5ee38284f811fc3cc99dd522990))
+* **catalog:** show tenant identities by declared owner ([42d533e](https://github.com/mctlhq/mctl-portal/commit/42d533e51de9e83eff767d0ee47492baf3745c27))
+
 ## [4.21.0](https://github.com/mctlhq/mctl-portal/compare/4.20.4...4.21.0) (2026-10-16)
 
 
