@@ -90,7 +90,7 @@ describe('PortalSignInPage', () => {
       expect(await screen.findByText(title)).toBeInTheDocument();
     }
     if (titles.includes('Sign in with GitHub')) {
-      expect(screen.getByText('New customers: sign in with your GitHub account')).toBeInTheDocument();
+      expect(screen.getByText('Customers: sign in with your GitHub account')).toBeInTheDocument();
       expect(screen.getByText('MCTL staff and partner accounts')).toBeInTheDocument();
     }
     for (const title of ALL.filter(t => !titles.includes(t))) {

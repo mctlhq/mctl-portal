@@ -100,7 +100,7 @@ const ZITADEL_STAFF_PROVIDER: SignInProvider = {
 const ZITADEL_CUSTOMER_PROVIDER: SignInProvider = {
   id: 'zitadel-customer-auth-provider',
   title: 'Sign in with GitHub',
-  message: 'New customers: sign in with your GitHub account',
+  message: 'Customers: sign in with your GitHub account',
   apiRef: zitadelCustomerAuthApiRef,
 };
 

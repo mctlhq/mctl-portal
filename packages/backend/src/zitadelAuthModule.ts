@@ -123,6 +123,19 @@ const NOT_A_MEMBER =
 
 const SESSION_EXPIRED = 'Your session has expired. Sign in again.';
 
+// The refusals that mean the person took "Sign in with GitHub" but has an
+// MCTL account of another organization (staff, a tenant's partner users):
+// the GitHub account is already that account's (customer_conflict), or the
+// token is not a customer's (not_a_customer). They name the other entry and
+// nothing else; every other refusal keeps the generic text.
+const WRONG_ENTRY: Record<string, string> = {
+  customer_conflict:
+    'This GitHub account is linked to an MCTL account. Use Sign in with MCTL account.',
+  not_a_customer:
+    'This is not an MCTL customer account. ' +
+    'If you have an MCTL staff or partner account, use Sign in with MCTL account.',
+};
+
 const UNAVAILABLE =
   'Signing in is unavailable right now. Try again in a few minutes.';
 
@@ -216,8 +229,9 @@ async function customerEntityName(
     if (e instanceof ZitadelCustomerError && e.kind === 'refused') {
       logger.warn(`ZITADEL customer sign-in refused for sub=${sub}: ${e.code ?? 'refused'}`);
       throw new NotAllowedError(
-        'This MCTL account cannot sign in to the portal. ' +
-          'Contact MCTL support if you think this is a mistake.',
+        (e.code && WRONG_ENTRY[e.code]) ??
+          'This MCTL account cannot sign in to the portal. ' +
+            'Contact MCTL support if you think this is a mistake.',
       );
     }
     logger.warn(`ZITADEL customer sign-in for sub=${sub} could not be resolved: ${e}`);
@@ -265,11 +279,14 @@ const ZITADEL_ID = /^\d+$/;
  * needs, or null when either id is missing or is not a ZITADEL id: then
  * there is no customer entry at all.
  */
-export function customerGitHubScopes(
-  customers: Pick<CustomerSignInOptions, 'organizationId' | 'githubIdpId'>,
-): string[] | null {
+export function customerGitHubScopes(customers: {
+  organizationId?: unknown;
+  githubIdpId?: unknown;
+}): string[] | null {
   const { organizationId, githubIdpId } = customers;
-  if (!organizationId || !githubIdpId) return null;
+  // Strings only, as the sign-in page's gate (customerEntryEnabled):
+  // RegExp.test would coerce a number and accept it.
+  if (typeof organizationId !== 'string' || typeof githubIdpId !== 'string') return null;
   if (!ZITADEL_ID.test(organizationId) || !ZITADEL_ID.test(githubIdpId)) return null;
   return [
     SCOPE_RESOURCE_OWNER,

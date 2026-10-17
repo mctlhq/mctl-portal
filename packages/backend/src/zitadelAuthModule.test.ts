@@ -149,7 +149,9 @@ describe('customer GitHub entry (mctl-web#158)', () => {
     [CUSTOMERS, ' 1'],
     [CUSTOMERS, '1e3'],
     ['4a2f1c3e-0000-4000-8000-000000000000', GITHUB_IDP],
-  ])('page and backend agree on organizationId=%j githubIdpId=%j', (organizationId, githubIdpId) => {
+    [Number(CUSTOMERS), GITHUB_IDP],
+    [CUSTOMERS, 1234],
+  ] as [unknown, unknown][])('page and backend agree on organizationId=%j githubIdpId=%j', (organizationId, githubIdpId) => {
     expect(customerEntryEnabled(organizationId, githubIdpId)).toBe(
       customerGitHubScopes({ organizationId, githubIdpId }) !== null,
     );
@@ -446,7 +448,10 @@ describe('createZitadelSignInResolver for customers', () => {
   });
 
   it.each([
-    ['mctl-api refuses the customer', new ZitadelCustomerError('refused', 'no', 'customer_conflict'), /cannot sign in/],
+    ['mctl-api refuses the customer', new ZitadelCustomerError('refused', 'no', 'principal_disabled'), /cannot sign in to the portal/],
+    ['mctl-api refuses without a code', new ZitadelCustomerError('refused', 'no'), /cannot sign in to the portal/],
+    ['the GitHub account is an MCTL account', new ZitadelCustomerError('refused', 'no', 'customer_conflict'), /^This GitHub account is linked to an MCTL account\. Use Sign in with MCTL account\.$/],
+    ['the token is not a customer', new ZitadelCustomerError('refused', 'no', 'not_a_customer'), /use Sign in with MCTL account\.$/],
     ['mctl-api is unavailable', new ZitadelCustomerError('unavailable', 'down'), /unavailable/],
     ['the call throws something else', new Error('boom'), /unavailable/],
   ])('refuses without a catalog lookup when %s', async (_name, err, message) => {
