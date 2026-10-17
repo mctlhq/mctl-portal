@@ -40,6 +40,8 @@ export interface RouterOptions {
   argoClient: ArgoWorkflowsClient;
   argoNamespace: string;
   getGithubToken: () => Promise<string>;
+  /** Internal workflow cleanup; refuses until GitOps absence is observed. */
+  cleanupDeletedTenant?: (name: string, principalId?: string, login?: string) => Promise<void>;
   /**
    * Shared secret for verifying landing-page JWT tokens (HMAC-SHA256).
    * The Cloudflare Worker signs a JWT with this secret; Backstage verifies it.
@@ -275,6 +277,62 @@ export function createRouter(opts: RouterOptions): Router {
   const router = Router();
   const limit = createRateLimiters(rateLimits);
   router.use(json());
+
+  router.post('/internal/tenants/:name/customer-deletion/:stage', limit.write, async (req, res) => {
+    let allowed = false;
+    try {
+      const { principal } = await httpAuth.credentials(req, { allow: ['service'] });
+      const subject = (principal as { subject?: string }).subject;
+      allowed = principal.type === 'service' && (subject === 'external:mctl-api' || subject === 'mctl-api');
+    } catch { /* No unproven deletion caller. */ }
+    if (!allowed) { res.status(403).json({ error: 'Workflow principal required' }); return; }
+    const { name, stage } = req.params;
+    const { principal_id: pid, login } = req.body ?? {};
+    if (!/^[a-z0-9][a-z0-9-]{1,62}$/.test(name) || name === 'admins' ||
+        typeof pid !== 'string' || !/^prn_[0-9A-HJKMNP-TV-Z]{26}$/.test(pid) ||
+        typeof login !== 'string' || !/^[a-zA-Z0-9][a-zA-Z0-9-]{0,38}$/.test(login) ||
+        !['prepare', 'release'].includes(stage)) {
+      res.status(400).json({ error: 'Invalid customer deletion target' }); return;
+    }
+    try {
+      if (stage === 'prepare') await store.freezeCustomerDeletion(name, pid, login);
+      else await store.releaseCustomerDeletion(name, pid);
+      res.json({ tenant: name, principal_id: pid, stage, complete: true });
+    } catch {
+      res.status(503).json({ error: 'Customer lifecycle stage incomplete; retry' });
+    }
+  });
+
+  router.post('/internal/tenants/:name/cleanup', limit.write, async (req, res) => {
+    let allowed = false;
+    try {
+      const credentials = await httpAuth.credentials(req, { allow: ['service'] });
+      const subject = (credentials.principal as { subject?: string }).subject;
+      allowed = credentials.principal.type === 'service' && (subject === 'external:mctl-api' || subject === 'mctl-api');
+    } catch { /* An unproven caller never reaches deletion. */ }
+    if (!allowed) { res.status(403).json({ error: 'Workflow principal required' }); return; }
+    const name = req.params.name;
+    if (!/^[a-z0-9][a-z0-9-]{1,62}$/.test(name) ||
+        ['admins', 'backstage', 'platform', 'zitadel'].includes(name)) {
+      res.status(400).json({ error: 'Invalid or protected tenant' }); return;
+    }
+    if (!opts.cleanupDeletedTenant) {
+      res.status(503).json({ error: 'Tenant cleanup is not configured' }); return;
+    }
+    try {
+      const principalId = req.body?.principal_id;
+      const login = req.body?.login;
+      if (principalId !== undefined && (typeof principalId !== 'string' || !/^prn_[0-9A-HJKMNP-TV-Z]{26}$/.test(principalId) ||
+          typeof login !== 'string' || !/^[a-zA-Z0-9][a-zA-Z0-9-]{0,38}$/.test(login))) {
+        res.status(400).json({ error: 'Invalid customer identity' }); return;
+      }
+      await opts.cleanupDeletedTenant(name, principalId, login);
+      res.json({ tenant: name, cleaned: true });
+    } catch {
+      logger.warn(`[TenantCleanup] Cleanup of ${name} is not complete`);
+      res.status(503).json({ error: 'Tenant cleanup is incomplete; retry' });
+    }
+  });
 
   // Identity always comes from the authenticated Backstage user, never a
   // caller-supplied principal, tenant, login, or the landing-page credential.
@@ -695,7 +753,7 @@ export function createRouter(opts: RouterOptions): Router {
           res.json({ name, available: false, reason: 'creator_has_tenant' });
           return;
         }
-        if (await store.findByName(name)) {
+        if (await store.isTenantDeleting?.(name) || await store.findByName(name)) {
           res.json({ name, available: false, reason: 'name_taken' });
           return;
         }
@@ -758,6 +816,10 @@ export function createRouter(opts: RouterOptions): Router {
           code: 'name_taken',
         });
         return;
+      }
+
+      if (await store.isTenantDeleting?.(body.tenantName)) {
+        res.status(409).json({ error: 'Workspace deletion is in progress', code: 'name_taken' }); return;
       }
 
       // The owner entry is keyed by principal (mctl-api#377). Resolve it

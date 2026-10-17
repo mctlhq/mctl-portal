@@ -19,3 +19,5 @@ export {
   ZitadelCustomerError,
 } from './zitadelCustomer';
 export type { ZitadelCustomer, ZitadelCustomerResolver, ZitadelPurpose } from './zitadelCustomer';
+
+export { createCustomerRevocationMiddleware } from './customerRevocation';

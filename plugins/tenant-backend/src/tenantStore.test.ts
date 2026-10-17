@@ -414,6 +414,35 @@ const pgUrl = process.env.TENANT_TEST_PG_URL;
     expect(await store.findByName('nfc')).toBeUndefined();
   });
 
+  it('removes only the customer portal/SSO sessions and renewable authorizations', async () => {
+    for (const schema of ['auth','oidc-provider']) {
+      await admin.raw(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`);
+      await admin.raw(`CREATE SCHEMA "${schema}"`);
+    }
+    for (const table of ['offline_sessions','user_info']) {
+      await admin.raw(`CREATE TABLE auth.${table} (user_entity_ref text)`);
+      await admin(table).withSchema('auth').insert([{user_entity_ref:'user:default/alice'},{user_entity_ref:'user:default/bob'}]);
+    }
+    await admin.raw('CREATE TABLE auth.oauth_authorization_sessions (id text, user_entity_ref text)');
+    await admin.raw('CREATE TABLE auth.oidc_authorization_codes (code text, session_id text)');
+    await admin('oauth_authorization_sessions').withSchema('auth').insert([{id:'a',user_entity_ref:'user:default/alice'},{id:'b',user_entity_ref:'user:default/bob'}]);
+    await admin('oidc_authorization_codes').withSchema('auth').insert([{code:'a-code',session_id:'a'},{code:'b-code',session_id:'b'}]);
+    for (const table of ['oidc_sessions','oidc_codes','oidc_access_tokens','oidc_forward_auth_codes','oidc_forward_auth_sessions']) {
+      await admin.raw(`CREATE TABLE "oidc-provider".${table} (user_id text)`);
+      await admin(table).withSchema('oidc-provider').insert([{user_id:'alice'},{user_id:'bob'}]);
+    }
+    const store=makeStore(knex);await store.init();
+    await store.deleteCustomerSessions('prn_01M45DR1GWC87109EH88VBJX25','alice');
+    await store.deleteCustomerSessions('prn_01M45DR1GWC87109EH88VBJX25','alice');
+    for (const table of ['offline_sessions','user_info','oauth_authorization_sessions']) {
+      expect(await admin(table).withSchema('auth').select('user_entity_ref')).toEqual([{user_entity_ref:'user:default/bob'}]);
+    }
+    expect(await admin('oidc_authorization_codes').withSchema('auth').select('session_id')).toEqual([{session_id:'b'}]);
+    for (const table of ['oidc_sessions','oidc_codes','oidc_access_tokens','oidc_forward_auth_codes','oidc_forward_auth_sessions']) {
+      expect(await admin(table).withSchema('oidc-provider').select('user_id')).toEqual([{user_id:'bob'}]);
+    }
+  });
+
   it('keeps the tenant when the connection cleanup fails', async () => {
     await admin.raw('CREATE SCHEMA "github-app-connect"');
     // A table without team_id makes the cleanup fail with something other than 42P01.
@@ -434,4 +463,69 @@ it('preserves private contact data when GitOps sync omits it', async () => {
   expect(await store.findByName('acme')).toEqual(expect.objectContaining({ contactEmail: 'owner@example.com', displayName: 'Synced name' }));
   await store.upsert(makeTenant('acme', { contactEmail: 'corrected@example.com' }));
   expect((await store.findByName('acme'))?.contactEmail).toBe('corrected@example.com');
+});
+
+
+describe('TenantStore.delete notification cleanup', () => {
+  async function prepared() {
+    const { store, knex } = await freshStore();
+    currentKnex = knex;
+    await store.upsert(makeTenant('acme'));
+    await store.seedMember('acme', byLogin('alice', 'owner'));
+    await knex.schema.createTable('workspace_ready_emails', table => {
+      table.string('id').primary(); table.string('tenant_name'); table.string('status');
+      table.string('recipient'); table.text('snapshot'); table.text('payload');
+      table.bigInteger('lease_until_ms').nullable(); table.string('lease_token').nullable();
+    });
+    for (const tenant of ['acme', 'other']) await knex('workspace_ready_emails').insert({
+      id: tenant, tenant_name: tenant, status: 'pending', recipient: `${tenant}@example.com`,
+      snapshot: '{"private":true}', payload: '{"private":true}',
+    });
+    return { store, knex };
+  }
+
+  it('cancels old deliveries, erases message/contact data, and preserves other tenants', async () => {
+    const { store, knex } = await prepared();
+    await store.delete('acme');
+    await store.delete('acme');
+    expect(await store.findByName('acme')).toBeUndefined();
+    expect(await store.listMembershipsForUser('alice')).toEqual([]);
+    expect(await knex('workspace_ready_emails').where({ id: 'acme' }).first()).toMatchObject({
+      status: 'cancelled', recipient: '', snapshot: '{}', payload: '{}',
+    });
+    expect(await knex('workspace_ready_emails').where({ id: 'other' }).first()).toMatchObject({
+      status: 'pending', recipient: 'other@example.com',
+    });
+  });
+
+  it('leaves membership and payload intact while a send is in flight, then retries', async () => {
+    const { store, knex } = await prepared();
+    await knex('workspace_ready_emails').where({ id: 'acme' }).update({ lease_until_ms: Date.now() + 60_000 });
+    await expect(store.delete('acme')).rejects.toThrow('in flight');
+    expect(await store.findByName('acme')).toBeDefined();
+    expect(await store.listMembershipsForUser('alice')).toHaveLength(1);
+    expect((await knex('workspace_ready_emails').where({ id: 'acme' }).first()).recipient).toBe('acme@example.com');
+    await knex('workspace_ready_emails').where({ id: 'acme' }).update({ lease_until_ms: null });
+    await store.delete('acme');
+    expect(await store.findByName('acme')).toBeUndefined();
+  });
+});
+
+
+it('freezes name reuse until cleanup completes and cannot release a replacement freeze', async () => {
+  const {store,knex}=await freshStore();currentKnex=knex;
+  const pid='prn_01M45DR1GWC87109EH88VBJX25';
+  await store.createCustomerTenant(makeTenant('frozen'),{ tenantName:'frozen',userId:pid.toLowerCase(),principalId:pid,login:'alice',catalogKey:'principal',role:'owner',invitedAt:new Date().toISOString(),invitedBy:'test' });
+  await store.freezeCustomerDeletion('frozen',pid,'alice');
+  await store.freezeCustomerDeletion('frozen',pid,'alice');
+  expect(await store.isTenantDeleting('frozen')).toBe(true);
+  await expect(store.releaseCustomerDeletion('frozen',pid)).rejects.toThrow('still exists');
+  await store.delete('frozen');
+  await expect(store.createCustomerTenant(makeTenant('frozen'),{ tenantName:'frozen',userId:'bob',role:'owner',catalogKey:'login',invitedAt:new Date().toISOString(),invitedBy:'test' })).rejects.toThrow('deletion is in progress');
+  await store.releaseCustomerDeletion('frozen',pid);
+  const next='prn_01M45DR1GWC87109EH88VBJX26';
+  await store.createCustomerTenant(makeTenant('frozen'),{ tenantName:'frozen',userId:next.toLowerCase(),principalId:next,login:'bob',catalogKey:'principal',role:'owner',invitedAt:new Date().toISOString(),invitedBy:'test' });
+  await store.freezeCustomerDeletion('frozen',next,'bob');
+  await store.releaseCustomerDeletion('frozen',pid);
+  expect(await store.isTenantDeleting('frozen')).toBe(true);
 });

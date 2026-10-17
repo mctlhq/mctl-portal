@@ -1069,3 +1069,50 @@ describe('self-service customers create their workspace by principal', () => {
     });
   });
 });
+
+
+describe('POST /internal/tenants/:name/cleanup', () => {
+  let server: Server;
+  let base: string;
+  const cleanup = jest.fn();
+  beforeEach(async () => {
+    cleanup.mockReset().mockResolvedValue(undefined);
+    const app = express();
+    app.use(createRouter({
+      logger: { warn: jest.fn(), info: jest.fn() } as any,
+      httpAuth: { credentials: jest.fn(async (req: express.Request) => {
+        const subject = req.header('x-test-service');
+        if (!subject) throw new Error('No service credential');
+        return { principal: { type: 'service', subject } };
+      }) } as any,
+      userInfo: {} as any, store: {} as any, argoClient: {} as any,
+      argoNamespace: 'argo-workflows', getGithubToken: async () => 'unused',
+      cleanupDeletedTenant: cleanup,
+    }));
+    await new Promise<void>(resolve => { server = app.listen(0, '127.0.0.1', resolve); });
+    base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  });
+  afterEach(async () => { await new Promise<void>(resolve => server.close(() => resolve())); });
+  const post = (service?: string, name = 'acme', body = {}) => fetch(`${base}/internal/tenants/${name}/cleanup`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', ...(service ? { 'x-test-service': service } : {}) }, body: JSON.stringify(body),
+  });
+  it.each([undefined, 'plugin:tenant-management', 'external:landing', 'external:other'])('refuses %s without touching state', async service => {
+    expect((await post(service)).status).toBe(403);
+    expect(cleanup).not.toHaveBeenCalled();
+  });
+  it.each(['external:mctl-api', 'mctl-api'])('accepts only the workflow caller %s', async service => {
+    const res = await post(service);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ tenant: 'acme', cleaned: true });
+    expect(cleanup).toHaveBeenCalledWith('acme', undefined, undefined);
+  });
+  it('reports an unobserved cleanup as incomplete', async () => {
+    cleanup.mockRejectedValueOnce(new Error('GitHub read failed'));
+    expect((await post('external:mctl-api')).status).toBe(503);
+  });
+  it('refuses protected tenants and malformed customer identities', async () => {
+    expect((await post('external:mctl-api', 'admins')).status).toBe(400);
+    expect((await post('external:mctl-api', 'acme', { principal_id: 'not-a-principal', login: 'alice' })).status).toBe(400);
+    expect(cleanup).not.toHaveBeenCalled();
+  });
+});
