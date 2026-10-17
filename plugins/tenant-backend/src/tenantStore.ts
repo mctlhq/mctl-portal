@@ -229,11 +229,11 @@ export class TenantStore {
     });
   }
 
-  async assertCustomerDeletion(name: string, principalId: string): Promise<void> {
+  async assertCustomerDeletion(name: string, principalId: string): Promise<'active' | 'complete'> {
     const knex = await this.db.getClient();
-    if (!(await knex('customer_deletions').where({ tenant_name: name, principal_id: principalId, status: 'active' }).first())) {
-      throw new Error('Customer deletion freeze is not active');
-    }
+    const row = await knex('customer_deletions').where({ tenant_name: name, principal_id: principalId }).first();
+    if (!row || !['active', 'complete'].includes(row.status)) throw new Error('Customer deletion freeze is not active');
+    return row.status;
   }
 
   /** A replay can release only its own freeze, never a replacement account's. */

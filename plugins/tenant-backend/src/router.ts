@@ -324,14 +324,14 @@ export function createRouter(opts: RouterOptions): Router {
     try {
       const principalId = req.body?.principal_id;
       const login = req.body?.login;
-      if (principalId !== undefined && (typeof principalId !== 'string' || !/^prn_[0-9A-HJKMNP-TV-Z]{26}$/.test(principalId) ||
+      if ((principalId !== undefined || login !== undefined) && (typeof principalId !== 'string' || !/^prn_[0-9A-HJKMNP-TV-Z]{26}$/.test(principalId) ||
           typeof login !== 'string' || !/^[a-zA-Z0-9][a-zA-Z0-9-]{0,38}$/.test(login))) {
         res.status(400).json({ error: 'Invalid customer identity' }); return;
       }
       await opts.cleanupDeletedTenant(name, principalId, login);
-      res.json({ tenant: name, cleaned: true });
-    } catch {
-      logger.warn(`[TenantCleanup] Cleanup of ${name} is not complete`);
+      res.json({ tenant: name, cleaned: true, scope: principalId ? 'customer' : 'workspace' });
+    } catch (err) {
+      logger.warn(`[TenantCleanup] Cleanup of ${name} is not complete`, { reason: err instanceof Error ? err.message : 'unknown' });
       res.status(503).json({ error: 'Tenant cleanup is incomplete; retry' });
     }
   });

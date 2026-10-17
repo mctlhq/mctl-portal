@@ -130,3 +130,9 @@ Ready-email preparation, lease acquisition and tenant deletion serialize on the
 same tenant lifecycle lock. Preparation and claim recheck current principal
 membership and deletion state, so a stale scheduler snapshot cannot recreate
 contact data or deliver a first notification after cleanup.
+
+The private cleanup response explicitly reports `scope: workspace` for an empty
+body and `scope: customer` when both exact `principal_id` and `login` are supplied.
+An incomplete identity pair is rejected; the API account-deletion stage accepts
+only a customer-scope acknowledgment. A replay for an already-completed principal
+returns without touching a replacement workspace or re-running private cleanup.

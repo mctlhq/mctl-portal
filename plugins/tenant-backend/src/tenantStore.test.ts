@@ -557,5 +557,6 @@ it('freezes name reuse until cleanup completes and cannot release a replacement 
   await store.createCustomerTenant(makeTenant('frozen'),{ tenantName:'frozen',userId:next.toLowerCase(),principalId:next,login:'bob',catalogKey:'principal',role:'owner',invitedAt:new Date().toISOString(),invitedBy:'test' });
   await store.freezeCustomerDeletion('frozen',next,'bob');
   await store.releaseCustomerDeletion('frozen',pid);
+  expect(await store.assertCustomerDeletion('frozen',pid)).toBe('complete');
   expect(await store.isTenantDeleting('frozen')).toBe(true);
 });

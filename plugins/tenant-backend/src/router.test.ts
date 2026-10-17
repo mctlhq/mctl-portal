@@ -1118,7 +1118,7 @@ describe('POST /internal/tenants/:name/cleanup', () => {
   it.each(['external:mctl-api'])('accepts only the workflow caller %s', async service => {
     const res = await post(service);
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ tenant: 'acme', cleaned: true });
+    expect(await res.json()).toEqual({ tenant: 'acme', cleaned: true, scope: 'workspace' });
     expect(cleanup).toHaveBeenCalledWith('acme', undefined, undefined);
   });
   it('reports an unobserved cleanup as incomplete', async () => {
@@ -1128,6 +1128,7 @@ describe('POST /internal/tenants/:name/cleanup', () => {
   it('refuses protected tenants and malformed customer identities', async () => {
     expect((await post('external:mctl-api', 'admins')).status).toBe(400);
     expect((await post('external:mctl-api', 'acme', { principal_id: 'not-a-principal', login: 'alice' })).status).toBe(400);
+    expect((await post('external:mctl-api', 'acme', { login: 'alice' })).status).toBe(400);
     expect(cleanup).not.toHaveBeenCalled();
   });
 });

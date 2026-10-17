@@ -206,6 +206,9 @@ export const tenantPlugin = createBackendPlugin({
           resolveZitadelCustomer,
           readWorkspaceAccess,
           cleanupDeletedTenant: async (name, principalId, login) => {
+            // A completed immutable principal is already clean. Replaying its
+            // cleanup must not mutate a replacement workspace with this name.
+            if (principalId && await store.assertCustomerDeletion(name, principalId) === 'complete') return;
             const token = await getToken();
             const response = await fetch(
               `https://api.github.com/repos/${encodeURIComponent(githubOrg)}/${encodeURIComponent(repoName)}/contents/${tenantsPath}/${encodeURIComponent(name)}?ref=main`,
@@ -214,7 +217,6 @@ export const tenantPlugin = createBackendPlugin({
             // Only the documented absence signal authorizes removing private state.
             if (response.status !== 404) throw new Error('GitOps tenant absence is not confirmed');
             if (principalId) {
-              await store.assertCustomerDeletion(name, principalId);
               const memberships = [
                 ...await store.listMembershipsForUser(principalId.toLowerCase()),
                 ...await store.listMembershipsForUser(login!.toLowerCase()),
