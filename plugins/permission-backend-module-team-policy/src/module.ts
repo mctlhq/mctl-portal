@@ -177,19 +177,29 @@ export class TeamBasedPermissionPolicy implements PermissionPolicy {
       // type-check; and a plain `T[]` would not satisfy the `NonEmptyArray`
       // that `createCatalogConditionalDecision` requires. The tuple form keeps
       // both facts in the type instead of asserting them away.
+      // Backstage does not emit ownedBy for Group/User spec.owner. Our
+      // tenant provider declares that field explicitly, so reads may match
+      // it against the caller's canonical ownership refs. Keep writes on
+      // the existing relation-based policy.
+      const identityOwnership: CatalogCriteria = {
+        anyOf: [
+          catalogConditions.isEntityOwner({ claims: ownership }),
+          ...(isReadAction ? ownership.map(ref => catalogConditions.hasSpec({ key: 'owner', value: ref })) : []),
+        ],
+      };
       const anyOf: [CatalogCriteria, ...CatalogCriteria[]] = [
         // Groups: only the user's own team group(s)
         {
           allOf: [
             catalogConditions.isEntityKind({ kinds: ['Group'] }),
-            catalogConditions.isEntityOwner({ claims: ownership }),
+            identityOwnership,
           ],
         },
         // Users: only teammates (same group owner)
         {
           allOf: [
             catalogConditions.isEntityKind({ kinds: ['User'] }),
-            catalogConditions.isEntityOwner({ claims: ownership }),
+            identityOwnership,
           ],
         },
         // Systems: only those owned by user's groups
