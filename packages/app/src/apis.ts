@@ -14,7 +14,13 @@ import {
 import { OAuth2 } from '@backstage/core-app-api';
 import { toastApiRef } from '@backstage/frontend-plugin-api';
 import AccountCircleIcon from '@material-ui/icons/AccountCircle';
-import { ZITADEL_AUTH_PROVIDER_ID, zitadelAuthApiRef } from './signIn';
+import GitHubIcon from '@material-ui/icons/GitHub';
+import {
+  ZITADEL_AUTH_PROVIDER_ID,
+  ZITADEL_CUSTOMER_AUTH_PROVIDER_ID,
+  zitadelAuthApiRef,
+  zitadelCustomerAuthApiRef,
+} from './signIn';
 
 export const apis: AnyApiFactory[] = [
   createApiFactory({
@@ -41,6 +47,30 @@ export const apis: AnyApiFactory[] = [
           id: ZITADEL_AUTH_PROVIDER_ID,
           title: 'MCTL account',
           icon: AccountCircleIcon,
+        },
+        environment: configApi.getOptionalString('auth.environment'),
+        defaultScopes: ['openid', 'profile', 'email', 'offline_access'],
+      }),
+  }),
+  // The customer entry, auth provider `zitadel-customer`: the same ZITADEL
+  // client, with the customers organization and GitHub IdP scopes added by
+  // the backend. Used only when the sign-in page offers it.
+  createApiFactory({
+    api: zitadelCustomerAuthApiRef,
+    deps: {
+      discoveryApi: discoveryApiRef,
+      oauthRequestApi: oauthRequestApiRef,
+      configApi: configApiRef,
+    },
+    factory: ({ discoveryApi, oauthRequestApi, configApi }) =>
+      OAuth2.create({
+        configApi,
+        discoveryApi,
+        oauthRequestApi,
+        provider: {
+          id: ZITADEL_CUSTOMER_AUTH_PROVIDER_ID,
+          title: 'GitHub',
+          icon: GitHubIcon,
         },
         environment: configApi.getOptionalString('auth.environment'),
         defaultScopes: ['openid', 'profile', 'email', 'offline_access'],

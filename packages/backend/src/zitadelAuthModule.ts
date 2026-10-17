@@ -106,6 +106,12 @@ export function accountKindOf(
 export interface CustomerSignInOptions {
   /** ZITADEL id of the customers organization; unset refuses every sign-in. */
   organizationId?: string;
+  /**
+   * ZITADEL id of the customers organization's GitHub IdP. With
+   * organizationId it turns on the customer entry, auth provider
+   * `zitadel-customer` (mctl-web#158); unset, there is none.
+   */
+  githubIdpId?: string;
   /** mctl-api surface-principals/zitadel; unset refuses every customer. */
   resolve?: ZitadelCustomerResolver;
 }
@@ -116,6 +122,19 @@ const NOT_A_MEMBER =
   'Access is available about a minute after you are added.';
 
 const SESSION_EXPIRED = 'Your session has expired. Sign in again.';
+
+// The refusals that mean the person took "Sign in with GitHub" but has an
+// MCTL account of another organization (staff, a tenant's partner users):
+// the GitHub account is already that account's (customer_conflict), or the
+// token is not a customer's (not_a_customer). They name the other entry and
+// nothing else; every other refusal keeps the generic text.
+const WRONG_ENTRY: Record<string, string> = {
+  customer_conflict:
+    'This GitHub account is linked to an MCTL account. Use Sign in with MCTL account.',
+  not_a_customer:
+    'This is not an MCTL customer account. ' +
+    'If you have an MCTL staff or partner account, use Sign in with MCTL account.',
+};
 
 const UNAVAILABLE =
   'Signing in is unavailable right now. Try again in a few minutes.';
@@ -210,8 +229,9 @@ async function customerEntityName(
     if (e instanceof ZitadelCustomerError && e.kind === 'refused') {
       logger.warn(`ZITADEL customer sign-in refused for sub=${sub}: ${e.code ?? 'refused'}`);
       throw new NotAllowedError(
-        'This MCTL account cannot sign in to the portal. ' +
-          'Contact MCTL support if you think this is a mistake.',
+        (e.code && WRONG_ENTRY[e.code]) ??
+          'This MCTL account cannot sign in to the portal. ' +
+            'Contact MCTL support if you think this is a mistake.',
       );
     }
     logger.warn(`ZITADEL customer sign-in for sub=${sub} could not be resolved: ${e}`);
@@ -227,19 +247,124 @@ async function customerEntityName(
  */
 export const ZITADEL_AUTH_PROVIDER_ID = 'oidc';
 
-/** Registers the ZITADEL sign-in with the auth backend. */
+/**
+ * The auth provider id of the customer entry, "Sign in with GitHub"
+ * (mctl-web#158), and its route (/api/auth/zitadel-customer). It must equal
+ * ZITADEL_CUSTOMER_AUTH_PROVIDER_ID in packages/app/src/signIn.ts; both
+ * tests pin it.
+ */
+export const ZITADEL_CUSTOMER_AUTH_PROVIDER_ID = 'zitadel-customer';
+
+/**
+ * The scope that makes ZITADEL name the user's organization in the token.
+ * The sign-in resolver cannot classify a token without it (accountKindOf),
+ * so the customer entry always sends it; the staff provider reads it from
+ * auth.providers.oidc.<env>.additionalScopes. The zitadel-customer section
+ * must not list it (or any scope) again: it would only be sent twice.
+ */
+export const SCOPE_RESOURCE_OWNER = 'urn:zitadel:iam:user:resourceowner';
+
+/** The prefixes of the ZITADEL reserved scopes the customer entry sends. */
+export const SCOPE_ORG_ID_PREFIX = 'urn:zitadel:iam:org:id:';
+export const SCOPE_IDP_ID_PREFIX = 'urn:zitadel:iam:org:idp:id:';
+
+// A ZITADEL resource id is digits. Anything else would be written into a
+// scope string, where a space starts another scope.
+const ZITADEL_ID = /^\d+$/;
+
+/**
+ * The scopes that send a sign-in to the customers organization and straight
+ * on to its GitHub IdP, as mctl.ai does (mctl-web
+ * cloudflare-worker/zitadel.js), plus the resource-owner scope the resolver
+ * needs, or null when either id is missing or is not a ZITADEL id: then
+ * there is no customer entry at all.
+ */
+export function customerGitHubScopes(customers: {
+  organizationId?: unknown;
+  githubIdpId?: unknown;
+}): string[] | null {
+  const { organizationId, githubIdpId } = customers;
+  // Strings only, as the sign-in page's gate (customerEntryEnabled):
+  // RegExp.test would coerce a number and accept it.
+  if (typeof organizationId !== 'string' || typeof githubIdpId !== 'string') return null;
+  if (!ZITADEL_ID.test(organizationId) || !ZITADEL_ID.test(githubIdpId)) return null;
+  return [
+    SCOPE_RESOURCE_OWNER,
+    SCOPE_ORG_ID_PREFIX + organizationId,
+    SCOPE_IDP_ID_PREFIX + githubIdpId,
+  ];
+}
+
+/**
+ * The customer entry works only with
+ * `auth.providers.zitadel-customer.<auth.environment>` (the auth backend
+ * maps provider config per environment, `development` when unset), which
+ * the sign-in page cannot see: it shows the entry on the ids alone. Says so
+ * at startup when the ids are set without that section, since the card
+ * would then fail. Both come from the same mctl-gitops change and must land
+ * together.
+ */
+export function checkCustomerEntryRoute(
+  config: Pick<RootConfigService, 'has' | 'getOptionalString'>,
+  customers: Pick<CustomerSignInOptions, 'organizationId' | 'githubIdpId'>,
+  logger: Pick<LoggerService, 'error'>,
+): void {
+  if (!customerGitHubScopes(customers)) return;
+  const env = config.getOptionalString('auth.environment') ?? 'development';
+  const section = `auth.providers.${ZITADEL_CUSTOMER_AUTH_PROVIDER_ID}.${env}`;
+  if (config.has(section)) return;
+  logger.error(
+    `zitadelCustomers ids are set but ${section} is not: the sign-in page ` +
+      'offers "Sign in with GitHub" and its route fails',
+  );
+}
+
+/**
+ * Registers the ZITADEL sign-in with the auth backend, and the customer
+ * entry next to it when customerGitHubScopes allows one.
+ *
+ * The customer entry is a provider of its own rather than extra scopes on
+ * `oidc`: the auth backend persists the scopes a provider was granted in a
+ * cookie and adds them to its next start, so customer scopes requested
+ * through `oidc` would be forced on the next staff sign-in from the same
+ * browser. It reads its own `auth.providers.zitadel-customer` (the same
+ * ZITADEL client) and adds the two scopes in code, so they never come from,
+ * or reach, the staff provider's config. It uses the same sign-in resolver:
+ * the entry only chooses where ZITADEL sends the person, and who they sign
+ * in as is still decided from the verified token's organization.
+ */
 export function registerZitadelProvider(
   providers: Pick<AuthProvidersExtensionPoint, 'registerProvider'>,
   logger: Pick<LoggerService, 'info' | 'warn'>,
   customers: CustomerSignInOptions = {},
 ): void {
+  const signInResolver = createZitadelSignInResolver(logger, customers);
   providers.registerProvider({
     providerId: ZITADEL_AUTH_PROVIDER_ID,
     factory: createOAuthProviderFactory({
       authenticator: oidcAuthenticator,
-      signInResolver: createZitadelSignInResolver(logger, customers),
+      signInResolver,
     }),
   });
+  const customerScopes = customerGitHubScopes(customers);
+  if (!customerScopes) {
+    if (customers.githubIdpId) {
+      logger.warn(
+        'ZITADEL customer sign-in entry not offered: zitadelCustomers.organizationId ' +
+          'and zitadelCustomers.githubIdpId must both be ZITADEL ids',
+      );
+    }
+    return;
+  }
+  providers.registerProvider({
+    providerId: ZITADEL_CUSTOMER_AUTH_PROVIDER_ID,
+    factory: createOAuthProviderFactory({
+      authenticator: oidcAuthenticator,
+      signInResolver,
+      additionalScopes: customerScopes,
+    }),
+  });
+  logger.info(`ZITADEL customer sign-in entry offered as ${ZITADEL_CUSTOMER_AUTH_PROVIDER_ID}`);
 }
 
 /**
@@ -254,6 +379,11 @@ export function registerZitadelProvider(
  *   off on the backend (githubSignInResolverFor in githubAuthModule.ts).
  * Who can sign in through ZITADEL is decided only by
  * createZitadelSignInResolver.
+ *
+ * The customer entry, `zitadel-customer`, exists only with both
+ * zitadelCustomers ids, and its routes only with
+ * `auth.providers.zitadel-customer` as well; the sign-in page shows it on
+ * the same ids (packages/app/src/signIn.ts).
  *
  * `@backstage/plugin-auth-backend-module-oidc-provider` is pinned exactly in
  * package.json, to the version that matches the Backstage release in use
@@ -272,7 +402,9 @@ export const zitadelAuthModule = createBackendModule({
         config: coreServices.rootConfig,
       },
       async init({ providers, logger, config }) {
-        registerZitadelProvider(providers, logger, customerSignInOptions(config, logger));
+        const customers = customerSignInOptions(config, logger);
+        registerZitadelProvider(providers, logger, customers);
+        checkCustomerEntryRoute(config, customers, logger);
       },
     });
   },
@@ -284,13 +416,15 @@ export const zitadelAuthModule = createBackendModule({
  * (auth.providers.oidc.<env>.additionalScopes) so tokens carry it. Without
  * it no ZITADEL sign-in is accepted, since staff could not be told from
  * customers. mctl-api is reached with the work-items surface credentials,
- * as tenant-backend does.
+ * as tenant-backend does. `zitadelCustomers.githubIdpId` is the customers
+ * organization's GitHub IdP, for the customer entry (registerZitadelProvider).
  */
 export function customerSignInOptions(
   config: Pick<RootConfigService, 'getOptionalString'>,
   logger: Pick<LoggerService, 'warn' | 'error'>,
 ): CustomerSignInOptions {
   const organizationId = config.getOptionalString('zitadelCustomers.organizationId') || undefined;
+  const githubIdpId = config.getOptionalString('zitadelCustomers.githubIdpId') || undefined;
   const baseUrl = config.getOptionalString('workItems.baseUrl');
   const surfaceToken = config.getOptionalString('workItems.surfaceToken');
   if (!organizationId) {
@@ -298,6 +432,7 @@ export function customerSignInOptions(
   }
   return {
     organizationId,
+    githubIdpId,
     resolve:
       baseUrl && surfaceToken
         ? createZitadelCustomerResolver({ baseUrl, surfaceToken, logger })
