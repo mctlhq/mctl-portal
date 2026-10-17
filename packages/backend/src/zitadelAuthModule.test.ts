@@ -5,6 +5,7 @@ import { NotFoundError } from '@backstage/errors';
 import { ZitadelCustomerError } from '@internal/plugin-tenant-backend';
 import {
   accountKindOf,
+  checkCustomerEntryRoute,
   createZitadelSignInResolver,
   customerGitHubScopes,
   customerSignInOptions,
@@ -77,7 +78,11 @@ describe('customer GitHub entry (mctl-web#158)', () => {
   // answers with, through the real oidc authenticator and auth-node route
   // handlers. The staff provider's config is the production one: only the
   // resourceowner scope.
-  async function authorizeScopes(factory: any, providerId: string): Promise<string[]> {
+  async function authorizeScopes(
+    factory: any,
+    providerId: string,
+    additionalScopes: string[] = ['urn:zitadel:iam:user:resourceowner'],
+  ): Promise<string[]> {
     const handlers = factory({
       providerId,
       appUrl: 'https://app.example',
@@ -90,7 +95,7 @@ describe('customer GitHub entry (mctl-web#158)', () => {
           clientId: 'portal',
           clientSecret: 'secret',
           prompt: 'auto',
-          additionalScopes: ['urn:zitadel:iam:user:resourceowner'],
+          additionalScopes,
         },
       }),
       logger,
@@ -132,6 +137,26 @@ describe('customer GitHub entry (mctl-web#158)', () => {
     expect(scopes).toEqual(
       expect.arrayContaining(['openid', 'urn:zitadel:iam:user:resourceowner', ORG_SCOPE, IDP_SCOPE]),
     );
+  });
+
+  it('asks for the resource owner even when its config section does not', async () => {
+    const providers = registered({ organizationId: CUSTOMERS, githubIdpId: GITHUB_IDP });
+    const scopes = await authorizeScopes(providers.get('zitadel-customer'), 'zitadel-customer', []);
+    expect(scopes).toEqual(
+      expect.arrayContaining(['urn:zitadel:iam:user:resourceowner', ORG_SCOPE, IDP_SCOPE]),
+    );
+  });
+
+  it('says so when the ids are set without auth.providers.zitadel-customer', () => {
+    const log = { error: jest.fn() };
+    const ids = { organizationId: CUSTOMERS, githubIdpId: GITHUB_IDP };
+    checkCustomerEntryRoute({ has: () => true }, ids, log);
+    checkCustomerEntryRoute({ has: () => false }, {}, log);
+    expect(log.error).not.toHaveBeenCalled();
+    const has = jest.fn(() => false);
+    checkCustomerEntryRoute({ has }, ids, log);
+    expect(has).toHaveBeenCalledWith('auth.providers.zitadel-customer');
+    expect(log.error).toHaveBeenCalledWith(expect.stringContaining('answers 404'));
   });
 
   it('leaves the staff sign-in without organization or IdP scopes', async () => {
@@ -445,7 +470,7 @@ describe('customerSignInOptions', () => {
       config({ 'zitadelCustomers.organizationId': CUSTOMERS, 'zitadelCustomers.githubIdpId': GITHUB_IDP }),
       log,
     );
-    expect(customerGitHubScopes(o)).toEqual([ORG_SCOPE, IDP_SCOPE]);
+    expect(customerGitHubScopes(o)).toEqual(['urn:zitadel:iam:user:resourceowner', ORG_SCOPE, IDP_SCOPE]);
   });
 
   it('leaves both unset, and says so, without configuration', () => {

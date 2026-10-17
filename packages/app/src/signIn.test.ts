@@ -81,12 +81,14 @@ describe('customer entry (mctl-web#158)', () => {
     ]);
   });
 
-  it('keeps GitHub as legacy last for both', () => {
-    expect(signInProviders('both', true).map(p => p.apiRef)).toEqual([
+  it('keeps GitHub as legacy last for both, labelled as staff only', () => {
+    const providers = signInProviders('both', true);
+    expect(providers.map(p => p.apiRef)).toEqual([
       zitadelCustomerAuthApiRef,
       zitadelAuthApiRef,
       githubAuthApiRef,
     ]);
+    expect(providers[2].title).toBe('GitHub (legacy staff)');
   });
 
   it('is never offered without ZITADEL', () => {

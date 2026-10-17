@@ -48,6 +48,13 @@ const ZITADEL_ID = /^\d+$/;
  * registers `zitadel-customer` (customerGitHubScopes in
  * zitadelAuthModule.ts). The ids only decide what is offered; the backend
  * decides who signs in.
+ *
+ * The route also needs `auth.providers.zitadel-customer`, which the
+ * frontend cannot see (it holds the client secret). The ids and that
+ * section must land together, in the same mctl-gitops change; with the ids
+ * alone the card shows and its popup answers 404. The backend logs an
+ * error at startup when the ids are set without the section
+ * (checkCustomerEntryRoute in zitadelAuthModule.ts).
  */
 export function customerEntryEnabled(
   organizationId: string | undefined,
@@ -104,6 +111,15 @@ const LEGACY_GITHUB_PROVIDER: SignInProvider = {
   title: 'GitHub (legacy)',
 };
 
+// Next to the customer entry, the legacy GitHub sign-in says it is staff's:
+// it signs in by GitHub login, which no customer's catalog User is named
+// by, so a customer who picked it would only be refused.
+const LEGACY_STAFF_GITHUB_PROVIDER: SignInProvider = {
+  ...GITHUB_PROVIDER,
+  title: 'GitHub (legacy staff)',
+  message: 'MCTL staff only: sign in directly with GitHub',
+};
+
 /**
  * The providers of a sign-in mode, the preferred one first. Absent means
  * `github`, today's behaviour; the config schema (packages/app/config.d.ts)
@@ -123,7 +139,10 @@ export function signInProviders(
     case 'zitadel':
       return zitadel;
     case 'both':
-      return [...zitadel, LEGACY_GITHUB_PROVIDER];
+      return [
+        ...zitadel,
+        customerEntry ? LEGACY_STAFF_GITHUB_PROVIDER : LEGACY_GITHUB_PROVIDER,
+      ];
     default:
       return [GITHUB_PROVIDER];
   }

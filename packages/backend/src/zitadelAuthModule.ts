@@ -241,6 +241,14 @@ export const ZITADEL_AUTH_PROVIDER_ID = 'oidc';
  */
 export const ZITADEL_CUSTOMER_AUTH_PROVIDER_ID = 'zitadel-customer';
 
+/**
+ * The scope that makes ZITADEL name the user's organization in the token.
+ * The sign-in resolver cannot classify a token without it (accountKindOf),
+ * so the customer entry always sends it; the staff provider reads it from
+ * auth.providers.oidc.<env>.additionalScopes.
+ */
+export const SCOPE_RESOURCE_OWNER = 'urn:zitadel:iam:user:resourceowner';
+
 /** The prefixes of the ZITADEL reserved scopes the customer entry sends. */
 export const SCOPE_ORG_ID_PREFIX = 'urn:zitadel:iam:org:id:';
 export const SCOPE_IDP_ID_PREFIX = 'urn:zitadel:iam:org:idp:id:';
@@ -252,8 +260,9 @@ const ZITADEL_ID = /^\d+$/;
 /**
  * The scopes that send a sign-in to the customers organization and straight
  * on to its GitHub IdP, as mctl.ai does (mctl-web
- * cloudflare-worker/zitadel.js), or null when either id is missing or is not
- * a ZITADEL id: then there is no customer entry at all.
+ * cloudflare-worker/zitadel.js), plus the resource-owner scope the resolver
+ * needs, or null when either id is missing or is not a ZITADEL id: then
+ * there is no customer entry at all.
  */
 export function customerGitHubScopes(
   customers: Pick<CustomerSignInOptions, 'organizationId' | 'githubIdpId'>,
@@ -261,7 +270,31 @@ export function customerGitHubScopes(
   const { organizationId, githubIdpId } = customers;
   if (!organizationId || !githubIdpId) return null;
   if (!ZITADEL_ID.test(organizationId) || !ZITADEL_ID.test(githubIdpId)) return null;
-  return [SCOPE_ORG_ID_PREFIX + organizationId, SCOPE_IDP_ID_PREFIX + githubIdpId];
+  return [
+    SCOPE_RESOURCE_OWNER,
+    SCOPE_ORG_ID_PREFIX + organizationId,
+    SCOPE_IDP_ID_PREFIX + githubIdpId,
+  ];
+}
+
+/**
+ * The customer entry's routes exist only with
+ * `auth.providers.zitadel-customer`, which the sign-in page cannot see: it
+ * shows the entry on the ids alone. Says so at startup when the ids are set
+ * without the section, since the card would then answer 404. Both come from
+ * the same mctl-gitops change and must land together.
+ */
+export function checkCustomerEntryRoute(
+  config: Pick<RootConfigService, 'has'>,
+  customers: Pick<CustomerSignInOptions, 'organizationId' | 'githubIdpId'>,
+  logger: Pick<LoggerService, 'error'>,
+): void {
+  if (!customerGitHubScopes(customers)) return;
+  if (config.has(`auth.providers.${ZITADEL_CUSTOMER_AUTH_PROVIDER_ID}`)) return;
+  logger.error(
+    `zitadelCustomers ids are set but auth.providers.${ZITADEL_CUSTOMER_AUTH_PROVIDER_ID} ` +
+      'is not: the sign-in page offers "Sign in with GitHub" and its route answers 404',
+  );
 }
 
 /**
@@ -347,7 +380,9 @@ export const zitadelAuthModule = createBackendModule({
         config: coreServices.rootConfig,
       },
       async init({ providers, logger, config }) {
-        registerZitadelProvider(providers, logger, customerSignInOptions(config, logger));
+        const customers = customerSignInOptions(config, logger);
+        registerZitadelProvider(providers, logger, customers);
+        checkCustomerEntryRoute(config, customers, logger);
       },
     });
   },

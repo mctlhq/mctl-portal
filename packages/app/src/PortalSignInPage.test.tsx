@@ -72,11 +72,12 @@ describe('PortalSignInPage', () => {
     'MCTL account',
     'GitHub',
     'GitHub (legacy)',
+    'GitHub (legacy staff)',
   ];
 
   it.each([
     ['zitadel', { organizationId: ORG, githubIdpId: IDP }, ['Sign in with GitHub', 'Sign in with MCTL (staff, ZITADEL)']],
-    ['both', { organizationId: ORG, githubIdpId: IDP }, ['Sign in with GitHub', 'Sign in with MCTL (staff, ZITADEL)', 'GitHub (legacy)']],
+    ['both', { organizationId: ORG, githubIdpId: IDP }, ['Sign in with GitHub', 'Sign in with MCTL (staff, ZITADEL)', 'GitHub (legacy staff)']],
     ['zitadel', { organizationId: ORG }, ['MCTL account']],
     ['zitadel', { githubIdpId: IDP }, ['MCTL account']],
     ['github', { organizationId: ORG, githubIdpId: IDP }, ['GitHub']],
