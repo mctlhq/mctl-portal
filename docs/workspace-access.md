@@ -21,6 +21,14 @@ account identifier is omitted. The API checks the active principal and keeps
 customer MCP blocked until principal authorization and customer OAuth are
 enabled. The readiness endpoint cannot enable either or bypass the launch gate.
 
+The readiness API service contract is separate from work-item relay headers:
+`GET /api/v1/surface-principals/workspace-access/{tenant}` accepts only the portal
+surface token and `X-MCTL-Surface-Actor: principal:<canonical principal ID>`.
+The principal ID preserves canonical case; catalog User names use its lowercase
+form. This endpoint does not accept delegated work-item credentials and grants
+no permissions. Production verification reached the readiness sources with this
+contract; a forbidden quota read returned 503 rather than a false ready result.
+
 ## Delivery
 
 `tenantManagement.workspaceReady.enabled` defaults to false. When enabled,
@@ -73,5 +81,4 @@ overrides the sender, which otherwise uses `noreply@<platform.domain>`.
 `maxObservationAgeSeconds` and `maxFutureClockSkewSeconds` under
 `tenantManagement.workspaceReady` independently default to 300 seconds. Invalid
 values fail startup; observations outside these bounds fail explicitly and are
-logged without being treated as ready. Workflow links use the configured Argo
-Workflows base URL. Production defaults use `mctl.ai`.
+logged without being treated as ready. Workflow links use the browser-facing `platform.argoWorkflowsBaseUrl`. Production defaults use `mctl.ai`.

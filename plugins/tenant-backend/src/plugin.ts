@@ -197,7 +197,7 @@ export const tenantPlugin = createBackendPlugin({
           store,
           argoClient,
           argoNamespace,
-          workflowBaseUrl: argoBaseUrl,
+          workflowBaseUrl: config.getOptionalString('platform.argoWorkflowsBaseUrl'),
           landingPageToken,
           defaultQuotas,
           maxTeamsPerTenant,
