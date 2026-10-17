@@ -88,3 +88,11 @@ overrides the sender, which otherwise uses `noreply@<platform.domain>`.
 `tenantManagement.workspaceReady` independently default to 300 seconds. Invalid
 values fail startup; observations outside these bounds fail explicitly and are
 logged without being treated as ready. Workflow links use the browser-facing `platform.argoWorkflowsBaseUrl`. Production defaults use `mctl.ai`.
+
+Tenant contact addresses remain private portal database state. TenantSync never
+imports contact data from public GitOps and omission during sync preserves the
+existing private address. Missing/invalid contacts produce a retry warning with
+backoff, rather than silently skipping a promised notification. For an existing
+workspace affected by historical sync erasure, restore the address only from
+the verified ZITADEL customer mapped to its current canonical owner; never put
+it into GitOps values or log the address.

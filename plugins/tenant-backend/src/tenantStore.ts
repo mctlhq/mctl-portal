@@ -105,7 +105,7 @@ export class TenantStore {
         'display_name',
         'description',
         'github_team',
-        'contact_email',
+        ...(tenant.contactEmail === undefined ? [] : ['contact_email']),
         'quotas',
         'networking',
         'synced_at',

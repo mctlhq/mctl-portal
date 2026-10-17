@@ -235,7 +235,7 @@ export function createWorkspaceReadyProcessor(options: {
           !tenant?.contactEmail ||
           !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(tenant.contactEmail)
         )
-          continue;
+          throw new Error('Workspace contact address is missing or invalid');
         const current = await options.readAccess(member);
         if (current.status !== 'ready') {
           retries.delete(key);

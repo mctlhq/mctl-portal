@@ -425,3 +425,13 @@ const pgUrl = process.env.TENANT_TEST_PG_URL;
     expect(await store.findByName('nfc')).toBeDefined();
   });
 });
+
+it('preserves private contact data when GitOps sync omits it', async () => {
+  const { store, knex } = await freshStore();
+  currentKnex = knex;
+  await store.upsert(makeTenant('acme', { contactEmail: 'owner@example.com' }));
+  await store.upsert(makeTenant('acme', { displayName: 'Synced name' }));
+  expect(await store.findByName('acme')).toEqual(expect.objectContaining({ contactEmail: 'owner@example.com', displayName: 'Synced name' }));
+  await store.upsert(makeTenant('acme', { contactEmail: 'corrected@example.com' }));
+  expect((await store.findByName('acme'))?.contactEmail).toBe('corrected@example.com');
+});
