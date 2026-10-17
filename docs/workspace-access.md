@@ -44,6 +44,12 @@ provider id and delivery state. Claims are atomic across replicas. Retries use
 the same payload and provider idempotency key. `accepted` means the provider
 accepted the message, not that the recipient received or read it.
 
+Explicit provider refusal (400/401/403/404/422/429) preserves retry eligibility
+when no earlier ambiguous attempt exists. Transport errors, 5xx and idempotency
+conflicts remain ambiguous; a later refusal never erases an earlier ambiguity.
+Correcting credentials or verifying the sender therefore recovers previously
+refused sends without reopening potentially delivered ones.
+
 Resend retains idempotency keys for 24 hours. Ambiguous attempts stop after
 23 hours with `status = reconcile` and `reconcile_reason = dedup_window_expired`.
 A changed recipient or withdrawn snapshot capability also becomes `reconcile`

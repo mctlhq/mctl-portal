@@ -223,3 +223,48 @@ it('backs off failed observations instead of producing a warning each tick', asy
   await f.process();
   expect(f.readAccess).toHaveBeenCalledTimes(3);
 });
+
+it('recovers after explicit provider refusals exceed the deduplication window', async () => {
+  const f = await fixture();
+  f.fetchImpl.mockResolvedValue(new Response('{}', { status: 403 }));
+  await f.process();
+  f.advance(24 * 60 * 60_000);
+  await f.process();
+  expect(
+    (await db('workspace_ready_emails').first()).first_attempt_ms,
+  ).toBeNull();
+  f.advance(16 * 60_000);
+  f.fetchImpl.mockResolvedValue(
+    new Response(JSON.stringify({ id: 'fixed-key' }), { status: 200 }),
+  );
+  await f.process();
+  expect((await db('workspace_ready_emails').first()).status).toBe('accepted');
+});
+
+it('does not erase an older ambiguous attempt after a later explicit refusal', async () => {
+  const f = await fixture();
+  f.fetchImpl.mockRejectedValueOnce(new Error('timeout'));
+  await f.process();
+  f.advance(60_001);
+  f.fetchImpl.mockResolvedValue(new Response('{}', { status: 401 }));
+  await f.process();
+  expect(
+    (await db('workspace_ready_emails').first()).first_attempt_ms,
+  ).not.toBeNull();
+  f.advance(24 * 60 * 60_000);
+  await f.process();
+  expect((await db('workspace_ready_emails').first()).status).toBe('reconcile');
+});
+
+it('does not report acceptance when another worker owns the delivery lease', async () => {
+  const f = await fixture();
+  const id = await f.outbox.prepare(access, 'alice@example.com');
+  const delivery = await f.outbox.claim(id, Date.now());
+  await db('workspace_ready_emails')
+    .where({ id })
+    .update({ lease_token: 'another-worker' });
+  await expect(
+    f.outbox.finish(delivery!, 'accepted-id', Date.now()),
+  ).rejects.toThrow('lost its delivery lease');
+  expect((await db('workspace_ready_emails').first()).status).toBe('pending');
+});

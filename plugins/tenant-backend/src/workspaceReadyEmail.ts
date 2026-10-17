@@ -23,6 +23,7 @@ interface Delivery {
   snapshot: string;
   recipient: string;
   lease_token: string;
+  had_prior_attempt: boolean;
 }
 
 /** Durable one-per-tenant/principal outbox. Never purge on tenant deletion:
@@ -113,23 +114,33 @@ export class WorkspaceReadyOutbox {
 
   async claim(id: string, now: number): Promise<Delivery | undefined> {
     await this.expire(now, id);
-    const leaseToken = randomUUID();
-    const rows = await this.db(TABLE)
-      .where({ id, status: 'pending' })
-      .andWhere(q =>
-        q.whereNull('lease_until_ms').orWhere('lease_until_ms', '<', now),
+    return this.db.transaction(async tx => {
+      const previous = await tx(TABLE)
+        .where({ id, status: 'pending' })
+        .forUpdate()
+        .first();
+      if (
+        !previous ||
+        (previous.lease_until_ms !== null &&
+          Number(previous.lease_until_ms) >= now)
       )
-      .update({
-        lease_token: leaseToken,
-        lease_until_ms: now + LEASE_MS,
-        first_attempt_ms: this.db.raw('COALESCE(first_attempt_ms, ?)', [now]),
-      })
-      .returning('*');
-    return rows[0];
+        return undefined;
+      const rows = await tx(TABLE)
+        .where({ id, status: 'pending' })
+        .update({
+          lease_token: randomUUID(),
+          lease_until_ms: now + LEASE_MS,
+          first_attempt_ms: previous.first_attempt_ms ?? now,
+        })
+        .returning('*');
+      return rows[0]
+        ? { ...rows[0], had_prior_attempt: previous.first_attempt_ms !== null }
+        : undefined;
+    });
   }
 
   async finish(delivery: Delivery, providerId: string, now: number) {
-    await this.db(TABLE)
+    const changed = await this.db(TABLE)
       .where({
         id: delivery.id,
         lease_token: delivery.lease_token,
@@ -142,16 +153,25 @@ export class WorkspaceReadyOutbox {
         lease_until_ms: null,
         lease_token: null,
       });
+    if (changed !== 1)
+      throw new Error('Ready email acceptance lost its delivery lease');
   }
 
-  async release(delivery: Delivery) {
+  async release(delivery: Delivery, definiteRefusal = false) {
     await this.db(TABLE)
       .where({
         id: delivery.id,
         lease_token: delivery.lease_token,
         status: 'pending',
       })
-      .update({ lease_until_ms: null, lease_token: null });
+      .update({
+        lease_until_ms: null,
+        lease_token: null,
+        // A refusal cannot erase an older ambiguous/crashed attempt.
+        ...(definiteRefusal && !delivery.had_prior_attempt
+          ? { first_attempt_ms: null }
+          : {}),
+      });
   }
 
   async reconcile(delivery: Delivery) {
@@ -208,6 +228,7 @@ export function createWorkspaceReadyProcessor(options: {
       }
       if ((retries.get(key)?.after ?? 0) > now()) continue;
       let delivery: Delivery | undefined;
+      let definiteRefusal = false;
       try {
         const tenant = await options.store.findByName(member.tenantName);
         if (
@@ -255,8 +276,14 @@ export function createWorkspaceReadyProcessor(options: {
           body: delivery.payload,
           signal: AbortSignal.timeout(10_000),
         });
-        if (!response.ok)
+        if (!response.ok) {
+          // These responses explicitly refuse this send. All transport errors,
+          // 5xx, malformed successes and idempotency conflicts stay ambiguous.
+          definiteRefusal = [400, 401, 403, 404, 422, 429].includes(
+            response.status,
+          );
           throw new Error(`Email provider returned ${response.status}`);
+        }
         const body: unknown = await response.json();
         const providerId = (body as { id?: unknown } | null)?.id;
         if (typeof providerId !== 'string' || !providerId)
@@ -269,7 +296,7 @@ export function createWorkspaceReadyProcessor(options: {
       } catch (err) {
         // Independent of create-tenant: delivery/observation failures never
         // fail provisioning or claim a workspace is ready.
-        if (delivery) await options.outbox.release(delivery);
+        if (delivery) await options.outbox.release(delivery, definiteRefusal);
         const failures = (retries.get(key)?.failures ?? 0) + 1;
         const delay = Math.min(
           15 * 60_000,
