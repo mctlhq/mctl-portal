@@ -1,5 +1,23 @@
 # Changelog
 
+## [4.23.0](https://github.com/mctlhq/mctl-portal/compare/4.22.0...4.23.0) (2026-10-17)
+
+
+### Features
+
+* verify workspace access and send ready notifications ([7451384](https://github.com/mctlhq/mctl-portal/commit/7451384c728f4f9a2a05a28f0fb62e6396fba537))
+
+
+### Bug Fixes
+
+* constrain GitHub lookup to a username path segment ([046ac79](https://github.com/mctlhq/mctl-portal/commit/046ac798ea4cc9232322da2ccdc11d9f42425db5))
+* harden workspace readiness and delivery recovery ([4904546](https://github.com/mctlhq/mctl-portal/commit/49045466bfdb27ccf7d815490c48a90d22fd919a))
+* keep customer contacts out of workflow parameters ([0e7d542](https://github.com/mctlhq/mctl-portal/commit/0e7d542d36d764a8c75099cd4c4405264ca52fb2))
+* preserve private workspace contacts during GitOps sync ([2679e5f](https://github.com/mctlhq/mctl-portal/commit/2679e5fc0491283ba6e0f13ef6e8004b44c6aa56))
+* refresh definitively unsent readiness snapshots safely ([d50ea2b](https://github.com/mctlhq/mctl-portal/commit/d50ea2bcebfd3003281395d88784989a015725c2))
+* retry definite email refusals without losing ambiguity ([495562d](https://github.com/mctlhq/mctl-portal/commit/495562d9df21df466cd6a864aad878d4f1a4e175))
+* use public workflow host in onboarding links ([7738800](https://github.com/mctlhq/mctl-portal/commit/773880007827964aa78c8fb9caafa1da30404462))
+
 ## [4.22.0](https://github.com/mctlhq/mctl-portal/compare/4.21.1...4.22.0) (2026-10-17)
 
 
