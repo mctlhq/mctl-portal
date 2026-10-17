@@ -28,6 +28,7 @@ import MenuIcon from '@material-ui/icons/Menu';
 import SearchIcon from '@material-ui/icons/Search';
 import { MyGroupsSidebarItem } from '@backstage/plugin-org';
 import GroupIcon from '@material-ui/icons/People';
+import VpnKeyIcon from '@material-ui/icons/VpnKey';
 import { NotificationsSidebarItem } from '@backstage/plugin-notifications';
 
 const useSidebarLogoStyles = makeStyles({
@@ -76,6 +77,7 @@ export const Root = ({ children }: PropsWithChildren<{}>) => {
           icon={GroupIcon}
         />
         <SidebarItem icon={LibraryBooks} to="docs" text="Docs" />
+        <SidebarItem icon={VpnKeyIcon} to="workspace/access" text="Workspace" />
         <SidebarItem icon={CreateComponentIcon} to="create" text="Templates" />
         <SidebarItem icon={AssignmentIcon} to="proposals" text="Proposals" />
         <SidebarItem icon={WorkIcon} to="work-items" text="Work items" />

@@ -10,7 +10,7 @@ import { createRequireTeamAccessAction } from './teamAccessAction';
  *
  * Required config:
  *   argoWorkflows:
- *     baseUrl: https://workflows.mctl.me
+ *     baseUrl: https://workflows.mctl.ai
  *     namespace: argo-workflows       # optional, default: argo-workflows
  *     token: <bearer-token>           # optional, for auth-mode=client
  */

@@ -194,7 +194,8 @@ export class TenantSync {
       displayName: t.displayName ?? t.name,
       description: t.description,
       githubTeam: t.githubTeam,
-      contactEmail: t.contactEmail,
+      // Contact data is private portal state, deliberately absent from public
+      // GitOps manifests. Sync must never erase or repopulate that address.
       quotas: {
         'requests.cpu': t.quotas?.['requests.cpu'] ?? '2',
         'requests.memory': t.quotas?.['requests.memory'] ?? '3Gi',

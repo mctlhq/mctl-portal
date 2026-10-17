@@ -44,7 +44,7 @@ function nodeLabel(type: string): string {
  *
  * Config keys read from app-config:
  *   argoWorkflows:
- *     baseUrl: https://workflows.mctl.me
+ *     baseUrl: https://workflows.mctl.ai
  *     token: <optional bearer token>
  *     namespace: argo-workflows
  *
