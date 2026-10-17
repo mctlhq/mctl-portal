@@ -1,5 +1,21 @@
 # Changelog
 
+## [4.22.0](https://github.com/mctlhq/mctl-portal/compare/4.21.1...4.22.0) (2026-10-17)
+
+
+### Features
+
+* **auth:** label the ZITADEL entry for staff and partner accounts ([929e87e](https://github.com/mctlhq/mctl-portal/commit/929e87e64beb8eb408f85473f29d15954afe2ddd))
+* **auth:** offer customers a GitHub sign-in entry ([4d1e735](https://github.com/mctlhq/mctl-portal/commit/4d1e73546a7d5591a81c3edb1cbbe2ac2bfcc26a))
+* **auth:** offer customers a GitHub sign-in entry ([49090ad](https://github.com/mctlhq/mctl-portal/commit/49090ad4a365622b79a03bf067bbb3a96a2bc659))
+
+
+### Bug Fixes
+
+* **auth:** check the customer section per environment, harden gates ([2e09617](https://github.com/mctlhq/mctl-portal/commit/2e0961752def33d287b6693deb65041958fb7d73))
+* **auth:** harden the customer entry per review of [#179](https://github.com/mctlhq/mctl-portal/issues/179) ([797b4be](https://github.com/mctlhq/mctl-portal/commit/797b4be0ccad8fd9cc4ec1c1d0f59a021d6f5cec))
+* **auth:** point mis-routed accounts at the MCTL entry ([5d73d33](https://github.com/mctlhq/mctl-portal/commit/5d73d33fa842cd0f2873c4e5d83365ed70f677a6))
+
 ## [4.21.1](https://github.com/mctlhq/mctl-portal/compare/4.21.0...4.21.1) (2026-10-17)
 
 
