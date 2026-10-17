@@ -141,3 +141,11 @@ it('lists MCP only when the live platform observation confirms it', async () => 
     'mcp',
   ]);
 });
+
+it('waits for the catalog role to converge before promising the role in an email', async () => {
+  const f = fixture();
+  f.entities.find(e => e.kind === 'User')!.metadata.annotations![
+    'mctl.me/tenant-role'
+  ] = 'viewer';
+  expect((await f.read(member)).status).toBe('provisioning');
+});

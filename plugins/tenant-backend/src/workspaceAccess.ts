@@ -123,7 +123,8 @@ export function createWorkspaceAccessReader(options: {
       Array.isArray(user.spec?.memberOf) &&
       user.spec.memberOf.includes(member.tenantName) &&
       user.metadata.annotations?.['mctl.me/principal-id'] ===
-        member.principalId;
+        member.principalId &&
+      user.metadata.annotations?.['mctl.me/tenant-role'] === member.role;
     const capabilities: WorkspaceAccess['capabilities'] = [];
     if (platform.portal === 'configured' && catalogReady) {
       capabilities.push({
