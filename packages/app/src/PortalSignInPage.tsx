@@ -20,8 +20,8 @@ export function PortalSignInPage(props: SignInPageProps) {
   const providers = signInProviders(
     config.getOptionalString('auth.signIn'),
     customerEntryEnabled(
-      config.getOptionalString('zitadelCustomers.organizationId'),
-      config.getOptionalString('zitadelCustomers.githubIdpId'),
+      config.getOptional('zitadelCustomers.organizationId'),
+      config.getOptional('zitadelCustomers.githubIdpId'),
     ),
   );
   if (providers.length === 1) {

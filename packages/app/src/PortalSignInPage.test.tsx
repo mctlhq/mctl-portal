@@ -8,6 +8,8 @@ import { screen } from '@testing-library/react';
 import { PortalSignInPage } from './PortalSignInPage';
 import { zitadelAuthApiRef, zitadelCustomerAuthApiRef } from './signIn';
 
+type ConfigData = ConstructorParameters<typeof MockConfigApi>[0];
+
 // An auth API with no session: the sign-in page renders its provider
 // cards instead of signing anyone in.
 function signedOut() {
@@ -24,7 +26,7 @@ function signedOut() {
 
 async function renderPage(
   signIn?: string,
-  zitadelCustomers?: Record<string, string>,
+  zitadelCustomers?: ConfigData,
 ) {
   const config = new MockConfigApi({
     app: { title: 'Test' },
@@ -80,6 +82,7 @@ describe('PortalSignInPage', () => {
     ['both', { organizationId: ORG, githubIdpId: IDP }, ['Sign in with GitHub', 'Sign in with MCTL (staff, ZITADEL)', 'GitHub (legacy staff)']],
     ['zitadel', { organizationId: ORG }, ['MCTL account']],
     ['zitadel', { githubIdpId: IDP }, ['MCTL account']],
+    ['zitadel', { organizationId: Number(ORG), githubIdpId: IDP }, ['MCTL account']],
     ['github', { organizationId: ORG, githubIdpId: IDP }, ['GitHub']],
   ])('auth.signIn=%s with zitadelCustomers %j offers %j', async (signIn, customers, titles) => {
     await renderPage(signIn, customers);

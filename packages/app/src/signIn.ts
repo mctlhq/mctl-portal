@@ -57,12 +57,14 @@ const ZITADEL_ID = /^\d+$/;
  * (checkCustomerEntryRoute in zitadelAuthModule.ts).
  */
 export function customerEntryEnabled(
-  organizationId: string | undefined,
-  githubIdpId: string | undefined,
+  organizationId: unknown,
+  githubIdpId: unknown,
 ): boolean {
+  // Raw config values: an unquoted id in YAML is a number, which hides the
+  // entry rather than throwing on the one page nobody can get past.
   return (
-    !!organizationId &&
-    !!githubIdpId &&
+    typeof organizationId === 'string' &&
+    typeof githubIdpId === 'string' &&
     ZITADEL_ID.test(organizationId) &&
     ZITADEL_ID.test(githubIdpId)
   );

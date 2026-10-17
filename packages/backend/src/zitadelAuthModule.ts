@@ -245,7 +245,8 @@ export const ZITADEL_CUSTOMER_AUTH_PROVIDER_ID = 'zitadel-customer';
  * The scope that makes ZITADEL name the user's organization in the token.
  * The sign-in resolver cannot classify a token without it (accountKindOf),
  * so the customer entry always sends it; the staff provider reads it from
- * auth.providers.oidc.<env>.additionalScopes.
+ * auth.providers.oidc.<env>.additionalScopes. The zitadel-customer section
+ * must not list it (or any scope) again: it would only be sent twice.
  */
 export const SCOPE_RESOURCE_OWNER = 'urn:zitadel:iam:user:resourceowner';
 
@@ -278,22 +279,26 @@ export function customerGitHubScopes(
 }
 
 /**
- * The customer entry's routes exist only with
- * `auth.providers.zitadel-customer`, which the sign-in page cannot see: it
- * shows the entry on the ids alone. Says so at startup when the ids are set
- * without the section, since the card would then answer 404. Both come from
- * the same mctl-gitops change and must land together.
+ * The customer entry works only with
+ * `auth.providers.zitadel-customer.<auth.environment>` (the auth backend
+ * maps provider config per environment, `development` when unset), which
+ * the sign-in page cannot see: it shows the entry on the ids alone. Says so
+ * at startup when the ids are set without that section, since the card
+ * would then fail. Both come from the same mctl-gitops change and must land
+ * together.
  */
 export function checkCustomerEntryRoute(
-  config: Pick<RootConfigService, 'has'>,
+  config: Pick<RootConfigService, 'has' | 'getOptionalString'>,
   customers: Pick<CustomerSignInOptions, 'organizationId' | 'githubIdpId'>,
   logger: Pick<LoggerService, 'error'>,
 ): void {
   if (!customerGitHubScopes(customers)) return;
-  if (config.has(`auth.providers.${ZITADEL_CUSTOMER_AUTH_PROVIDER_ID}`)) return;
+  const env = config.getOptionalString('auth.environment') ?? 'development';
+  const section = `auth.providers.${ZITADEL_CUSTOMER_AUTH_PROVIDER_ID}.${env}`;
+  if (config.has(section)) return;
   logger.error(
-    `zitadelCustomers ids are set but auth.providers.${ZITADEL_CUSTOMER_AUTH_PROVIDER_ID} ` +
-      'is not: the sign-in page offers "Sign in with GitHub" and its route answers 404',
+    `zitadelCustomers ids are set but ${section} is not: the sign-in page ` +
+      'offers "Sign in with GitHub" and its route fails',
   );
 }
 

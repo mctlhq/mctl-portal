@@ -67,6 +67,7 @@ describe('customer entry (mctl-web#158)', () => {
     expect(customerEntryEnabled('', '')).toBe(false);
     expect(customerEntryEnabled(ORG, `${IDP} urn:zitadel:iam:org:project:roles`)).toBe(false);
     expect(customerEntryEnabled('customers', IDP)).toBe(false);
+    expect(customerEntryEnabled(Number(ORG), IDP)).toBe(false);
   });
 
   it('comes before the staff sign-in for zitadel', () => {

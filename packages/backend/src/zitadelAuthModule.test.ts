@@ -4,6 +4,10 @@ import { ConfigReader } from '@backstage/config';
 import { NotFoundError } from '@backstage/errors';
 import { ZitadelCustomerError } from '@internal/plugin-tenant-backend';
 import {
+  customerEntryEnabled,
+  ZITADEL_CUSTOMER_AUTH_PROVIDER_ID as FRONTEND_CUSTOMER_PROVIDER_ID,
+} from 'app/src/signIn';
+import {
   accountKindOf,
   checkCustomerEntryRoute,
   createZitadelSignInResolver,
@@ -128,6 +132,27 @@ describe('customer GitHub entry (mctl-web#158)', () => {
   it('is provider zitadel-customer, pinned with the frontend', () => {
     // packages/app/src/signIn.test.ts pins the same id; a mismatch is a 404.
     expect(ZITADEL_CUSTOMER_AUTH_PROVIDER_ID).toBe('zitadel-customer');
+    expect(FRONTEND_CUSTOMER_PROVIDER_ID).toBe(ZITADEL_CUSTOMER_AUTH_PROVIDER_ID);
+  });
+
+  // The page shows the entry on customerEntryEnabled, the backend registers
+  // it on customerGitHubScopes: loosening one alone would offer a card with
+  // no route, or hide a working one.
+  it.each([
+    [CUSTOMERS, GITHUB_IDP],
+    [CUSTOMERS, undefined],
+    [undefined, GITHUB_IDP],
+    ['', ''],
+    [CUSTOMERS, `${GITHUB_IDP} urn:zitadel:iam:org:project:roles`],
+    ['customers', GITHUB_IDP],
+    [CUSTOMERS, '-1'],
+    [CUSTOMERS, ' 1'],
+    [CUSTOMERS, '1e3'],
+    ['4a2f1c3e-0000-4000-8000-000000000000', GITHUB_IDP],
+  ])('page and backend agree on organizationId=%j githubIdpId=%j', (organizationId, githubIdpId) => {
+    expect(customerEntryEnabled(organizationId, githubIdpId)).toBe(
+      customerGitHubScopes({ organizationId, githubIdpId }) !== null,
+    );
   });
 
   it('sends ZITADEL to the customers organization and its GitHub IdP', async () => {
@@ -147,16 +172,36 @@ describe('customer GitHub entry (mctl-web#158)', () => {
     );
   });
 
-  it('says so when the ids are set without auth.providers.zitadel-customer', () => {
-    const log = { error: jest.fn() };
+  // Through a real ConfigReader: zitadel-customer is the first hyphenated
+  // key this repo reads, and ConfigReader refuses key parts outside its
+  // pattern, which would crash the backend once both ids are set.
+  describe('checkCustomerEntryRoute', () => {
     const ids = { organizationId: CUSTOMERS, githubIdpId: GITHUB_IDP };
-    checkCustomerEntryRoute({ has: () => true }, ids, log);
-    checkCustomerEntryRoute({ has: () => false }, {}, log);
-    expect(log.error).not.toHaveBeenCalled();
-    const has = jest.fn(() => false);
-    checkCustomerEntryRoute({ has }, ids, log);
-    expect(has).toHaveBeenCalledWith('auth.providers.zitadel-customer');
-    expect(log.error).toHaveBeenCalledWith(expect.stringContaining('answers 404'));
+    const cfg = (auth: NonNullable<ConstructorParameters<typeof ConfigReader>[0]>) =>
+      new ConfigReader({ auth });
+    const log = { error: jest.fn() };
+
+    it('reads the hyphenated provider section', () => {
+      const c = cfg({ environment: 'production', providers: { 'zitadel-customer': { production: { clientId: 'portal' } } } });
+      expect(c.has('auth.providers.zitadel-customer.production')).toBe(true);
+      expect(c.getConfig('auth.providers.zitadel-customer.production').getString('clientId')).toBe('portal');
+      checkCustomerEntryRoute(c, ids, log);
+      expect(log.error).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['no provider section', { environment: 'production', providers: {} }],
+      ['no section for auth.environment', { environment: 'production', providers: { 'zitadel-customer': { development: {} } } }],
+      ['no section for development when auth.environment is unset', { providers: { 'zitadel-customer': { production: {} } } }],
+    ])('says so with %s', (_name, auth) => {
+      expect(() => checkCustomerEntryRoute(cfg(auth), ids, log)).not.toThrow();
+      expect(log.error).toHaveBeenCalledWith(expect.stringContaining('its route fails'));
+    });
+
+    it('is quiet without the customer entry', () => {
+      checkCustomerEntryRoute(cfg({ providers: {} }), {}, log);
+      expect(log.error).not.toHaveBeenCalled();
+    });
   });
 
   it('leaves the staff sign-in without organization or IdP scopes', async () => {
