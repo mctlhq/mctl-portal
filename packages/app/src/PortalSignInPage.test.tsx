@@ -70,7 +70,7 @@ describe('PortalSignInPage', () => {
   const IDP = '395272528420931999';
   const ALL = [
     'Sign in with GitHub',
-    'Sign in with MCTL (staff, ZITADEL)',
+    'Sign in with MCTL account',
     'MCTL account',
     'GitHub',
     'GitHub (legacy)',
@@ -78,8 +78,8 @@ describe('PortalSignInPage', () => {
   ];
 
   it.each([
-    ['zitadel', { organizationId: ORG, githubIdpId: IDP }, ['Sign in with GitHub', 'Sign in with MCTL (staff, ZITADEL)']],
-    ['both', { organizationId: ORG, githubIdpId: IDP }, ['Sign in with GitHub', 'Sign in with MCTL (staff, ZITADEL)', 'GitHub (legacy staff)']],
+    ['zitadel', { organizationId: ORG, githubIdpId: IDP }, ['Sign in with GitHub', 'Sign in with MCTL account']],
+    ['both', { organizationId: ORG, githubIdpId: IDP }, ['Sign in with GitHub', 'Sign in with MCTL account', 'GitHub (legacy staff)']],
     ['zitadel', { organizationId: ORG }, ['MCTL account']],
     ['zitadel', { githubIdpId: IDP }, ['MCTL account']],
     ['zitadel', { organizationId: Number(ORG), githubIdpId: IDP }, ['MCTL account']],
@@ -88,6 +88,10 @@ describe('PortalSignInPage', () => {
     await renderPage(signIn, customers);
     for (const title of titles) {
       expect(await screen.findByText(title)).toBeInTheDocument();
+    }
+    if (titles.includes('Sign in with GitHub')) {
+      expect(screen.getByText('New customers: sign in with your GitHub account')).toBeInTheDocument();
+      expect(screen.getByText('MCTL staff and partner accounts')).toBeInTheDocument();
     }
     for (const title of ALL.filter(t => !titles.includes(t))) {
       expect(screen.queryByText(title)).not.toBeInTheDocument();

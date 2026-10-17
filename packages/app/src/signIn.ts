@@ -87,17 +87,20 @@ const ZITADEL_PROVIDER: SignInProvider = {
   apiRef: zitadelAuthApiRef,
 };
 
-// Next to the customer entry, the ZITADEL sign-in is labelled as staff's.
+// Next to the customer entry, the ZITADEL sign-in is for every existing
+// MCTL account: staff, and partner users of tenant organizations (such as
+// erpact) who are not staff. "Sign in with GitHub" would give them a stray
+// customers account, which the sign-in refuses (customer_conflict).
 const ZITADEL_STAFF_PROVIDER: SignInProvider = {
   ...ZITADEL_PROVIDER,
-  title: 'Sign in with MCTL (staff, ZITADEL)',
-  message: 'MCTL staff sign in with their MCTL account',
+  title: 'Sign in with MCTL account',
+  message: 'MCTL staff and partner accounts',
 };
 
 const ZITADEL_CUSTOMER_PROVIDER: SignInProvider = {
   id: 'zitadel-customer-auth-provider',
   title: 'Sign in with GitHub',
-  message: 'MCTL customers sign in with their GitHub account',
+  message: 'New customers: sign in with your GitHub account',
   apiRef: zitadelCustomerAuthApiRef,
 };
 

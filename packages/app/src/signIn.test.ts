@@ -78,7 +78,11 @@ describe('customer entry (mctl-web#158)', () => {
     ]);
     expect(providers.map(p => p.title)).toEqual([
       'Sign in with GitHub',
-      'Sign in with MCTL (staff, ZITADEL)',
+      'Sign in with MCTL account',
+    ]);
+    expect(providers.map(p => p.message)).toEqual([
+      'New customers: sign in with your GitHub account',
+      'MCTL staff and partner accounts',
     ]);
   });
 
