@@ -74,6 +74,10 @@ RUN --mount=type=cache,target=/home/node/.cache/yarn,sharing=locked,uid=1000,gid
 COPY --chown=node:node --from=build /app/packages/backend/dist/bundle.tar.gz ./
 RUN tar xzf bundle.tar.gz && rm bundle.tar.gz
 
+# Compile schemas from the actual production filesystem, as startup does.
+COPY --chown=node:node scripts/check-runtime-config-schemas.cjs ./scripts/
+RUN node scripts/check-runtime-config-schemas.cjs
+
 COPY --chown=node:node app-config*.yaml ./
 
 EXPOSE 7007
