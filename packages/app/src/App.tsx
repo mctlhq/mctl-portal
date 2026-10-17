@@ -30,6 +30,7 @@ import { entityPage } from './components/catalog/EntityPage';
 import { searchPage } from './components/search/SearchPage';
 import { Root } from './components/Root';
 import { NoTenantPage } from './components/tenant/NoTenantPage';
+import { WorkspaceAccessPage } from './components/tenant/WorkspaceAccessPage';
 import { ProposalsRoutes } from './components/proposals';
 import { WorkItemsRoutes } from './components/workItems';
 
@@ -248,6 +249,7 @@ const routes = (
     <Route path="/catalog-graph" element={<CatalogGraphPage />} />
     <Route path="/notifications" element={<NotificationsPage />} />
     <Route path="/no-tenant" element={<NoTenantPage />} />
+    <Route path="/workspace/access" element={<WorkspaceAccessPage />} />
     <Route path="/proposals/*" element={<ProposalsRoutes />} />
     <Route path="/work-items/*" element={<WorkItemsRoutes />} />
   </FlatRoutes>

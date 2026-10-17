@@ -10,6 +10,8 @@ import { getGithubAppInstallationToken } from './githubAppToken';
 import { tenantStoreServiceRef } from './tenantStoreService';
 import { createCreatorPrincipalResolver } from './creatorPrincipal';
 import { createZitadelCustomerResolver } from './zitadelCustomer';
+import { createPlatformAccessObserver, createWorkspaceAccessReader } from './workspaceAccess';
+import { createWorkspaceReadyProcessor, WorkspaceReadyOutbox } from './workspaceReadyEmail';
 
 export const tenantPlugin = createBackendPlugin({
   pluginId: 'tenant-management',
@@ -23,6 +25,9 @@ export const tenantPlugin = createBackendPlugin({
         httpAuth: coreServices.httpAuth,
         userInfo: coreServices.userInfo,
         tenantStoreApi: tenantStoreServiceRef,
+        auth: coreServices.auth,
+        discovery: coreServices.discovery,
+        scheduler: coreServices.scheduler,
       },
       async init({
         config,
@@ -32,6 +37,9 @@ export const tenantPlugin = createBackendPlugin({
         httpAuth,
         userInfo,
         tenantStoreApi,
+        auth,
+        discovery,
+        scheduler,
       }) {
         // ── Config ─────────────────────────────────────────────────────────
         const githubOrg = config.getString('tenantManagement.githubOrg');
@@ -135,6 +143,39 @@ export const tenantPlugin = createBackendPlugin({
           mctlApiUrl && surfaceToken
             ? createZitadelCustomerResolver({ baseUrl: mctlApiUrl, surfaceToken, logger })
             : undefined;
+        const readWorkspaceAccess = mctlApiUrl && surfaceToken ? createWorkspaceAccessReader({
+          store,
+          observePlatform: createPlatformAccessObserver(mctlApiUrl, surfaceToken),
+          async getCatalogEntity(kind, name) {
+            const catalogUrl = await discovery.getBaseUrl('catalog');
+            const { token } = await auth.getPluginRequestToken({
+              onBehalfOf: await auth.getOwnServiceCredentials(), targetPluginId: 'catalog',
+            });
+            const response = await fetch(`${catalogUrl}/entities/by-name/${kind}/default/${encodeURIComponent(name)}`, {
+              headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(10_000),
+            });
+            if (response.status === 404) return undefined;
+            if (!response.ok) throw new Error(`Catalog observation failed (${response.status})`);
+            const entity = await response.json();
+            if (!entity || typeof entity !== 'object' || typeof entity.kind !== 'string' ||
+              !entity.metadata || typeof entity.metadata.name !== 'string') throw new Error('Catalog observation malformed');
+            return entity;
+          },
+        }) : undefined;
+        const readyEnabled = config.getOptionalBoolean('tenantManagement.workspaceReady.enabled') ?? false;
+        const readyApiKey = config.getOptionalString('tenantManagement.workspaceReady.resendApiKey');
+        if (readyEnabled) {
+          // Configuration errors stop startup instead of silently disabling a
+          // promised ready notification. Observation failures retry at runtime.
+          if (!readWorkspaceAccess || !readyApiKey) throw new Error('Workspace ready notifications require API credentials and Resend configuration');
+          const outbox = new WorkspaceReadyOutbox(await database.getClient());
+          await outbox.init();
+          await scheduler.scheduleTask({
+            id: 'workspace-ready-notifications', frequency: { minutes: 1 }, timeout: { minutes: 5 },
+            initialDelay: { seconds: 30 },
+            fn: createWorkspaceReadyProcessor({ store, readAccess: readWorkspaceAccess, outbox, apiKey: readyApiKey, logger }),
+          });
+        }
         if (!resolveCreatorPrincipal) {
           logger.warn(
             '[TenantPlugin] workItems.baseUrl/surfaceToken not set — POST /tenants refuses requests that name a creator.',
@@ -155,6 +196,7 @@ export const tenantPlugin = createBackendPlugin({
           getGithubToken: getToken,
           resolveCreatorPrincipal,
           resolveZitadelCustomer,
+          readWorkspaceAccess,
         });
         httpRouter.use(router);
         // Bearer-only operator dump; query-string tokens are rejected in the handler.

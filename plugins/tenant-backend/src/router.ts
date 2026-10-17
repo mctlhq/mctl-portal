@@ -10,6 +10,7 @@ import { CreatorPrincipalError, CreatorPrincipalResolver, isGitHubLogin } from '
 import { createRateLimiters, RateLimits } from './rateLimit';
 import { CatalogKey, ROLES } from './memberKeys';
 import { ZitadelCustomer, ZitadelCustomerError, ZitadelCustomerResolver } from './zitadelCustomer';
+import { WorkspaceAccessReader } from './workspaceAccess';
 
 export interface RouterOptions {
   logger: LoggerService;
@@ -52,6 +53,7 @@ export interface RouterOptions {
   resolveZitadelCustomer?: ZitadelCustomerResolver;
   /** Per-client budgets; defaults to DEFAULT_LIMITS. Tests lower them. */
   rateLimits?: RateLimits;
+  readWorkspaceAccess?: WorkspaceAccessReader;
 }
 
 /** A tenant name: the Kubernetes namespace it becomes. */
@@ -234,6 +236,27 @@ export function createRouter(opts: RouterOptions): Router {
   const router = Router();
   const limit = createRateLimiters(rateLimits);
   router.use(json());
+
+  // Identity always comes from the authenticated Backstage user, never a
+  // caller-supplied principal, tenant, login, or the landing-page credential.
+  router.get('/me/workspace-access', limit.read, async (req: Request, res: Response) => {
+    res.set('Cache-Control', 'no-store');
+    try {
+      const caller = await resolveAuth(req, httpAuth, userInfo, landingPageToken, store);
+      if (!caller.authorized || caller.isLanding || !caller.userId) {
+        res.status(401).json({ error: 'A signed-in portal user is required' }); return;
+      }
+      if (!opts.readWorkspaceAccess) { res.status(503).json({ error: 'Workspace access could not be verified. Try again later.' }); return; }
+      const memberships = await store.listMembershipsForUser(caller.userId);
+      const customers = memberships.filter(m => m.catalogKey === 'principal');
+      const workspaces = [];
+      for (const member of customers) workspaces.push(await opts.readWorkspaceAccess(member));
+      res.json({ workspaces, legacyMembership: memberships.some(m => m.catalogKey !== 'principal') });
+    } catch {
+      logger.warn('[WorkspaceAccess] Current access observation unavailable');
+      res.status(503).json({ error: 'Workspace access could not be verified. Try again later.' });
+    }
+  });
 
   /**
    * Look up a GitHub user by username. Returns user info or null if not found.
@@ -640,7 +663,7 @@ export function createRouter(opts: RouterOptions): Router {
       res.status(202).json({
         message: `Tenant creation workflow submitted`,
         workflowName,
-        workflowUrl: `https://workflows.mctl.me/workflows/${argoNamespace}/${workflowName}`,
+        workflowUrl: `https://workflows.mctl.ai/workflows/${argoNamespace}/${workflowName}`,
       });
 
       // Register a login-keyed creator as owner; TenantSync confirms it
@@ -720,7 +743,7 @@ export function createRouter(opts: RouterOptions): Router {
       res.status(202).json({
         message: `Tenant '${name}' deletion queued`,
         workflowName,
-        workflowUrl: `https://workflows.mctl.me/workflows/${argoNamespace}/${workflowName}`,
+        workflowUrl: `https://workflows.mctl.ai/workflows/${argoNamespace}/${workflowName}`,
       });
     } catch (err: any) {
       logger.error(`[tenant-backend] DELETE /tenants/${req.params.name} error: ${err}`);
