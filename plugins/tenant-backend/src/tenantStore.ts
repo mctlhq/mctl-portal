@@ -1,3 +1,4 @@
+import { ensureCustomerDeletionSchema, lockTenantLifecycle, CustomerDeletionConflictError } from './customerDeletionSchema';
 import { DatabaseService, LoggerService } from '@backstage/backend-plugin-api';
 import { Tenant, TenantMember } from './types';
 import { isPostgresClient } from './membershipLookup';
@@ -86,16 +87,7 @@ export class TenantStore {
       }
     }
 
-    if (!(await knex.schema.hasTable('customer_deletions'))) {
-      await knex.schema.createTable('customer_deletions', table => {
-        table.string('tenant_name').notNullable();
-        table.string('principal_id').notNullable();
-        table.string('status').notNullable();
-        table.primary(['tenant_name', 'principal_id']);
-        table.index(['principal_id']);
-      });
-      await knex.raw("CREATE UNIQUE INDEX IF NOT EXISTS uq_customer_deletion_active_tenant ON customer_deletions(tenant_name) WHERE status = 'active'");
-    }
+    await ensureCustomerDeletionSchema(knex);
 
     // One workspace per self-service customer, held by the database rather
     // than by a check a concurrent request can pass too. Login-keyed rows
@@ -185,6 +177,7 @@ export class TenantStore {
   async delete(name: string): Promise<void> {
     const knex = await this.db.getClient();
     await knex.transaction(async tx => {
+      await lockTenantLifecycle(tx, name);
       // Lock the delivery rows before removing membership. An in-flight send
       // must finish or lose its lease before deletion can report success.
       if (await tx.schema.hasTable('workspace_ready_emails')) {
@@ -228,10 +221,10 @@ export class TenantStore {
         .orWhereRaw('lower(login) = ?', [login.toLowerCase()]);
       if (members.length !== 1 || members[0].tenant_name !== name || members[0].role !== 'owner' ||
           members[0].catalog_key !== 'principal' || members[0].principal_id !== principalId) {
-        throw new Error('Exclusive customer ownership is not observed in the portal');
+        throw new CustomerDeletionConflictError('Exclusive customer ownership is not observed in the portal');
       }
       const all = await tx('tenant_members').where({ tenant_name: name });
-      if (all.length !== 1) throw new Error('Workspace has other members');
+      if (all.length !== 1) throw new CustomerDeletionConflictError('Workspace has other members');
       await tx('customer_deletions').insert({ tenant_name: name, principal_id: principalId, status: 'active' });
     });
   }

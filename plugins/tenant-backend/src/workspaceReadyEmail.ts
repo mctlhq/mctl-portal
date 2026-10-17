@@ -1,3 +1,4 @@
+import { lockTenantLifecycle } from './customerDeletionSchema';
 import { createHash, randomUUID } from 'crypto';
 import type { Knex } from 'knex';
 import type { LoggerService } from '@backstage/backend-plugin-api';
@@ -63,7 +64,10 @@ export class WorkspaceReadyOutbox {
 
   async prepare(access: WorkspaceAccess, recipient: string, from?: string) {
     const id = deliveryKey(access.tenant, access.principalId);
-    await this.db(TABLE)
+    await this.db.transaction(async tx => {
+      await lockTenantLifecycle(tx, access.tenant);
+      if (!(await this.customerStillPresent(tx, access.tenant, access.principalId))) return;
+    await tx(TABLE)
       .insert({
         id,
         tenant_name: access.tenant,
@@ -75,7 +79,14 @@ export class WorkspaceReadyOutbox {
       })
       .onConflict(['tenant_name', 'principal_id'])
       .ignore();
+    });
     return id;
+  }
+
+  private async customerStillPresent(tx: Knex.Transaction, tenant: string, principal: string): Promise<boolean> {
+    if (!(await tx('tenants').where({ name: tenant }).first())) return false;
+    if (await tx('customer_deletions').where({ tenant_name: tenant, status: 'active' }).first()) return false;
+    return Boolean(await tx('tenant_members').where({ tenant_name: tenant, principal_id: principal }).first());
   }
 
   private async expire(now: number, id?: string) {
@@ -115,12 +126,16 @@ export class WorkspaceReadyOutbox {
   async claim(id: string, now: number): Promise<Delivery | undefined> {
     await this.expire(now, id);
     return this.db.transaction(async tx => {
+      const target = await tx(TABLE).where({ id }).first('tenant_name');
+      if (!target) return undefined;
+      await lockTenantLifecycle(tx, target.tenant_name);
       const previous = await tx(TABLE)
         .where({ id, status: 'pending' })
         .forUpdate()
         .first();
       if (
         !previous ||
+        !(await this.customerStillPresent(tx, previous.tenant_name, previous.principal_id)) ||
         (previous.lease_until_ms !== null &&
           Number(previous.lease_until_ms) >= now)
       )

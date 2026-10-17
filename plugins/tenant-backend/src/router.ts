@@ -1,3 +1,4 @@
+import { CustomerDeletionConflictError } from './customerDeletionSchema';
 import { Router, Request, Response, json } from 'express';
 import { createHmac, timingSafeEqual } from 'crypto';
 import {
@@ -298,8 +299,9 @@ export function createRouter(opts: RouterOptions): Router {
       if (stage === 'prepare') await store.freezeCustomerDeletion(name, pid, login);
       else await store.releaseCustomerDeletion(name, pid);
       res.json({ tenant: name, principal_id: pid, stage, complete: true });
-    } catch {
-      res.status(503).json({ error: 'Customer lifecycle stage incomplete; retry' });
+    } catch (err) {
+      logger.warn('Customer lifecycle stage failed', { stage, reason: err instanceof Error ? err.message : 'unknown' });
+      res.status(err instanceof CustomerDeletionConflictError ? 409 : 503).json({ error: 'Customer lifecycle stage incomplete' });
     }
   });
 

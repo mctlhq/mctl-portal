@@ -5,6 +5,7 @@ import {
 } from './workspaceReadyEmail';
 import { WorkspaceAccess } from './workspaceAccess';
 import { TenantMember } from './types';
+import { TenantStore } from './tenantStore';
 
 const pid = 'prn_01M39HRB7JRXZ2PHW5VVB695YZ';
 const member: TenantMember = {
@@ -45,6 +46,10 @@ afterEach(async () => {
 
 async function fixture() {
   const logger = { warn: jest.fn(), info: jest.fn() };
+  const tenantStore = new TenantStore({ getClient: async () => db } as any, logger as any);
+  await tenantStore.init();
+  await db('tenants').insert({ name: 'acme', display_name: 'Acme', quotas: '{}', networking: '{}', contact_email: 'alice@example.com', synced_at: new Date().toISOString() });
+  await tenantStore.seedMember('acme', { ...member, catalogKey: 'principal' });
   const outbox = new WorkspaceReadyOutbox(db, logger);
   await outbox.init();
   const store = {
@@ -71,6 +76,7 @@ async function fixture() {
   });
   return {
     outbox,
+    tenantStore,
     logger,
     store,
     readAccess,
@@ -305,3 +311,11 @@ it.each(['recipient', 'capability'])(
     );
   },
 );
+
+it('does not recreate an email after deletion while access observation was in flight', async () => {
+ const f = await fixture();
+ f.readAccess.mockImplementationOnce(async () => { await f.tenantStore.delete('acme'); return access; });
+ await f.process();
+ expect(f.fetchImpl).not.toHaveBeenCalled();
+ expect(await db('workspace_ready_emails')).toEqual([]);
+});

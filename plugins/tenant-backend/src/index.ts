@@ -21,3 +21,5 @@ export {
 export type { ZitadelCustomer, ZitadelCustomerResolver, ZitadelPurpose } from './zitadelCustomer';
 
 export { createCustomerRevocationMiddleware } from './customerRevocation';
+
+export { ensureCustomerDeletionSchema } from './customerDeletionSchema';

@@ -26,6 +26,7 @@ function principalFromToken(token: string | undefined): string | undefined {
 export function createCustomerRevocationMiddleware(options: {
   isRevoked: (principalId: string) => Promise<boolean>;
   appOrigin: string;
+  logger?: { warn: (message: string) => void };
 }): RequestHandler {
   return async (req, res, next) => {
     let token = req.header('Authorization')?.match(/^Bearer[ ]+(\S+)$/i)?.[1];
@@ -51,6 +52,9 @@ export function createCustomerRevocationMiddleware(options: {
         refuse(401, 'This account has been deleted. Sign in again.'); return;
       }
       next();
-    } catch { refuse(503, 'Account status could not be verified. Try again later.'); }
+    } catch {
+      options.logger?.warn('Customer revocation status could not be observed');
+      refuse(503, 'Account status could not be verified. Try again later.');
+    }
   };
 }

@@ -107,3 +107,26 @@ ambiguous/crashed attempt exists (all earlier sends were explicitly refused).
 The provider idempotency key remains unchanged. If Resend remembers the old
 refused payload, retries wait out its key retention rather than minting a new
 key. Any earlier ambiguous attempt instead requires provider reconciliation.
+
+
+## Account-deletion recovery
+
+A complete customer deletion is an irreversible operation with a durable API
+manifest. Portal `prepare` freezes the exact principal before teardown; failure
+or workflow cancellation does not reactivate old credentials. Retry the same
+MCP deletion with `delete_customer_account=true` and the original
+`customer_principal_id`. The API resumes its immutable manifest, including after
+GitOps membership or the ZITADEL user has disappeared. No SQL unfreeze is needed.
+A standalone portal cancel route would be unsafe after another provider already
+revoked or deleted identity state, so recovery resumes deletion instead.
+
+The root fence initializes and awaits its schema before observing revocations;
+failed reads are logged and return 503, never a clean result. Its indexed reads
+are deliberately uncached to invalidate a customer across portal replicas
+immediately. Completed tombstones remain: a re-registering GitHub identity gets
+a new ZITADEL subject and a new API principal ID, never the deleted principal.
+
+Ready-email preparation, lease acquisition and tenant deletion serialize on the
+same tenant lifecycle lock. Preparation and claim recheck current principal
+membership and deletion state, so a stale scheduler snapshot cannot recreate
+contact data or deliver a first notification after cleanup.
