@@ -1,5 +1,13 @@
 # Changelog
 
+## [4.23.1](https://github.com/mctlhq/mctl-portal/compare/4.23.0...4.23.1) (2026-10-17)
+
+
+### Bug Fixes
+
+* package and validate runtime configuration schemas ([1b35058](https://github.com/mctlhq/mctl-portal/commit/1b350583c4be389df7b6eae6b7db9be23b3cd6c0))
+* package and validate runtime configuration schemas ([82e7493](https://github.com/mctlhq/mctl-portal/commit/82e7493ef1755bb8a1d3ec35a7ea7c4ad3263988))
+
 ## [4.23.0](https://github.com/mctlhq/mctl-portal/compare/4.22.0...4.23.0) (2026-10-17)
 
 
