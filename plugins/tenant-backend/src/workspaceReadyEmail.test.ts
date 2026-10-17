@@ -44,7 +44,8 @@ afterEach(async () => {
 });
 
 async function fixture() {
-  const outbox = new WorkspaceReadyOutbox(db);
+  const logger = { warn: jest.fn(), info: jest.fn() };
+  const outbox = new WorkspaceReadyOutbox(db, logger);
   await outbox.init();
   const store = {
     listAllMembers: jest.fn().mockResolvedValue([member]),
@@ -64,12 +65,13 @@ async function fixture() {
     readAccess,
     outbox,
     apiKey: 'test',
-    logger: { warn: jest.fn(), info: jest.fn() },
+    logger,
     fetchImpl,
     now: () => clock,
   });
   return {
     outbox,
+    logger,
     store,
     readAccess,
     fetchImpl,
@@ -98,6 +100,7 @@ it('retries ambiguous delivery with exactly the same key and payload', async () 
     ...access,
     observedAt: new Date(Date.now() + 5000).toISOString(),
   });
+  f.advance(60_000);
   await f.process();
   expect(f.fetchImpl).toHaveBeenCalledTimes(2);
   const a = f.fetchImpl.mock.calls[0][1];
@@ -136,9 +139,10 @@ it('does not retry a snapshot after a grant is revoked', async () => {
   f.fetchImpl.mockRejectedValueOnce(new Error('timeout'));
   await f.process();
   f.readAccess.mockResolvedValue({ ...access, capabilities: [] });
+  f.advance(60_000);
   await f.process();
   expect(f.fetchImpl).toHaveBeenCalledTimes(1);
-  expect((await db('workspace_ready_emails').first()).status).toBe('cancelled');
+  expect((await db('workspace_ready_emails').first()).status).toBe('reconcile');
 });
 
 it('does not confuse a provider failure or malformed success with acceptance', async () => {
@@ -147,6 +151,75 @@ it('does not confuse a provider failure or malformed success with acceptance', a
   await f.process();
   expect((await db('workspace_ready_emails').first()).status).toBe('pending');
   f.fetchImpl.mockResolvedValueOnce(new Response('{}', { status: 200 }));
+  f.advance(60_000);
   await f.process();
   expect((await db('workspace_ready_emails').first()).status).toBe('pending');
+});
+
+it('skips accepted jobs before any further platform/catalog observation', async () => {
+  const f = await fixture();
+  await f.process();
+  f.readAccess.mockClear();
+  f.store.findByName.mockClear();
+  await f.process();
+  await f.process();
+  expect(f.readAccess).not.toHaveBeenCalled();
+  expect(f.store.findByName).not.toHaveBeenCalled();
+});
+
+it('requires observable reconciliation after an ambiguous send and recipient correction', async () => {
+  const f = await fixture();
+  f.fetchImpl.mockRejectedValueOnce(new Error('timeout'));
+  await f.process();
+  f.store.findByName.mockResolvedValue({
+    contactEmail: 'corrected@example.com',
+  });
+  f.advance(60_000);
+  await f.process();
+  const row = await db('workspace_ready_emails').first();
+  expect(row.status).toBe('reconcile');
+  expect(row.reconcile_reason).toBe('recipient_or_grants_changed');
+  expect(f.logger.warn).toHaveBeenCalledWith(
+    expect.stringContaining(
+      'needs reconciliation: recipient_or_grants_changed',
+    ),
+  );
+  f.readAccess.mockClear();
+  f.advance(60_000);
+  await f.process();
+  expect(f.readAccess).not.toHaveBeenCalled();
+  expect(f.fetchImpl).toHaveBeenCalledTimes(1);
+});
+
+it('logs the expired-key transition once and does not observe that job again', async () => {
+  const f = await fixture();
+  f.fetchImpl.mockRejectedValueOnce(new Error('timeout'));
+  await f.process();
+  f.logger.warn.mockClear();
+  f.readAccess.mockClear();
+  f.advance(23 * 60 * 60 * 1000);
+  await f.process();
+  await f.process();
+  expect(f.logger.warn).toHaveBeenCalledTimes(1);
+  expect(f.logger.warn).toHaveBeenCalledWith(
+    expect.stringContaining('dedup_window_expired'),
+  );
+  expect(f.readAccess).not.toHaveBeenCalled();
+});
+
+it('backs off failed observations instead of producing a warning each tick', async () => {
+  const f = await fixture();
+  f.readAccess.mockRejectedValue(new Error('platform offline'));
+  await f.process();
+  await f.process();
+  expect(f.readAccess).toHaveBeenCalledTimes(1);
+  f.advance(60_000);
+  await f.process();
+  expect(f.readAccess).toHaveBeenCalledTimes(2);
+  f.advance(60_000);
+  await f.process();
+  expect(f.readAccess).toHaveBeenCalledTimes(2);
+  f.advance(60_000);
+  await f.process();
+  expect(f.readAccess).toHaveBeenCalledTimes(3);
 });

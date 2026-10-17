@@ -135,6 +135,7 @@ export const tenantPlugin = createBackendPlugin({
         // creator resolves the creator's principal with them (mctl-api#377).
         const mctlApiUrl = config.getOptionalString('workItems.baseUrl');
         const surfaceToken = config.getOptionalString('workItems.surfaceToken');
+        const accountDomain = config.getOptionalString('platform.domain') ?? 'mctl.ai';
         const resolveCreatorPrincipal =
           mctlApiUrl && surfaceToken
             ? createCreatorPrincipalResolver({ baseUrl: mctlApiUrl, surfaceToken, logger })
@@ -145,6 +146,11 @@ export const tenantPlugin = createBackendPlugin({
             : undefined;
         const readWorkspaceAccess = mctlApiUrl && surfaceToken ? createWorkspaceAccessReader({
           store,
+          portalBaseUrl: config.getString('app.baseUrl'),
+          mcpUrl: new URL('/mcp', mctlApiUrl).toString(),
+          accountDomain,
+          maxObservationAgeMs: (config.getOptionalNumber('tenantManagement.workspaceReady.maxObservationAgeSeconds') ?? 300) * 1000,
+          maxFutureClockSkewMs: (config.getOptionalNumber('tenantManagement.workspaceReady.maxFutureClockSkewSeconds') ?? 300) * 1000,
           observePlatform: createPlatformAccessObserver(mctlApiUrl, surfaceToken),
           async getCatalogEntity(kind, name) {
             const catalogUrl = await discovery.getBaseUrl('catalog');
@@ -168,12 +174,13 @@ export const tenantPlugin = createBackendPlugin({
           // Configuration errors stop startup instead of silently disabling a
           // promised ready notification. Observation failures retry at runtime.
           if (!readWorkspaceAccess || !readyApiKey) throw new Error('Workspace ready notifications require API credentials and Resend configuration');
-          const outbox = new WorkspaceReadyOutbox(await database.getClient());
+          const outbox = new WorkspaceReadyOutbox(await database.getClient(), logger);
           await outbox.init();
           await scheduler.scheduleTask({
             id: 'workspace-ready-notifications', frequency: { minutes: 1 }, timeout: { minutes: 5 },
             initialDelay: { seconds: 30 },
-            fn: createWorkspaceReadyProcessor({ store, readAccess: readWorkspaceAccess, outbox, apiKey: readyApiKey, logger }),
+            fn: createWorkspaceReadyProcessor({ store, readAccess: readWorkspaceAccess, outbox, apiKey: readyApiKey,
+              from: config.getOptionalString('tenantManagement.workspaceReady.from') ?? `MCTL <noreply@${accountDomain}>`, logger }),
           });
         }
         if (!resolveCreatorPrincipal) {
@@ -190,6 +197,7 @@ export const tenantPlugin = createBackendPlugin({
           store,
           argoClient,
           argoNamespace,
+          workflowBaseUrl: argoBaseUrl,
           landingPageToken,
           defaultQuotas,
           maxTeamsPerTenant,

@@ -196,8 +196,8 @@ platform:
   domain: mctl.ai
   domainAlt: mctl.me
   githubOrg: mctlhq
-  argocdBaseUrl: https://ops.mctl.me/applications/argocd
-  argoWorkflowsBaseUrl: https://workflows.mctl.me
+  argocdBaseUrl: https://ops.mctl.ai/applications/argocd
+  argoWorkflowsBaseUrl: https://workflows.mctl.ai
   gitopsRepo: mctl-gitops
   containerRegistry: ghcr.io/mctlhq
 

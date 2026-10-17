@@ -12,6 +12,11 @@ const TABLE = 'workspace_ready_emails';
 const RETRY_WINDOW_MS = 23 * 60 * 60 * 1000;
 const LEASE_MS = 3 * 60 * 1000;
 
+const deliveryKey = (tenant: string, principal: string) =>
+  createHash('sha256')
+    .update(JSON.stringify([tenant, principal]))
+    .digest('hex');
+
 interface Delivery {
   id: string;
   payload: string;
@@ -26,7 +31,10 @@ interface Delivery {
  * for reconciliation instead of silently becoming a new send.
  */
 export class WorkspaceReadyOutbox {
-  constructor(private readonly db: Knex) {}
+  constructor(
+    private readonly db: Knex,
+    private readonly logger?: Pick<LoggerService, 'warn'>,
+  ) {}
 
   async init() {
     if (await this.db.schema.hasTable(TABLE)) return;
@@ -45,16 +53,15 @@ export class WorkspaceReadyOutbox {
         table.string('lease_token').nullable();
         table.string('provider_id').nullable();
         table.bigInteger('accepted_ms').nullable();
+        table.string('reconcile_reason').nullable();
       });
     } catch (err) {
       if (!(await this.db.schema.hasTable(TABLE))) throw err;
     }
   }
 
-  async prepare(access: WorkspaceAccess, recipient: string) {
-    const id = createHash('sha256')
-      .update(JSON.stringify([access.tenant, access.principalId]))
-      .digest('hex');
+  async prepare(access: WorkspaceAccess, recipient: string, from?: string) {
+    const id = deliveryKey(access.tenant, access.principalId);
     await this.db(TABLE)
       .insert({
         id,
@@ -62,7 +69,7 @@ export class WorkspaceReadyOutbox {
         principal_id: access.principalId,
         recipient,
         snapshot: JSON.stringify(access),
-        payload: JSON.stringify(renderWorkspaceReady(access, recipient)),
+        payload: JSON.stringify(renderWorkspaceReady(access, recipient, from)),
         status: 'pending',
       })
       .onConflict(['tenant_name', 'principal_id'])
@@ -70,12 +77,42 @@ export class WorkspaceReadyOutbox {
     return id;
   }
 
-  async claim(id: string, now: number): Promise<Delivery | undefined> {
-    await this.db(TABLE)
-      .where({ id, status: 'pending' })
+  private async expire(now: number, id?: string) {
+    let query = this.db(TABLE)
+      .where({ status: 'pending' })
       .whereNotNull('first_attempt_ms')
-      .where('first_attempt_ms', '<=', now - RETRY_WINDOW_MS)
-      .update({ status: 'reconcile' });
+      .where('first_attempt_ms', '<=', now - RETRY_WINDOW_MS);
+    if (id) query = query.andWhere({ id });
+    const rows = await query
+      .update({ status: 'reconcile', reconcile_reason: 'dedup_window_expired' })
+      .returning('id');
+    for (const row of rows)
+      this.logger?.warn(
+        `[WorkspaceReady] Delivery ${row.id} needs reconciliation: dedup_window_expired`,
+      );
+  }
+
+  async eligible(ids: string[], now: number): Promise<Set<string>> {
+    await this.expire(now);
+    const eligible = new Set(ids);
+    // Bounded SQL parameter lists; completed work never triggers HTTP reads.
+    for (let start = 0; start < ids.length; start += 500) {
+      const rows = await this.db(TABLE)
+        .whereIn('id', ids.slice(start, start + 500))
+        .select('id', 'status', 'lease_until_ms');
+      for (const row of rows) {
+        if (
+          row.status !== 'pending' ||
+          (row.lease_until_ms !== null && Number(row.lease_until_ms) >= now)
+        )
+          eligible.delete(row.id);
+      }
+    }
+    return eligible;
+  }
+
+  async claim(id: string, now: number): Promise<Delivery | undefined> {
+    await this.expire(now, id);
     const leaseToken = randomUUID();
     const rows = await this.db(TABLE)
       .where({ id, status: 'pending' })
@@ -117,14 +154,23 @@ export class WorkspaceReadyOutbox {
       .update({ lease_until_ms: null, lease_token: null });
   }
 
-  async cancel(delivery: Delivery) {
-    await this.db(TABLE)
+  async reconcile(delivery: Delivery) {
+    const changed = await this.db(TABLE)
       .where({
         id: delivery.id,
         lease_token: delivery.lease_token,
         status: 'pending',
       })
-      .update({ status: 'cancelled', lease_until_ms: null, lease_token: null });
+      .update({
+        status: 'reconcile',
+        reconcile_reason: 'recipient_or_grants_changed',
+        lease_until_ms: null,
+        lease_token: null,
+      });
+    if (changed)
+      this.logger?.warn(
+        `[WorkspaceReady] Delivery ${delivery.id} needs reconciliation: recipient_or_grants_changed`,
+      );
   }
 }
 
@@ -133,18 +179,34 @@ export function createWorkspaceReadyProcessor(options: {
   readAccess: WorkspaceAccessReader;
   outbox: WorkspaceReadyOutbox;
   apiKey: string;
+  from?: string;
   logger: Pick<LoggerService, 'warn' | 'info'>;
   fetchImpl?: typeof fetch;
   now?: () => number;
 }) {
   const fetchImpl = options.fetchImpl ?? fetch;
   const now = options.now ?? Date.now;
+  const retries = new Map<string, { failures: number; after: number }>();
   return async () => {
     // A failed listing aborts the run, never becomes an empty success.
     const members = await options.store.listAllMembers();
-    for (const member of members.filter(
+    const candidates = members.filter(
       m => m.catalogKey === 'principal' && m.role === 'owner',
-    )) {
+    );
+    const ids = candidates.map(m =>
+      deliveryKey(m.tenantName, m.principalId ?? ''),
+    );
+    const currentIds = new Set(ids);
+    for (const key of retries.keys())
+      if (!currentIds.has(key)) retries.delete(key);
+    const eligible = await options.outbox.eligible(ids, now());
+    for (const member of candidates) {
+      const key = deliveryKey(member.tenantName, member.principalId ?? '');
+      if (!eligible.has(key)) {
+        retries.delete(key);
+        continue;
+      }
+      if ((retries.get(key)?.after ?? 0) > now()) continue;
       let delivery: Delivery | undefined;
       try {
         const tenant = await options.store.findByName(member.tenantName);
@@ -154,8 +216,15 @@ export function createWorkspaceReadyProcessor(options: {
         )
           continue;
         const current = await options.readAccess(member);
-        if (current.status !== 'ready') continue;
-        const id = await options.outbox.prepare(current, tenant.contactEmail);
+        if (current.status !== 'ready') {
+          retries.delete(key);
+          continue;
+        }
+        const id = await options.outbox.prepare(
+          current,
+          tenant.contactEmail,
+          options.from,
+        );
         delivery = await options.outbox.claim(id, now());
         if (!delivery) continue;
         const snapshot: WorkspaceAccess = JSON.parse(delivery.snapshot);
@@ -169,7 +238,11 @@ export function createWorkspaceReadyProcessor(options: {
               !current.capabilities.some(v => v.id === c.id && v.url === c.url),
           )
         ) {
-          await options.outbox.cancel(delivery);
+          // An ambiguous first attempt may already have been delivered. A new
+          // generation/key could duplicate it, so operator reconciliation is
+          // required instead of silently starting a new notification.
+          await options.outbox.reconcile(delivery);
+          retries.delete(key);
           continue;
         }
         const response = await fetchImpl('https://api.resend.com/emails', {
@@ -189,6 +262,7 @@ export function createWorkspaceReadyProcessor(options: {
         if (typeof providerId !== 'string' || !providerId)
           throw new Error('Email provider response has no message id');
         await options.outbox.finish(delivery, providerId, now());
+        retries.delete(key);
         options.logger.info(
           `[WorkspaceReady] Ready email accepted for ${member.tenantName}`,
         );
@@ -196,6 +270,12 @@ export function createWorkspaceReadyProcessor(options: {
         // Independent of create-tenant: delivery/observation failures never
         // fail provisioning or claim a workspace is ready.
         if (delivery) await options.outbox.release(delivery);
+        const failures = (retries.get(key)?.failures ?? 0) + 1;
+        const delay = Math.min(
+          15 * 60_000,
+          60_000 * 2 ** Math.min(failures - 1, 4),
+        );
+        retries.set(key, { failures, after: now() + delay });
         options.logger.warn(
           `[WorkspaceReady] Check/delivery will retry for ${
             member.tenantName

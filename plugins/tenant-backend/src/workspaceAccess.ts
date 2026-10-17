@@ -22,7 +22,7 @@ export interface PlatformAccessObservation {
 export interface WorkspaceAccess {
   tenant: string;
   principalId: string;
-  account: string;
+  account?: string;
   role: string;
   observedAt: string;
   status: 'ready' | 'provisioning';
@@ -40,6 +40,8 @@ export type WorkspaceAccessReader = (
 export function readPlatformObservation(
   value: unknown,
   member: TenantMember,
+  maxAgeMs = 300_000,
+  maxFutureSkewMs = 300_000,
 ): PlatformAccessObservation {
   const x = value as PlatformAccessObservation | null;
   const envs = x?.environments;
@@ -50,7 +52,6 @@ export function readPlatformObservation(
     x.principalId !== member.principalId ||
     x.role !== member.role ||
     !Number.isFinite(Date.parse(x.observedAt)) ||
-    Math.abs(Date.now() - Date.parse(x.observedAt)) > 60_000 ||
     !['ready', 'pending'].includes(x.infrastructure) ||
     !['configured', 'blocked'].includes(x.portal) ||
     !['available', 'blocked'].includes(x.mcp) ||
@@ -70,10 +71,24 @@ export function readPlatformObservation(
       'Platform access observation is incomplete or inconsistent',
     );
   }
+  const age = Date.now() - Date.parse(x.observedAt);
+  if (age > maxAgeMs)
+    throw new Error(
+      `Platform observation too old: age ${age}ms, maximum ${maxAgeMs}ms`,
+    );
+  if (age < -maxFutureSkewMs)
+    throw new Error(
+      `Platform clock skew exceeds tolerance: future ${-age}ms, maximum ${maxFutureSkewMs}ms`,
+    );
   return x;
 }
 
 export function createWorkspaceAccessReader(options: {
+  portalBaseUrl: string;
+  mcpUrl: string;
+  accountDomain: string;
+  maxObservationAgeMs?: number;
+  maxFutureClockSkewMs?: number;
   store: Pick<TenantStore, 'getMemberByTenant'>;
   observePlatform: (member: TenantMember) => Promise<unknown>;
   getCatalogEntity: (
@@ -81,13 +96,20 @@ export function createWorkspaceAccessReader(options: {
     name: string,
   ) => Promise<Entity | undefined>;
 }): WorkspaceAccessReader {
+  const portalBase = new URL(options.portalBaseUrl)
+    .toString()
+    .replace(/\/$/, '');
+  const mcpUrl = new URL(options.mcpUrl).toString();
+  const maxAge = options.maxObservationAgeMs ?? 300_000;
+  const maxSkew = options.maxFutureClockSkewMs ?? 300_000;
+  if (![maxAge, maxSkew].every(v => Number.isFinite(v) && v > 0))
+    throw new Error('Observation freshness limits must be positive');
   return async member => {
     if (
       member.catalogKey !== 'principal' ||
       !member.principalId ||
       !PRINCIPAL_ID.test(member.principalId) ||
-      member.userId !== member.principalId.toLowerCase() ||
-      !member.login
+      member.userId !== member.principalId.toLowerCase()
     ) {
       throw new Error(
         'Verified workspace access requires principal-keyed membership',
@@ -107,6 +129,8 @@ export function createWorkspaceAccessReader(options: {
     const platform = readPlatformObservation(
       await options.observePlatform(current),
       current,
+      maxAge,
+      maxSkew,
     );
     const group = await options.getCatalogEntity('group', member.tenantName);
     const user = await options.getCatalogEntity('user', member.userId);
@@ -130,14 +154,14 @@ export function createWorkspaceAccessReader(options: {
       capabilities.push({
         id: 'portal',
         label: 'Workspace portal',
-        url: `https://app.mctl.ai/catalog/default/group/${member.tenantName}`,
+        url: `${portalBase}/catalog/default/group/${member.tenantName}`,
       });
     }
     if (platform.mcp === 'available')
       capabilities.push({
         id: 'mcp',
         label: 'MCP',
-        url: 'https://api.mctl.ai/mcp',
+        url: mcpUrl,
       });
     // Check again after external reads, rather than publishing an observation
     // for a membership removed while catalog/infrastructure was being read.
@@ -154,7 +178,9 @@ export function createWorkspaceAccessReader(options: {
     return {
       tenant: member.tenantName,
       principalId: member.principalId,
-      account: `${member.login}@mctl.ai`,
+      ...(member.login
+        ? { account: `${member.login}@${options.accountDomain}` }
+        : {}),
       role: member.role,
       observedAt: platform.observedAt,
       status:
@@ -165,7 +191,7 @@ export function createWorkspaceAccessReader(options: {
       environments: platform.environments,
       capabilities,
       mcp: platform.mcp,
-      accessUrl: 'https://app.mctl.ai/workspace/access',
+      accessUrl: `${portalBase}/workspace/access`,
     };
   };
 }
@@ -207,15 +233,23 @@ const escapeHtml = (s: string) =>
       ]!),
   );
 
-export function renderWorkspaceReady(access: WorkspaceAccess, email: string) {
+export function renderWorkspaceReady(
+  access: WorkspaceAccess,
+  email: string,
+  from = 'MCTL <noreply@mctl.ai>',
+) {
   if (access.status !== 'ready') throw new Error('Workspace is not ready');
   const subject = `Your MCTL workspace "${access.tenant}" is ready`;
   const lines = [
     `Your workspace "${access.tenant}" is ready.`,
     '',
-    `Account: ${access.account} (account identifier, not a mailbox)`,
+    ...(access.account
+      ? [`Account: ${access.account} (account identifier, not a mailbox)`]
+      : []),
     `Role: ${access.role}`,
-    'Sign in with GitHub. You do not need a separate password or passkey.',
+    access.account
+      ? 'Sign in with GitHub. You do not need a separate password or passkey.'
+      : 'Use your existing MCTL sign-in to open your workspace.',
     '',
     `Access verified as of ${access.observedAt}:`,
     ...access.capabilities.map(c => `${c.label}: ${c.url}`),
@@ -238,7 +272,7 @@ export function renderWorkspaceReady(access: WorkspaceAccess, email: string) {
   ];
   const text = lines.join('\n');
   return {
-    from: 'MCTL <noreply@mctl.ai>',
+    from,
     to: [email],
     subject,
     text,
@@ -250,12 +284,18 @@ export function renderWorkspaceReady(access: WorkspaceAccess, email: string) {
 <table role="presentation" width="560" cellpadding="0" cellspacing="0" style="width:100%;max-width:560px;background:#fff;border:1px solid #ddd;border-radius:12px"><tr><td style="padding:32px">
 <p style="font-size:20px;font-weight:bold"><span style="color:#b83d28">M</span>CTL</p>
 <h1 style="font-size:22px;line-height:1.3">${escapeHtml(subject)}</h1>
-<p style="line-height:1.6">Account: <strong>${escapeHtml(
-      access.account,
-    )}</strong> (account identifier, not a mailbox)<br>Role: <strong>${escapeHtml(
-      access.role,
-    )}</strong></p>
-<p style="line-height:1.6">Sign in with GitHub. You do not need a separate password or passkey.</p>
+<p style="line-height:1.6">${
+      access.account
+        ? `Account: <strong>${escapeHtml(
+            access.account,
+          )}</strong> (account identifier, not a mailbox)<br>`
+        : ''
+    }Role: <strong>${escapeHtml(access.role)}</strong></p>
+<p style="line-height:1.6">${
+      access.account
+        ? 'Sign in with GitHub. You do not need a separate password or passkey.'
+        : 'Use your existing MCTL sign-in to open your workspace.'
+    }</p>
 <p>Access verified as of ${escapeHtml(access.observedAt)}:</p>
 <ul>${access.capabilities
       .map(

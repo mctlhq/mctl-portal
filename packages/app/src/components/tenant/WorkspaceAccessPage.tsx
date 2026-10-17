@@ -20,13 +20,44 @@ import {
 
 interface Access {
   tenant: string;
-  account: string;
+  account?: string;
   role: string;
   observedAt: string;
   status: 'ready' | 'provisioning';
   environments: Array<{ name: string; namespace: string; status: string }>;
   capabilities: Array<{ id: string; label: string; url: string }>;
   mcp: 'available' | 'blocked';
+}
+
+function isAccess(value: unknown): value is Access {
+  const x = value as Access | null;
+  return (
+    !!x &&
+    typeof x.tenant === 'string' &&
+    typeof x.role === 'string' &&
+    (x.account === undefined || typeof x.account === 'string') &&
+    ['ready', 'provisioning'].includes(x.status) &&
+    typeof x.observedAt === 'string' &&
+    Number.isFinite(Date.parse(x.observedAt)) &&
+    ['available', 'blocked'].includes(x.mcp) &&
+    Array.isArray(x.capabilities) &&
+    x.capabilities.every(
+      c =>
+        !!c &&
+        typeof c.id === 'string' &&
+        typeof c.label === 'string' &&
+        typeof c.url === 'string' &&
+        /^https?:\/\//.test(c.url),
+    ) &&
+    Array.isArray(x.environments) &&
+    x.environments.every(
+      e =>
+        !!e &&
+        typeof e.name === 'string' &&
+        typeof e.namespace === 'string' &&
+        ['ready', 'pending'].includes(e.status),
+    )
+  );
 }
 
 export function WorkspaceAccessPage() {
@@ -55,6 +86,7 @@ export function WorkspaceAccessPage() {
         if (
           !result ||
           !Array.isArray(result.workspaces) ||
+          !result.workspaces.every(isAccess) ||
           typeof result.legacyMembership !== 'boolean'
         )
           throw new Error('Access unavailable');
@@ -102,8 +134,8 @@ export function WorkspaceAccessPage() {
           </Button>
         </Box>
         <Typography paragraph>
-          Sign in with GitHub. Your account identifier is not a mailbox; you do
-          not need a separate password or passkey.
+          Use your existing MCTL sign-in. A displayed account identifier is not
+          a mailbox.
         </Typography>
         {error && (
           <Alert severity="warning">
@@ -142,8 +174,12 @@ export function WorkspaceAccessPage() {
               />
               <CardContent>
                 <Typography paragraph>
-                  Account: <strong>{workspace.account}</strong>
-                  <br />
+                  {workspace.account && (
+                    <>
+                      Account: <strong>{workspace.account}</strong>
+                      <br />
+                    </>
+                  )}
                   Role: <strong>{workspace.role}</strong>
                 </Typography>
                 <Typography variant="h6" component="h2">

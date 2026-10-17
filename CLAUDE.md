@@ -31,3 +31,6 @@ Backstage-based developer portal. Service catalog, templates, deploy UI.
 - `plugins/` — custom backend plugins
 - `packages/app/` — frontend app
 - `packages/backend/` — backend app
+
+## Workspace Access
+- Operations and delivery reconciliation: `docs/workspace-access.md`

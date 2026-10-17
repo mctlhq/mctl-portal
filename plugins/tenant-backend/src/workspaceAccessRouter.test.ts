@@ -48,11 +48,9 @@ async function fixture() {
       }),
     },
     userInfo: {
-      getUserInfo: jest
-        .fn()
-        .mockResolvedValue({
-          ownershipEntityRefs: ['user:default/prn_own', 'group:default/own'],
-        }),
+      getUserInfo: jest.fn().mockResolvedValue({
+        ownershipEntityRefs: ['user:default/prn_own', 'group:default/own'],
+      }),
     },
     store: {
       getMemberByTenant: jest.fn().mockResolvedValue(undefined),
@@ -67,7 +65,7 @@ async function fixture() {
       resolve(`http://127.0.0.1:${(server!.address() as AddressInfo).port}`),
     );
   });
-  return { base, member, readWorkspaceAccess, listMembershipsForUser };
+  return { base, member, logger, readWorkspaceAccess, listMembershipsForUser };
 }
 
 it('uses only the signed-in user membership and ignores identity/tenant parameters', async () => {
@@ -102,6 +100,14 @@ it('keeps a failed observation distinct from a verified empty membership list', 
     headers: { Authorization: 'Bearer user' },
   });
   expect(failed.status).toBe(503);
+  expect(f.logger.warn).toHaveBeenCalledWith(
+    expect.any(String),
+    expect.objectContaining({
+      user: 'prn_own',
+      tenant: 'own',
+      reason: 'unavailable',
+    }),
+  );
   expect(await failed.json()).not.toHaveProperty('workspaces');
   f.listMembershipsForUser.mockResolvedValueOnce([]);
   const empty = await fetch(`${f.base}/me/workspace-access`, {

@@ -53,15 +53,25 @@ describe('GET /backstage/catalog.yaml', () => {
     const options = {
       logger: noopLogger,
       // Only the catalog handler is exercised; auth services must not be hit.
-      httpAuth: { credentials: jest.fn().mockRejectedValue(new Error('no creds')) },
+      httpAuth: {
+        credentials: jest.fn().mockRejectedValue(new Error('no creds')),
+      },
       userInfo: { getUserInfo: jest.fn() },
       store: {
-        listAll: jest.fn().mockResolvedValue([
-          { name: 'labs', displayName: 'Labs', contactEmail: 'owner@example.com' },
-        ]),
-        listAllMembers: jest.fn().mockResolvedValue([
-          { tenantName: 'labs', userId: 'alice', role: 'owner' },
-        ]),
+        listAll: jest
+          .fn()
+          .mockResolvedValue([
+            {
+              name: 'labs',
+              displayName: 'Labs',
+              contactEmail: 'owner@example.com',
+            },
+          ]),
+        listAllMembers: jest
+          .fn()
+          .mockResolvedValue([
+            { tenantName: 'labs', userId: 'alice', role: 'owner' },
+          ]),
       },
       argoClient: {},
       argoNamespace: 'argo-workflows',
@@ -146,21 +156,37 @@ describe('landing-page token is not platform admin', () => {
   function startApp(): Promise<string> {
     const options = {
       logger: noopLogger,
-      httpAuth: { credentials: jest.fn().mockRejectedValue(new Error('no creds')) },
+      httpAuth: {
+        credentials: jest.fn().mockRejectedValue(new Error('no creds')),
+      },
       userInfo: { getUserInfo: jest.fn() },
       store: {
-        listAll: jest.fn().mockResolvedValue([
-          { name: 'labs', displayName: 'Labs', contactEmail: 'owner@example.com' },
-        ]),
-        findByName: jest.fn().mockImplementation(async (name: string) =>
-          name === 'labs'
-            ? { name: 'labs', displayName: 'Labs', contactEmail: 'owner@example.com' }
-            : undefined,
-        ),
+        listAll: jest
+          .fn()
+          .mockResolvedValue([
+            {
+              name: 'labs',
+              displayName: 'Labs',
+              contactEmail: 'owner@example.com',
+            },
+          ]),
+        findByName: jest
+          .fn()
+          .mockImplementation(async (name: string) =>
+            name === 'labs'
+              ? {
+                  name: 'labs',
+                  displayName: 'Labs',
+                  contactEmail: 'owner@example.com',
+                }
+              : undefined,
+          ),
         upsert: jest.fn().mockResolvedValue(undefined),
         addMember: jest.fn().mockResolvedValue(undefined),
         listAllMembers: jest.fn().mockResolvedValue([]),
-        listMembers: jest.fn().mockResolvedValue([{ userId: 'alice', role: 'owner' }]),
+        listMembers: jest
+          .fn()
+          .mockResolvedValue([{ userId: 'alice', role: 'owner' }]),
         getMemberByTenant: jest.fn(),
       },
       argoClient: { submitWorkflow },
@@ -213,9 +239,12 @@ describe('landing-page token is not platform admin', () => {
     const base = await startApp();
     const headers = { authorization: `Bearer ${token}` };
     expect((await fetch(`${base}/tenants`, { headers })).status).toBe(403);
-    expect((await fetch(`${base}/tenants/labs/members`, { headers })).status).toBe(403);
     expect(
-      (await fetch(`${base}/tenants/labs`, { method: 'DELETE', headers })).status,
+      (await fetch(`${base}/tenants/labs/members`, { headers })).status,
+    ).toBe(403);
+    expect(
+      (await fetch(`${base}/tenants/labs`, { method: 'DELETE', headers }))
+        .status,
     ).toBe(403);
   });
 });
@@ -230,14 +259,28 @@ describe('POST /tenants resolves the creator principal', () => {
   const submitWorkflow = jest.fn().mockResolvedValue('create-tenant-abc');
   const upsert = jest.fn().mockResolvedValue(undefined);
   const addMember = jest.fn().mockResolvedValue(undefined);
-  const logger = { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn(), child: jest.fn() };
+  const logger = {
+    info: jest.fn(),
+    warn: jest.fn(),
+    error: jest.fn(),
+    debug: jest.fn(),
+    child: jest.fn(),
+  };
 
-  function startApp(resolveCreatorPrincipal?: (login: string) => Promise<string>): Promise<string> {
+  function startApp(
+    resolveCreatorPrincipal?: (login: string) => Promise<string>,
+  ): Promise<string> {
     const options = {
       logger,
-      httpAuth: { credentials: jest.fn().mockRejectedValue(new Error('no creds')) },
+      httpAuth: {
+        credentials: jest.fn().mockRejectedValue(new Error('no creds')),
+      },
       userInfo: { getUserInfo: jest.fn() },
-      store: { findByName: jest.fn().mockResolvedValue(undefined), upsert, addMember },
+      store: {
+        findByName: jest.fn().mockResolvedValue(undefined),
+        upsert,
+        addMember,
+      },
       argoClient: { submitWorkflow },
       argoNamespace: 'argo-workflows',
       getGithubToken: jest.fn(),
@@ -256,8 +299,15 @@ describe('POST /tenants resolves the creator principal', () => {
   const create = (base: string, extra: Record<string, unknown>) =>
     fetch(`${base}/tenants`, {
       method: 'POST',
-      headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
-      body: JSON.stringify({ tenantName: 'acme', displayName: 'Acme', ...extra }),
+      headers: {
+        authorization: `Bearer ${token}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        tenantName: 'acme',
+        displayName: 'Acme',
+        ...extra,
+      }),
     });
 
   const params = () => submitWorkflow.mock.calls[0][0].parameters as string[];
@@ -277,7 +327,9 @@ describe('POST /tenants resolves the creator principal', () => {
   it('passes the creator principal to create-tenant', async () => {
     const resolve = jest.fn().mockResolvedValue(PID);
     const base = await startApp(resolve);
-    expect((await create(base, { creatorUserId: 'Octo-Cat' })).status).toBe(202);
+    expect((await create(base, { creatorUserId: 'Octo-Cat' })).status).toBe(
+      202,
+    );
     expect(resolve).toHaveBeenCalledWith('Octo-Cat');
     expect(params()).toContain('creator_user_id=Octo-Cat');
     expect(params()).toContain(`creator_principal_id=${PID}`);
@@ -294,7 +346,13 @@ describe('POST /tenants resolves the creator principal', () => {
   it('refuses a creator that is not a GitHub login', async () => {
     const resolve = jest.fn().mockResolvedValue(PID);
     const base = await startApp(resolve);
-    for (const creatorUserId of ['octo cat', 'a:b', 'x'.repeat(40), 'a-'.repeat(20) + 'a', 42]) {
+    for (const creatorUserId of [
+      'octo cat',
+      'a:b',
+      'x'.repeat(40),
+      'a-'.repeat(20) + 'a',
+      42,
+    ]) {
       expect((await create(base, { creatorUserId })).status).toBe(400);
     }
     expect(resolve).not.toHaveBeenCalled();
@@ -305,14 +363,18 @@ describe('POST /tenants resolves the creator principal', () => {
   it('refuses a named creator when resolution is not configured', async () => {
     const base = await startApp(undefined);
     expect((await create(base, { creatorUserId: 'octocat' })).status).toBe(503);
-    expect(logger.error).toHaveBeenCalledWith(expect.stringContaining('not configured'));
+    expect(logger.error).toHaveBeenCalledWith(
+      expect.stringContaining('not configured'),
+    );
     expect(submitWorkflow).not.toHaveBeenCalled();
     expect(upsert).not.toHaveBeenCalled();
     expect(addMember).not.toHaveBeenCalled();
   });
 
   it('refuses when the principal cannot be resolved', async () => {
-    const base = await startApp(jest.fn().mockRejectedValue(new CreatorPrincipalError(503, 'down')));
+    const base = await startApp(
+      jest.fn().mockRejectedValue(new CreatorPrincipalError(503, 'down')),
+    );
     expect((await create(base, { creatorUserId: 'octocat' })).status).toBe(503);
     expect(submitWorkflow).not.toHaveBeenCalled();
     expect(upsert).not.toHaveBeenCalled();
@@ -327,7 +389,11 @@ describe('POST /tenants resolves the creator principal', () => {
 
   it('answers 403 for a disabled or refused creator', async () => {
     const base = await startApp(
-      jest.fn().mockRejectedValue(new CreatorPrincipalError(403, 'not allowed', 'principal_disabled')),
+      jest
+        .fn()
+        .mockRejectedValue(
+          new CreatorPrincipalError(403, 'not allowed', 'principal_disabled'),
+        ),
     );
     const res = await create(base, { creatorUserId: 'octocat' });
     expect(res.status).toBe(403);
@@ -342,8 +408,15 @@ describe('POST /tenants resolves the creator principal', () => {
 describe('tenant data is scoped to members, admins and real users', () => {
   let server: Server | undefined;
   const submitWorkflow = jest.fn().mockResolvedValue('wf');
-  const TENANT = { name: 'labs', displayName: 'Labs', contactEmail: 'owner@example.com' };
-  const MEMBERS: Record<string, string> = { 'labs:carol': 'viewer', 'admins:root': 'owner' };
+  const TENANT = {
+    name: 'labs',
+    displayName: 'Labs',
+    contactEmail: 'owner@example.com',
+  };
+  const MEMBERS: Record<string, string> = {
+    'labs:carol': 'viewer',
+    'admins:root': 'owner',
+  };
 
   const noopLogger = {
     info: jest.fn(),
@@ -360,12 +433,22 @@ describe('tenant data is scoped to members, admins and real users', () => {
       httpAuth: {
         credentials: jest.fn(async (req: any, opts?: { allow?: string[] }) => {
           const caller = String(req.headers['x-test-caller'] ?? '');
-          const type = caller === 'service' ? 'service' : caller.startsWith('user:') ? 'user' : '';
+          const type =
+            caller === 'service'
+              ? 'service'
+              : caller.startsWith('user:')
+              ? 'user'
+              : '';
           if (!type || (opts?.allow && !opts.allow.includes(type))) {
             throw new Error('not allowed');
           }
           return type === 'user'
-            ? { principal: { type, userEntityRef: `user:default/${caller.slice(5)}` } }
+            ? {
+                principal: {
+                  type,
+                  userEntityRef: `user:default/${caller.slice(5)}`,
+                },
+              }
             : { principal: { type, subject: 'plugin:scaffolder' } };
         }),
       },
@@ -377,10 +460,14 @@ describe('tenant data is scoped to members, admins and real users', () => {
       },
       store: {
         listAll: jest.fn().mockResolvedValue([TENANT]),
-        findByName: jest.fn(async (name: string) => (name === 'labs' ? TENANT : undefined)),
+        findByName: jest.fn(async (name: string) =>
+          name === 'labs' ? TENANT : undefined,
+        ),
         upsert: jest.fn().mockResolvedValue(undefined),
         addMember: jest.fn().mockResolvedValue(undefined),
-        listMembers: jest.fn().mockResolvedValue([{ userId: 'carol', role: 'viewer' }]),
+        listMembers: jest
+          .fn()
+          .mockResolvedValue([{ userId: 'carol', role: 'viewer' }]),
         getMemberByTenant: jest.fn(async (tenant: string, userId: string) => {
           const role = MEMBERS[`${tenant}:${userId}`];
           return role ? { tenantName: tenant, userId, role } : undefined;
@@ -412,10 +499,18 @@ describe('tenant data is scoped to members, admins and real users', () => {
 
   it('does not treat a service credential as platform admin', async () => {
     const base = await startApp();
-    const headers = { 'x-test-caller': 'service', 'content-type': 'application/json' };
+    const headers = {
+      'x-test-caller': 'service',
+      'content-type': 'application/json',
+    };
     expect((await fetch(`${base}/tenants`, { headers })).status).toBe(403);
-    expect((await fetch(`${base}/tenants/labs/members`, { headers })).status).toBe(403);
-    expect((await fetch(`${base}/tenants/labs`, { method: 'DELETE', headers })).status).toBe(403);
+    expect(
+      (await fetch(`${base}/tenants/labs/members`, { headers })).status,
+    ).toBe(403);
+    expect(
+      (await fetch(`${base}/tenants/labs`, { method: 'DELETE', headers }))
+        .status,
+    ).toBe(403);
     const created = await fetch(`${base}/tenants`, {
       method: 'POST',
       headers,
@@ -427,16 +522,32 @@ describe('tenant data is scoped to members, admins and real users', () => {
 
   it('lists tenants only for platform admins', async () => {
     const base = await startApp();
-    expect((await fetch(`${base}/tenants`, { headers: { 'x-test-caller': 'user:stranger' } })).status).toBe(403);
-    expect((await fetch(`${base}/tenants`, { headers: { 'x-test-caller': 'user:carol' } })).status).toBe(403);
-    const admin = await fetch(`${base}/tenants`, { headers: { 'x-test-caller': 'user:root' } });
+    expect(
+      (
+        await fetch(`${base}/tenants`, {
+          headers: { 'x-test-caller': 'user:stranger' },
+        })
+      ).status,
+    ).toBe(403);
+    expect(
+      (
+        await fetch(`${base}/tenants`, {
+          headers: { 'x-test-caller': 'user:carol' },
+        })
+      ).status,
+    ).toBe(403);
+    const admin = await fetch(`${base}/tenants`, {
+      headers: { 'x-test-caller': 'user:root' },
+    });
     expect(admin.status).toBe(200);
     expect((await admin.json()).tenants).toEqual([TENANT]);
   });
 
   it('shows a non-member only that a tenant exists', async () => {
     const base = await startApp();
-    const res = await fetch(`${base}/tenants/labs`, { headers: { 'x-test-caller': 'user:stranger' } });
+    const res = await fetch(`${base}/tenants/labs`, {
+      headers: { 'x-test-caller': 'user:stranger' },
+    });
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.tenant).toEqual({ name: 'labs' });
@@ -451,7 +562,10 @@ describe('tenant data is scoped to members, admins and real users', () => {
       const base = await startApp();
       const res = await fetch(`${base}/tenants/labs/members`, {
         method: 'POST',
-        headers: { 'x-test-caller': 'user:root', 'content-type': 'application/json' },
+        headers: {
+          'x-test-caller': 'user:root',
+          'content-type': 'application/json',
+        },
         body: JSON.stringify({ userId, role: 'developer' }),
       });
       expect(res.status).toBe(400);
@@ -462,7 +576,9 @@ describe('tenant data is scoped to members, admins and real users', () => {
   it('shows members and admins the full tenant', async () => {
     const base = await startApp();
     for (const caller of ['user:carol', 'user:root']) {
-      const res = await fetch(`${base}/tenants/labs`, { headers: { 'x-test-caller': caller } });
+      const res = await fetch(`${base}/tenants/labs`, {
+        headers: { 'x-test-caller': caller },
+      });
       expect((await res.json()).tenant).toEqual(TENANT);
     }
   });
@@ -484,10 +600,21 @@ describe('rate limits', () => {
   // whether the limiter ran in front of the handler.
   function startApp(): Promise<string> {
     const options = {
-      logger: { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn(), child: jest.fn() },
-      httpAuth: { credentials: jest.fn().mockRejectedValue(new Error('no creds')) },
+      logger: {
+        info: jest.fn(),
+        warn: jest.fn(),
+        error: jest.fn(),
+        debug: jest.fn(),
+        child: jest.fn(),
+      },
+      httpAuth: {
+        credentials: jest.fn().mockRejectedValue(new Error('no creds')),
+      },
       userInfo: { getUserInfo: jest.fn() },
-      store: { listAll: jest.fn().mockResolvedValue([]), listAllMembers: jest.fn().mockResolvedValue([]) },
+      store: {
+        listAll: jest.fn().mockResolvedValue([]),
+        listAllMembers: jest.fn().mockResolvedValue([]),
+      },
       argoClient: {},
       argoNamespace: 'argo-workflows',
       getGithubToken: jest.fn(),
@@ -496,7 +623,9 @@ describe('rate limits', () => {
     const app = express();
     app.use(createRouter(options));
     return new Promise(resolve => {
-      server = app.listen(0, () => resolve(`http://127.0.0.1:${(server!.address() as AddressInfo).port}`));
+      server = app.listen(0, () =>
+        resolve(`http://127.0.0.1:${(server!.address() as AddressInfo).port}`),
+      );
     });
   }
 
@@ -514,14 +643,19 @@ describe('rate limits', () => {
   ])('%s %s is limited', async (method, route) => {
     const base = await startApp();
     const call = () =>
-      fetch(`${base}${route}`, { method, headers: { 'Content-Type': 'application/json' }, body: method === 'GET' ? undefined : '{}' });
+      fetch(`${base}${route}`, {
+        method,
+        headers: { 'Content-Type': 'application/json' },
+        body: method === 'GET' ? undefined : '{}',
+      });
     expect((await call()).status).not.toBe(429);
     expect((await call()).status).toBe(429);
   });
 
   it.each(['/health', '/config'])('%s is not limited', async route => {
     const base = await startApp();
-    for (let i = 0; i < 3; i++) expect((await fetch(`${base}${route}`)).status).toBe(200);
+    for (let i = 0; i < 3; i++)
+      expect((await fetch(`${base}${route}`)).status).toBe(200);
   });
 });
 
@@ -538,47 +672,73 @@ describe('self-service customers create their workspace by principal', () => {
   const createCustomerTenant = jest.fn().mockResolvedValue(undefined);
   const deleteTenant = jest.fn().mockResolvedValue(undefined);
   const memberTenant: Record<string, string> = {};
-  const logger = { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn(), child: jest.fn() };
+  const logger = {
+    info: jest.fn(),
+    warn: jest.fn(),
+    error: jest.fn(),
+    debug: jest.fn(),
+    child: jest.fn(),
+  };
   // Bob registered the login `alice` after Alice, a login-keyed member of
   // labs, gave it up.
   const bob = { principalId: BOB, githubId: '77', githubLogin: 'alice' };
 
   function startApp(
-    resolveZitadelCustomer?: (idToken: string, purpose: string) => Promise<unknown>,
+    resolveZitadelCustomer?: (
+      idToken: string,
+      purpose: string,
+    ) => Promise<unknown>,
     caller?: string,
+    workflowBaseUrl?: string,
   ): Promise<string> {
     const options = {
       logger,
       httpAuth: {
         credentials: jest.fn(async (_req: any, opts?: { allow?: string[] }) => {
           if (caller && opts?.allow?.includes('user')) {
-            return { principal: { type: 'user', userEntityRef: `user:default/${caller}` } };
+            return {
+              principal: {
+                type: 'user',
+                userEntityRef: `user:default/${caller}`,
+              },
+            };
           }
           throw new Error('no creds');
         }),
       },
       userInfo: {
-        getUserInfo: jest.fn(async (c: any) => ({ ownershipEntityRefs: [c.principal.userEntityRef] })),
+        getUserInfo: jest.fn(async (c: any) => ({
+          ownershipEntityRefs: [c.principal.userEntityRef],
+        })),
       },
       store: {
-        findByName: jest.fn(async (name: string) => (name === 'labs' ? { name } : undefined)),
+        findByName: jest.fn(async (name: string) =>
+          name === 'labs' ? { name } : undefined,
+        ),
         upsert,
         addMember,
         createCustomerTenant,
         delete: deleteTenant,
         getMemberTenant: jest.fn(async (userId: string) =>
-          memberTenant[userId] ? { tenantName: memberTenant[userId], role: 'owner' } : undefined,
+          memberTenant[userId]
+            ? { tenantName: memberTenant[userId], role: 'owner' }
+            : undefined,
         ),
         getMemberByTenant: jest.fn(async (tenant: string, userId: string) =>
-          tenant === 'admins' && userId === 'root' ? { role: 'owner' } : undefined,
+          tenant === 'admins' && userId === 'root'
+            ? { role: 'owner' }
+            : undefined,
         ),
       },
       argoClient: { submitWorkflow },
       argoNamespace: 'argo-workflows',
       getGithubToken: jest.fn(),
       landingPageToken: token,
-      resolveCreatorPrincipal: jest.fn().mockResolvedValue('prn_01M39HRB7JRXZ2PHW5VVB695YZ'),
+      resolveCreatorPrincipal: jest
+        .fn()
+        .mockResolvedValue('prn_01M39HRB7JRXZ2PHW5VVB695YZ'),
       resolveZitadelCustomer,
+      workflowBaseUrl,
     } as unknown as RouterOptions;
     const app = express();
     app.use(createRouter(options));
@@ -589,7 +749,12 @@ describe('self-service customers create their workspace by principal', () => {
     });
   }
 
-  const post = (base: string, path: string, body: Record<string, unknown>, landing = true) =>
+  const post = (
+    base: string,
+    path: string,
+    body: Record<string, unknown>,
+    landing = true,
+  ) =>
     fetch(`${base}${path}`, {
       method: 'POST',
       headers: {
@@ -598,8 +763,17 @@ describe('self-service customers create their workspace by principal', () => {
       },
       body: JSON.stringify(body),
     });
-  const create = (base: string, extra: Record<string, unknown>, landing = true) =>
-    post(base, '/tenants', { tenantName: 'bobs', displayName: 'Bobs', ...extra }, landing);
+  const create = (
+    base: string,
+    extra: Record<string, unknown>,
+    landing = true,
+  ) =>
+    post(
+      base,
+      '/tenants',
+      { tenantName: 'bobs', displayName: 'Bobs', ...extra },
+      landing,
+    );
   const params = () => submitWorkflow.mock.calls[0][0].parameters as string[];
 
   afterEach(done => {
@@ -617,10 +791,25 @@ describe('self-service customers create their workspace by principal', () => {
     }
   });
 
+  it('uses the configured workflow hostname in the acceptance response', async () => {
+    const base = await startApp(
+      jest.fn().mockResolvedValue(bob),
+      undefined,
+      'https://workflows.example.test/',
+    );
+    const response = await create(base, { creatorIdToken: 'site-id-token' });
+    expect(response.status).toBe(202);
+    expect((await response.json()).workflowUrl).toBe(
+      'https://workflows.example.test/workflows/argo-workflows/create-tenant-abc',
+    );
+  });
+
   it('keys the owner by principal and passes the login only for display', async () => {
     const resolve = jest.fn().mockResolvedValue(bob);
     const base = await startApp(resolve);
-    expect((await create(base, { creatorIdToken: 'site-id-token' })).status).toBe(202);
+    expect(
+      (await create(base, { creatorIdToken: 'site-id-token' })).status,
+    ).toBe(202);
     expect(resolve).toHaveBeenCalledWith('site-id-token', 'create');
     expect(params()).toEqual(
       expect.arrayContaining([
@@ -641,7 +830,9 @@ describe('self-service customers create their workspace by principal', () => {
         login: 'alice',
       }),
     );
-    expect(createCustomerTenant.mock.invocationCallOrder[0]).toBeLessThan(submitWorkflow.mock.invocationCallOrder[0]);
+    expect(createCustomerTenant.mock.invocationCallOrder[0]).toBeLessThan(
+      submitWorkflow.mock.invocationCallOrder[0],
+    );
     expect(upsert).not.toHaveBeenCalled();
     expect(addMember).not.toHaveBeenCalled();
   });
@@ -650,11 +841,15 @@ describe('self-service customers create their workspace by principal', () => {
     const base = await startApp(jest.fn());
     expect((await create(base, { creatorUserId: 'carol' })).status).toBe(202);
     expect(params()).toContain('creator_catalog_key=login');
-    expect(addMember).toHaveBeenCalledWith(expect.objectContaining({ userId: 'carol', catalogKey: 'login' }));
+    expect(addMember).toHaveBeenCalledWith(
+      expect.objectContaining({ userId: 'carol', catalogKey: 'login' }),
+    );
   });
 
   it('refuses a customer who already has a workspace without submitting a workflow', async () => {
-    createCustomerTenant.mockRejectedValue(new CustomerHasTenantError('This account already has a workspace'));
+    createCustomerTenant.mockRejectedValue(
+      new CustomerHasTenantError('This account already has a workspace'),
+    );
     const base = await startApp(jest.fn().mockResolvedValue(bob));
     const r = await create(base, { creatorIdToken: 'site-id-token' });
     expect(r.status).toBe(409);
@@ -665,14 +860,20 @@ describe('self-service customers create their workspace by principal', () => {
 
   it('gives a taken name the code name_taken, as availability does', async () => {
     const base = await startApp(jest.fn().mockResolvedValue(bob));
-    const r = await post(base, '/tenants', { tenantName: 'labs', displayName: 'Labs', creatorIdToken: 'site-id-token' });
+    const r = await post(base, '/tenants', {
+      tenantName: 'labs',
+      displayName: 'Labs',
+      creatorIdToken: 'site-id-token',
+    });
     expect(r.status).toBe(409);
     expect((await r.json()).code).toBe('name_taken');
     expect(createCustomerTenant).not.toHaveBeenCalled();
   });
 
   it('refuses a name taken since the existence check without submitting a workflow', async () => {
-    createCustomerTenant.mockRejectedValue(new TenantExistsError("Tenant 'bobs' already exists"));
+    createCustomerTenant.mockRejectedValue(
+      new TenantExistsError("Tenant 'bobs' already exists"),
+    );
     const base = await startApp(jest.fn().mockResolvedValue(bob));
     const r = await create(base, { creatorIdToken: 'site-id-token' });
     expect(r.status).toBe(409);
@@ -684,38 +885,61 @@ describe('self-service customers create their workspace by principal', () => {
   it("releases the customer's reservation when the workflow cannot be submitted", async () => {
     submitWorkflow.mockRejectedValue(new Error('argo down'));
     const base = await startApp(jest.fn().mockResolvedValue(bob));
-    expect((await create(base, { creatorIdToken: 'site-id-token' })).status).toBe(500);
+    expect(
+      (await create(base, { creatorIdToken: 'site-id-token' })).status,
+    ).toBe(500);
     expect(deleteTenant).toHaveBeenCalledWith('bobs');
   });
 
   it.each([
-    ['mctl-api refuses the customer', new ZitadelCustomerError('refused', 'no', 'principal_disabled'), 403],
-    ['mctl-api is unavailable', new ZitadelCustomerError('unavailable', 'down'), 503],
+    [
+      'mctl-api refuses the customer',
+      new ZitadelCustomerError('refused', 'no', 'principal_disabled'),
+      403,
+    ],
+    [
+      'mctl-api is unavailable',
+      new ZitadelCustomerError('unavailable', 'down'),
+      503,
+    ],
     ['the resolver throws something else', new Error('boom'), 503],
   ])('writes nothing when %s', async (_name, err, status) => {
     const base = await startApp(jest.fn().mockRejectedValue(err));
-    expect((await create(base, { creatorIdToken: 'site-id-token' })).status).toBe(status);
+    expect(
+      (await create(base, { creatorIdToken: 'site-id-token' })).status,
+    ).toBe(status);
     expect(upsert).not.toHaveBeenCalled();
     expect(submitWorkflow).not.toHaveBeenCalled();
   });
 
   it('logs a resolver failure it does not model', async () => {
     logger.error.mockClear();
-    const base = await startApp(jest.fn().mockRejectedValue(new TypeError('boom')));
-    expect((await create(base, { creatorIdToken: 'site-id-token' })).status).toBe(503);
-    expect(logger.error).toHaveBeenCalledWith(expect.stringContaining('TypeError: boom'));
+    const base = await startApp(
+      jest.fn().mockRejectedValue(new TypeError('boom')),
+    );
+    expect(
+      (await create(base, { creatorIdToken: 'site-id-token' })).status,
+    ).toBe(503);
+    expect(logger.error).toHaveBeenCalledWith(
+      expect.stringContaining('TypeError: boom'),
+    );
   });
 
   it('writes nothing when customer resolution is not configured', async () => {
     const base = await startApp(undefined);
-    expect((await create(base, { creatorIdToken: 'site-id-token' })).status).toBe(503);
+    expect(
+      (await create(base, { creatorIdToken: 'site-id-token' })).status,
+    ).toBe(503);
     expect(submitWorkflow).not.toHaveBeenCalled();
   });
 
   it('refuses a token together with a login, or a token that is not a string', async () => {
     const resolve = jest.fn().mockResolvedValue(bob);
     const base = await startApp(resolve);
-    expect((await create(base, { creatorIdToken: 't', creatorUserId: 'alice' })).status).toBe(400);
+    expect(
+      (await create(base, { creatorIdToken: 't', creatorUserId: 'alice' }))
+        .status,
+    ).toBe(400);
     expect((await create(base, { creatorIdToken: ['t'] })).status).toBe(400);
     expect(resolve).not.toHaveBeenCalled();
     expect(submitWorkflow).not.toHaveBeenCalled();
@@ -724,23 +948,37 @@ describe('self-service customers create their workspace by principal', () => {
   it('accepts creatorIdToken from the landing page only', async () => {
     const resolve = jest.fn().mockResolvedValue(bob);
     const base = await startApp(resolve, 'root');
-    expect((await create(base, { creatorIdToken: 'site-id-token' }, false)).status).toBe(403);
+    expect(
+      (await create(base, { creatorIdToken: 'site-id-token' }, false)).status,
+    ).toBe(403);
     expect(resolve).not.toHaveBeenCalled();
   });
 
   it('lets a portal admin name only themself as creator', async () => {
     const base = await startApp(jest.fn(), 'root');
-    expect((await create(base, { creatorUserId: 'someone-else' }, false)).status).toBe(400);
+    expect(
+      (await create(base, { creatorUserId: 'someone-else' }, false)).status,
+    ).toBe(400);
     expect(submitWorkflow).not.toHaveBeenCalled();
-    expect((await create(base, { creatorUserId: 'Root' }, false)).status).toBe(202);
-    expect(params()).toEqual(expect.arrayContaining(['creator_user_id=Root', 'creator_catalog_key=login']));
+    expect((await create(base, { creatorUserId: 'Root' }, false)).status).toBe(
+      202,
+    );
+    expect(params()).toEqual(
+      expect.arrayContaining([
+        'creator_user_id=Root',
+        'creator_catalog_key=login',
+      ]),
+    );
   });
 
   describe('POST /tenants/availability', () => {
     it('answers for a resolvable customer and a free name', async () => {
       const resolve = jest.fn().mockResolvedValue(bob);
       const base = await startApp(resolve);
-      const r = await post(base, '/tenants/availability', { name: 'bobs', creatorIdToken: 'site-id-token' });
+      const r = await post(base, '/tenants/availability', {
+        name: 'bobs',
+        creatorIdToken: 'site-id-token',
+      });
       expect(r.status).toBe(200);
       expect(await r.json()).toEqual({ name: 'bobs', available: true });
       expect(resolve).toHaveBeenCalledWith('site-id-token', 'create');
@@ -748,18 +986,41 @@ describe('self-service customers create their workspace by principal', () => {
 
     it('reports a taken name and an existing workspace', async () => {
       const base = await startApp(jest.fn().mockResolvedValue(bob));
-      expect(await (await post(base, '/tenants/availability', { name: 'labs', creatorIdToken: 't' })).json()).toEqual(
-        { name: 'labs', available: false, reason: 'name_taken' },
-      );
+      expect(
+        await (
+          await post(base, '/tenants/availability', {
+            name: 'labs',
+            creatorIdToken: 't',
+          })
+        ).json(),
+      ).toEqual({ name: 'labs', available: false, reason: 'name_taken' });
       memberTenant[BOB.toLowerCase()] = 'first';
-      expect(await (await post(base, '/tenants/availability', { name: 'bobs', creatorIdToken: 't' })).json()).toEqual(
-        { name: 'bobs', available: false, reason: 'creator_has_tenant' },
-      );
+      expect(
+        await (
+          await post(base, '/tenants/availability', {
+            name: 'bobs',
+            creatorIdToken: 't',
+          })
+        ).json(),
+      ).toEqual({
+        name: 'bobs',
+        available: false,
+        reason: 'creator_has_tenant',
+      });
     });
 
     it('answers a refused customer before the name', async () => {
-      const base = await startApp(jest.fn().mockRejectedValue(new ZitadelCustomerError('refused', 'no', 'customer_conflict')));
-      const r = await post(base, '/tenants/availability', { name: 'bobs', creatorIdToken: 't' });
+      const base = await startApp(
+        jest
+          .fn()
+          .mockRejectedValue(
+            new ZitadelCustomerError('refused', 'no', 'customer_conflict'),
+          ),
+      );
+      const r = await post(base, '/tenants/availability', {
+        name: 'bobs',
+        creatorIdToken: 't',
+      });
       expect(r.status).toBe(403);
       expect((await r.json()).code).toBe('customer_conflict');
     });
@@ -767,9 +1028,27 @@ describe('self-service customers create their workspace by principal', () => {
     it('validates its input and serves the landing page only', async () => {
       const resolve = jest.fn().mockResolvedValue(bob);
       const base = await startApp(resolve, 'root');
-      expect((await post(base, '/tenants/availability', { name: 'Bad_Name', creatorIdToken: 't' })).status).toBe(400);
-      expect((await post(base, '/tenants/availability', { name: 'bobs' })).status).toBe(400);
-      expect((await post(base, '/tenants/availability', { name: 'bobs', creatorIdToken: 't' }, false)).status).toBe(403);
+      expect(
+        (
+          await post(base, '/tenants/availability', {
+            name: 'Bad_Name',
+            creatorIdToken: 't',
+          })
+        ).status,
+      ).toBe(400);
+      expect(
+        (await post(base, '/tenants/availability', { name: 'bobs' })).status,
+      ).toBe(400);
+      expect(
+        (
+          await post(
+            base,
+            '/tenants/availability',
+            { name: 'bobs', creatorIdToken: 't' },
+            false,
+          )
+        ).status,
+      ).toBe(403);
       expect(resolve).not.toHaveBeenCalled();
     });
   });

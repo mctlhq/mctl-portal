@@ -7,6 +7,11 @@ import {
 } from './workspaceAccess';
 import { Tenant, TenantMember } from './types';
 
+const links = {
+  portalBaseUrl: 'https://app.mctl.ai',
+  mcpUrl: 'https://api.mctl.ai/mcp',
+  accountDomain: 'mctl.ai',
+};
 const pid = 'prn_01M39HRB7JRXZ2PHW5VVB695YZ';
 const member: TenantMember = {
   tenantName: 'acme',
@@ -51,6 +56,7 @@ function fixture() {
     ),
   );
   const read = createWorkspaceAccessReader({
+    ...links,
     store,
     observePlatform: async () => platform,
     getCatalogEntity,
@@ -119,7 +125,7 @@ it.each([
   { principalId: 'foreign' },
   { role: 'viewer' },
   { observedAt: 'not-a-date' },
-  { observedAt: new Date(Date.now() - 120_000).toISOString() },
+  { observedAt: new Date(Date.now() - 360_000).toISOString() },
   { environments: [] },
   {
     environments: [{ name: 'production', namespace: 'acme', status: 'ready' }],
@@ -148,4 +154,72 @@ it('waits for the catalog role to converge before promising the role in an email
     'mctl.me/tenant-role'
   ] = 'viewer';
   expect((await f.read(member)).status).toBe('provisioning');
+});
+
+it('keeps principal-only membership usable without inventing a login-based account name', async () => {
+  const noLogin = { ...member, login: undefined };
+  const entities = buildTenantCatalogEntities([tenant], [noLogin]);
+  const read = createWorkspaceAccessReader({
+    ...links,
+    store: { getMemberByTenant: jest.fn().mockResolvedValue(noLogin) },
+    observePlatform: async () => observation(),
+    getCatalogEntity: async (kind, name) =>
+      entities.find(
+        e => e.kind.toLowerCase() === kind && e.metadata.name === name,
+      ),
+  });
+  const result = await read(noLogin);
+  expect(result.status).toBe('ready');
+  expect(result.account).toBeUndefined();
+  const email = renderWorkspaceReady(result, 'alice@example.com');
+  expect(email.text).not.toContain('undefined@mctl.ai');
+  expect(email.html).not.toContain('undefined@mctl.ai');
+  expect(email.text).toContain('Use your existing MCTL sign-in');
+});
+
+it('tolerates bounded future clock skew and diagnoses excessive skew separately', () => {
+  const future = {
+    ...observation(),
+    observedAt: new Date(Date.now() + 120_000).toISOString(),
+  };
+  expect(readPlatformObservation(future, member).tenant).toBe('acme');
+  expect(() =>
+    readPlatformObservation(future, member, 300_000, 60_000),
+  ).toThrow('clock skew');
+  expect(() =>
+    readPlatformObservation(
+      {
+        ...observation(),
+        observedAt: new Date(Date.now() - 360_000).toISOString(),
+      },
+      member,
+    ),
+  ).toThrow('too old');
+});
+
+it('uses the configured portal, MCP endpoint, account domain and sender', async () => {
+  const f = fixture();
+  f.platform.mcp = 'available';
+  const read = createWorkspaceAccessReader({
+    store: f.store,
+    observePlatform: async () => f.platform,
+    getCatalogEntity: f.getCatalogEntity,
+    portalBaseUrl: 'https://portal.example.test',
+    mcpUrl: 'https://api.example.test/mcp',
+    accountDomain: 'example.test',
+  });
+  const result = await read(member);
+  expect(result.accessUrl).toBe('https://portal.example.test/workspace/access');
+  expect(result.account).toBe('alice@example.test');
+  expect(result.capabilities.map(c => c.url)).toEqual([
+    'https://portal.example.test/catalog/default/group/acme',
+    'https://api.example.test/mcp',
+  ]);
+  expect(
+    renderWorkspaceReady(
+      result,
+      'alice@example.test',
+      'MCTL <test@example.test>',
+    ).from,
+  ).toBe('MCTL <test@example.test>');
 });
