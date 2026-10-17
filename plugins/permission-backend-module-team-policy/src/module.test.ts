@@ -1,7 +1,7 @@
 import { AuthorizeResult, createPermission } from '@backstage/plugin-permission-common';
-import { PolicyQuery, PolicyQueryUser } from '@backstage/plugin-permission-node';
+import { PolicyQuery, PolicyQueryUser, createConditionAuthorizer } from '@backstage/plugin-permission-node';
 import { BackstageCredentials } from '@backstage/backend-plugin-api';
-import { catalogConditions } from '@backstage/plugin-catalog-backend/alpha';
+import { catalogConditions, permissionRules } from '@backstage/plugin-catalog-backend/alpha';
 import { TeamBasedPermissionPolicy } from './module';
 
 // The exact same arm shape module.ts assembles for the global-admin-template
@@ -349,5 +349,39 @@ describe('TeamBasedPermissionPolicy', () => {
       );
       expect(viewerDecision).toEqual({ result: AuthorizeResult.DENY });
     });
+  });
+});
+
+// Exercise Backstage's real condition evaluator against provider-shaped
+// entities; spec.owner on Group/User intentionally has no ownedBy relation.
+describe('tenant identity catalog visibility', () => {
+  const authorize = createConditionAuthorizer(Object.values(permissionRules));
+
+  it.each(['Group', 'User'])('reads its own %s by declared owner, without exposing another tenant', async kind => {
+    const policy = new TeamBasedPermissionPolicy(fakeLogger() as any);
+    const decision = await policy.handle(
+      { permission: catalogEntityPermission('catalog.entity.read', 'read') },
+      fakeUser(['user:default/prn_test', 'group:default/acme']),
+    );
+    const entity = (owner?: string) => ({
+      apiVersion: 'backstage.io/v1alpha1', kind,
+      metadata: { name: kind === 'Group' ? 'acme' : 'prn_test', namespace: 'default' },
+      spec: owner ? { owner } : {}, relations: [],
+    });
+    expect(authorize(decision, entity('group:default/acme'))).toBe(true);
+    expect(authorize(decision, entity('group:default/other'))).toBe(false);
+    expect(authorize(decision, entity())).toBe(false);
+  });
+
+  it.each(['update', 'delete'] as const)('does not broaden %s access using spec.owner', async action => {
+    const policy = new TeamBasedPermissionPolicy(fakeLogger() as any);
+    const decision = await policy.handle(
+      { permission: catalogEntityPermission(`catalog.entity.${action}`, action) },
+      fakeUser(['group:default/acme']),
+    );
+    expect(authorize(decision, {
+      apiVersion: 'backstage.io/v1alpha1', kind: 'Group',
+      metadata: { name: 'acme' }, spec: { owner: 'group:default/acme' }, relations: [],
+    })).toBe(false);
   });
 });
