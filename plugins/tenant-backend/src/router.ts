@@ -770,6 +770,18 @@ export function createRouter(opts: RouterOptions): Router {
       }
       const { creator } = resolved;
 
+      if (
+        creator?.catalogKey === 'principal' &&
+        (typeof body.contactEmail !== 'string' ||
+          body.contactEmail.length > 254 ||
+          !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(body.contactEmail))
+      ) {
+        res
+          .status(400)
+          .json({ error: 'A valid customer contact email is required' });
+        return;
+      }
+
       logger.info(
         `[tenant-backend] Creating tenant '${body.tenantName}' requested by ${auth.callerInfo}`,
       );
@@ -850,7 +862,6 @@ export function createRouter(opts: RouterOptions): Router {
             `allow_internet_egress=${
               body.allowInternetEgress ? 'true' : 'false'
             }`,
-            `contact_email=${body.contactEmail ?? ''}`,
             `creator_user_id=${creator?.login ?? ''}`,
             `creator_principal_id=${creator?.principalId ?? ''}`,
             `creator_catalog_key=${creator?.catalogKey ?? 'login'}`,

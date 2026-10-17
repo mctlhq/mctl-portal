@@ -107,7 +107,6 @@ export interface TenantValuesYaml {
     displayName?: string;
     description?: string;
     githubTeam?: string;
-    contactEmail?: string;
     quotas?: Record<string, string>;
     networking?: {
       allowIntraNamespace?: boolean;

@@ -15,7 +15,7 @@ function valuesYaml(name: string) {
     status: 200,
     json: async () => ({
       encoding: 'base64',
-      content: Buffer.from(`tenant:\n  name: ${name}\n`).toString('base64'),
+      content: Buffer.from(`tenant:\n  name: ${name}\n  contactEmail: public-stale@example.com\n`).toString('base64'),
     }),
     text: async () => '',
   };
@@ -53,6 +53,13 @@ describe('TenantSync stale removal', () => {
   const realFetch = (global as any).fetch;
   afterEach(() => {
     (global as any).fetch = realFetch;
+  });
+
+  it('never imports a contact address from a public manifest', async () => {
+    const { sync, store } = setup(['alpha'], { alpha: 'ok' });
+    await sync.sync();
+    expect(store.upsert).toHaveBeenCalledTimes(1);
+    expect(store.upsert.mock.calls[0][0]).not.toHaveProperty('contactEmail');
   });
 
   it('removes a tenant whose directory is gone from the listing', async () => {

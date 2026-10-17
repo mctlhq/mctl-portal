@@ -58,15 +58,13 @@ describe('GET /backstage/catalog.yaml', () => {
       },
       userInfo: { getUserInfo: jest.fn() },
       store: {
-        listAll: jest
-          .fn()
-          .mockResolvedValue([
-            {
-              name: 'labs',
-              displayName: 'Labs',
-              contactEmail: 'owner@example.com',
-            },
-          ]),
+        listAll: jest.fn().mockResolvedValue([
+          {
+            name: 'labs',
+            displayName: 'Labs',
+            contactEmail: 'owner@example.com',
+          },
+        ]),
         listAllMembers: jest
           .fn()
           .mockResolvedValue([
@@ -161,26 +159,22 @@ describe('landing-page token is not platform admin', () => {
       },
       userInfo: { getUserInfo: jest.fn() },
       store: {
-        listAll: jest
-          .fn()
-          .mockResolvedValue([
-            {
-              name: 'labs',
-              displayName: 'Labs',
-              contactEmail: 'owner@example.com',
-            },
-          ]),
-        findByName: jest
-          .fn()
-          .mockImplementation(async (name: string) =>
-            name === 'labs'
-              ? {
-                  name: 'labs',
-                  displayName: 'Labs',
-                  contactEmail: 'owner@example.com',
-                }
-              : undefined,
-          ),
+        listAll: jest.fn().mockResolvedValue([
+          {
+            name: 'labs',
+            displayName: 'Labs',
+            contactEmail: 'owner@example.com',
+          },
+        ]),
+        findByName: jest.fn().mockImplementation(async (name: string) =>
+          name === 'labs'
+            ? {
+                name: 'labs',
+                displayName: 'Labs',
+                contactEmail: 'owner@example.com',
+              }
+            : undefined,
+        ),
         upsert: jest.fn().mockResolvedValue(undefined),
         addMember: jest.fn().mockResolvedValue(undefined),
         listAllMembers: jest.fn().mockResolvedValue([]),
@@ -771,7 +765,12 @@ describe('self-service customers create their workspace by principal', () => {
     post(
       base,
       '/tenants',
-      { tenantName: 'bobs', displayName: 'Bobs', ...extra },
+      {
+        tenantName: 'bobs',
+        displayName: 'Bobs',
+        contactEmail: 'alice@example.com',
+        ...extra,
+      },
       landing,
     );
   const params = () => submitWorkflow.mock.calls[0][0].parameters as string[];
@@ -790,6 +789,20 @@ describe('self-service customers create their workspace by principal', () => {
       done();
     }
   });
+
+  it.each([undefined, '', 'invalid', 'x'.repeat(255)])(
+    'refuses a customer without a valid private contact: %s',
+    async contactEmail => {
+      const base = await startApp(jest.fn().mockResolvedValue(bob));
+      const response = await create(base, {
+        creatorIdToken: 'site-id-token',
+        contactEmail,
+      });
+      expect(response.status).toBe(400);
+      expect(createCustomerTenant).not.toHaveBeenCalled();
+      expect(submitWorkflow).not.toHaveBeenCalled();
+    },
+  );
 
   it('uses the configured workflow hostname in the acceptance response', async () => {
     const base = await startApp(
@@ -818,6 +831,7 @@ describe('self-service customers create their workspace by principal', () => {
         'creator_catalog_key=principal',
       ]),
     );
+    expect(params().some(p => p.startsWith('contact_email='))).toBe(false);
     // Written with the tenant, before the workflow: not upsert + addMember.
     expect(createCustomerTenant).toHaveBeenCalledWith(
       expect.objectContaining({ name: 'bobs' }),
