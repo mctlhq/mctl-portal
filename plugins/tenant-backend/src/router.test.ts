@@ -1096,11 +1096,11 @@ describe('POST /internal/tenants/:name/cleanup', () => {
   const post = (service?: string, name = 'acme', body = {}) => fetch(`${base}/internal/tenants/${name}/cleanup`, {
     method: 'POST', headers: { 'Content-Type': 'application/json', ...(service ? { 'x-test-service': service } : {}) }, body: JSON.stringify(body),
   });
-  it.each([undefined, 'plugin:tenant-management', 'external:landing', 'external:other'])('refuses %s without touching state', async service => {
+  it.each([undefined, 'plugin:tenant-management', 'external:landing', 'external:other', 'mctl-api'])('refuses %s without touching state', async service => {
     expect((await post(service)).status).toBe(403);
     expect(cleanup).not.toHaveBeenCalled();
   });
-  it.each(['external:mctl-api', 'mctl-api'])('accepts only the workflow caller %s', async service => {
+  it.each(['external:mctl-api'])('accepts only the workflow caller %s', async service => {
     const res = await post(service);
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ tenant: 'acme', cleaned: true });

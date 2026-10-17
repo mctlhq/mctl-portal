@@ -283,8 +283,8 @@ export function createRouter(opts: RouterOptions): Router {
     try {
       const { principal } = await httpAuth.credentials(req, { allow: ['service'] });
       const subject = (principal as { subject?: string }).subject;
-      allowed = principal.type === 'service' && (subject === 'external:mctl-api' || subject === 'mctl-api');
-    } catch { /* No unproven deletion caller. */ }
+      allowed = principal.type === 'service' && subject === 'external:mctl-api';
+    } catch { logger.warn('Customer lifecycle service credential rejected'); }
     if (!allowed) { res.status(403).json({ error: 'Workflow principal required' }); return; }
     const { name, stage } = req.params;
     const { principal_id: pid, login } = req.body ?? {};
@@ -308,8 +308,8 @@ export function createRouter(opts: RouterOptions): Router {
     try {
       const credentials = await httpAuth.credentials(req, { allow: ['service'] });
       const subject = (credentials.principal as { subject?: string }).subject;
-      allowed = credentials.principal.type === 'service' && (subject === 'external:mctl-api' || subject === 'mctl-api');
-    } catch { /* An unproven caller never reaches deletion. */ }
+      allowed = credentials.principal.type === 'service' && subject === 'external:mctl-api';
+    } catch { logger.warn('Tenant cleanup service credential rejected'); }
     if (!allowed) { res.status(403).json({ error: 'Workflow principal required' }); return; }
     const name = req.params.name;
     if (!/^[a-z0-9][a-z0-9-]{1,62}$/.test(name) ||
