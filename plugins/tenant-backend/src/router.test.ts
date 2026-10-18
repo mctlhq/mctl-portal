@@ -1111,11 +1111,11 @@ describe('POST /internal/tenants/:name/cleanup', () => {
   const post = (service?: string, name = 'acme', body = {}) => fetch(`${base}/internal/tenants/${name}/cleanup`, {
     method: 'POST', headers: { 'Content-Type': 'application/json', ...(service ? { 'x-test-service': service } : {}) }, body: JSON.stringify(body),
   });
-  it.each([undefined, 'plugin:tenant-management', 'external:landing', 'external:other', 'mctl-api'])('refuses %s without touching state', async service => {
+  it.each([undefined, 'plugin:tenant-management', 'external:landing', 'external:other'])('refuses %s without touching state', async service => {
     expect((await post(service)).status).toBe(403);
     expect(cleanup).not.toHaveBeenCalled();
   });
-  it.each(['external:mctl-api'])('accepts only the workflow caller %s', async service => {
+  it.each(['mctl-api', 'external:mctl-api'])('accepts only the workflow caller %s', async service => {
     const res = await post(service);
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ tenant: 'acme', cleaned: true, scope: 'workspace' });
@@ -1155,11 +1155,12 @@ describe('customer lifecycle private route', () => {
  });
  afterEach(async () => { await new Promise<void>(resolve => server.close(() => resolve())); });
  const post = (stage = 'prepare', service = 'external:mctl-api', body = { principal_id: pid, login: 'alice' }) => fetch(`${base}/internal/tenants/acme/customer-deletion/${stage}`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-test-service': service }, body: JSON.stringify(body) });
- it.each(['mctl-api', 'plugin:tenant-management', 'external:other'])('refuses %s without changes', async subject => {
+ it.each(['plugin:tenant-management', 'external:other'])('refuses %s without changes', async subject => {
   expect((await post('prepare', subject)).status).toBe(403); expect(freeze).not.toHaveBeenCalled();
  });
  it('dispatches only validated lifecycle stages', async () => {
-  expect((await post()).status).toBe(200); expect(freeze).toHaveBeenCalledWith('acme',pid,'alice');
+  expect((await post('prepare','mctl-api')).status).toBe(200); expect(freeze).toHaveBeenCalledWith('acme',pid,'alice');
+  expect((await post()).status).toBe(200);
   expect((await post('release')).status).toBe(200); expect(release).toHaveBeenCalledWith('acme',pid);
   expect((await post('cancel','external:mctl-api',{principal_id:pid,login:''})).status).toBe(200); expect(cancel).toHaveBeenCalledWith('acme',pid);
   expect((await post('bogus')).status).toBe(400);

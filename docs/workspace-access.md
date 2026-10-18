@@ -177,3 +177,10 @@ The portal refuses cancellation once a cleanup receipt or completion exists.
 Cancellation preserves remaining workspace/contact data and does not restore
 resources removed independently. Once begin succeeds, only forward recovery is
 supported.
+
+The installed Backstage static-token handler returns the configured subject
+`mctl-api` verbatim. Tenant lifecycle routes accept that exact service identity
+and its framework-prefixed alias `external:mctl-api`, matching the existing
+custom-domains contract. User principals, plugin credentials and other external
+services remain refused. The regression test drives the installed static-token
+handler, so it cannot hide a subject mismatch behind a mock-only prefix.
