@@ -291,12 +291,13 @@ export function createRouter(opts: RouterOptions): Router {
     const { principal_id: pid, login } = req.body ?? {};
     if (!/^[a-z0-9][a-z0-9-]{1,62}$/.test(name) || name === 'admins' ||
         typeof pid !== 'string' || !/^prn_[0-9A-HJKMNP-TV-Z]{26}$/.test(pid) ||
-        typeof login !== 'string' || !/^[a-zA-Z0-9][a-zA-Z0-9-]{0,38}$/.test(login) ||
-        !['prepare', 'release'].includes(stage)) {
+        stage !== 'cancel' && (typeof login !== 'string' || !/^[a-zA-Z0-9][a-zA-Z0-9-]{0,38}$/.test(login)) ||
+        !['prepare', 'release', 'cancel'].includes(stage)) {
       res.status(400).json({ error: 'Invalid customer deletion target' }); return;
     }
     try {
       if (stage === 'prepare') await store.freezeCustomerDeletion(name, pid, login);
+      else if (stage === 'cancel') await store.cancelCustomerDeletion(name, pid);
       else await store.releaseCustomerDeletion(name, pid);
       res.json({ tenant: name, principal_id: pid, stage, complete: true });
     } catch (err) {

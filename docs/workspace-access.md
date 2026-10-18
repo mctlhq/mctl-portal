@@ -111,14 +111,16 @@ key. Any earlier ambiguous attempt instead requires provider reconciliation.
 
 ## Account-deletion recovery
 
-A complete customer deletion is an irreversible operation with a durable API
-manifest. Portal `prepare` freezes the exact principal before teardown; failure
-or workflow cancellation does not reactivate old credentials. Retry the same
+Once `begin` succeeds, customer deletion is irreversible and retains a durable
+API manifest. Portal `prepare` freezes the exact principal before teardown;
+failure or cancelling the Argo workflow does not reactivate old credentials. Retry the same
 MCP deletion with `delete_customer_account=true` and the original
 `customer_principal_id`. The API resumes its immutable manifest, including after
 GitOps membership or the ZITADEL user has disappeared. No SQL unfreeze is needed.
-A standalone portal cancel route would be unsafe after another provider already
-revoked or deleted identity state, so recovery resumes deletion instead.
+Before `begin`, the direct-human-admin MCP cancellation described below can
+reverse the prepared intent. Its internal portal route is not a standalone
+operator recovery: only the API caller may use it, after serializing against
+begin and removing its prepared intent. After begin, recovery resumes deletion.
 
 The root fence initializes and awaits its schema before observing revocations;
 failed reads are logged and return 503, never a clean result. Its indexed reads
@@ -164,3 +166,14 @@ operations. Full-account deletion removes the active identity, renewable access,
 membership, contact and per-user notification records; it is not a purge of
 historical workflow inputs or logs. Any later history-erasure policy must be a
 separately reviewed retention change and must not silently destroy audit evidence.
+
+Prepared deletion cancellation is available through the API MCP tool
+`mctl_cancel_customer_deletion` for a direct human platform administrator. The API
+serializes prepare/cancel/begin, removes only its `prepared` intent first (so a
+queued workflow can no longer begin), and then calls the portal's service-only
+`customer-deletion/cancel` stage. A failed portal acknowledgment is retried with
+the same exact tenant/principal; no login is needed to remove that exact freeze.
+The portal refuses cancellation once a cleanup receipt or completion exists.
+Cancellation preserves remaining workspace/contact data and does not restore
+resources removed independently. Once begin succeeds, only forward recovery is
+supported.
