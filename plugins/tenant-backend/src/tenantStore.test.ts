@@ -1,3 +1,5 @@
+import { dirname, join } from 'path';
+import { OidcStore } from '../../oidc-provider-backend/src/oidcStore';
 import { WorkspaceReadyOutbox } from './workspaceReadyEmail';
 import knexLib, { Knex } from 'knex';
 import { CustomerHasTenantError, TenantExistsError, TenantStore } from './tenantStore';
@@ -415,33 +417,48 @@ const pgUrl = process.env.TENANT_TEST_PG_URL;
     expect(await store.findByName('nfc')).toBeUndefined();
   });
 
-  it('removes only the customer portal/SSO sessions and renewable authorizations', async () => {
-    for (const schema of ['auth','oidc-provider']) {
+  it('removes only customer sessions using installed Backstage migrations and the real OIDC store', async () => {
+    for (const schema of ['auth', 'oidc-provider']) {
       await admin.raw(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`);
       await admin.raw(`CREATE SCHEMA "${schema}"`);
     }
-    for (const table of ['offline_sessions','user_info']) {
-      await admin.raw(`CREATE TABLE auth.${table} (user_entity_ref text)`);
-      await admin(table).withSchema('auth').insert([{user_entity_ref:'user:default/alice'},{user_entity_ref:'user:default/bob'}]);
-    }
-    await admin.raw('CREATE TABLE auth.oauth_authorization_sessions (id text, user_entity_ref text)');
-    await admin.raw('CREATE TABLE auth.oidc_authorization_codes (code text, session_id text)');
-    await admin('oauth_authorization_sessions').withSchema('auth').insert([{id:'a',user_entity_ref:'user:default/alice'},{id:'b',user_entity_ref:'user:default/bob'}]);
-    await admin('oidc_authorization_codes').withSchema('auth').insert([{code:'a-code',session_id:'a'},{code:'b-code',session_id:'b'}]);
-    for (const table of ['oidc_sessions','oidc_codes','oidc_access_tokens','oidc_forward_auth_codes','oidc_forward_auth_sessions']) {
-      await admin.raw(`CREATE TABLE "oidc-provider".${table} (user_id text)`);
-      await admin(table).withSchema('oidc-provider').insert([{user_id:'alice'},{user_id:'bob'}]);
-    }
-    const store=makeStore(knex);await store.init();
-    await store.deleteCustomerSessions('prn_01M45DR1GWC87109EH88VBJX25','alice');
-    await store.deleteCustomerSessions('prn_01M45DR1GWC87109EH88VBJX25','alice');
-    for (const table of ['offline_sessions','user_info','oauth_authorization_sessions']) {
-      expect(await admin(table).withSchema('auth').select('user_entity_ref')).toEqual([{user_entity_ref:'user:default/bob'}]);
-    }
-    expect(await admin('oidc_authorization_codes').withSchema('auth').select('session_id')).toEqual([{session_id:'b'}]);
-    for (const table of ['oidc_sessions','oidc_codes','oidc_access_tokens','oidc_forward_auth_codes','oidc_forward_auth_sessions']) {
-      expect(await admin(table).withSchema('oidc-provider').select('user_id')).toEqual([{user_id:'bob'}]);
-    }
+    const authDb = knexLib({ client: 'pg', connection: pgUrl, searchPath: ['auth'] });
+    try {
+      const directory = join(dirname(require.resolve('@backstage/plugin-auth-backend/package.json')), 'migrations');
+      await authDb.migrate.latest({ directory, schemaName: 'auth' });
+      const logger = { info: () => {}, debug: () => {}, warn: () => {}, error: () => {} } as any;
+      const oidc = new OidcStore(admin, logger, true);
+      await oidc.init();
+      const pid = 'prn_01M45DR1GWC87109EH88VBJX25';
+      const users = [pid.toLowerCase(), 'alice', 'bob'];
+      const future = Date.now() + 60_000;
+      for (const user of users) {
+        const ref = `user:default/${user}`;
+        await authDb('user_info').insert({ user_entity_ref: ref, user_info: '{}', updated_at: new Date(), created_at: new Date() });
+        await authDb('offline_sessions').insert({ id: user, user_entity_ref: ref, token_hash: 'test-hash' });
+        await authDb('oauth_authorization_sessions').insert({ id: user, user_entity_ref: ref, client_id: 'test-client', redirect_uri: 'https://example.test/callback', response_type: 'code', expires_at: new Date(future) });
+        await authDb('oidc_authorization_codes').insert({ code: user, session_id: user, expires_at: new Date(future) });
+        await oidc.saveSession(user, user, future);
+        await oidc.saveCode(user, { userId: user, clientId: 'test-client', redirectUri: 'https://example.test/callback', expiresAt: future });
+        await oidc.saveAccessToken(user, user, future);
+        const session = { userId: user, portalSessionId: user, tenant: 'acme', service: 'web', host: 'example.test', expiresAt: future };
+        await oidc.saveForwardAuthSession(user, session);
+        await oidc.saveForwardAuthCode(user, { ...session, state: 'test-state', returnPath: '/', sessionExpiresAt: future });
+      }
+      const store = makeStore(knex); await store.init();
+      await store.deleteCustomerSessions(pid);
+      await store.deleteCustomerSessions(pid);
+      for (const table of ['offline_sessions', 'user_info', 'oauth_authorization_sessions']) {
+        const rows = await authDb(table).orderBy('user_entity_ref').select('user_entity_ref');
+        expect(rows).toEqual([{ user_entity_ref: 'user:default/alice' }, { user_entity_ref: 'user:default/bob' }]);
+      }
+      expect(await authDb('oidc_authorization_codes').orderBy('session_id').select('session_id')).toEqual([{ session_id: 'alice' }, { session_id: 'bob' }]);
+      for (const table of ['oidc_sessions', 'oidc_codes', 'oidc_access_tokens', 'oidc_forward_auth_codes', 'oidc_forward_auth_sessions']) {
+        expect(await admin(table).withSchema('oidc-provider').orderBy('user_id').select('user_id')).toEqual([{ user_id: 'alice' }, { user_id: 'bob' }]);
+      }
+      await authDb.schema.dropTable('user_info');
+      await expect(store.deleteCustomerSessions(pid)).rejects.toThrow('Unsupported session schema');
+    } finally { await authDb.destroy(); }
   });
 
   it('serializes ready-email work with deletion and refuses stale post-delete preparation', async () => {
@@ -552,6 +569,8 @@ it('freezes name reuse until cleanup completes and cannot release a replacement 
   await expect(store.releaseCustomerDeletion('frozen',pid)).rejects.toThrow('still exists');
   await store.delete('frozen');
   await expect(store.createCustomerTenant(makeTenant('frozen'),{ tenantName:'frozen',userId:'bob',role:'owner',catalogKey:'login',invitedAt:new Date().toISOString(),invitedBy:'test' })).rejects.toThrow('deletion is in progress');
+  await expect(store.releaseCustomerDeletion('frozen',pid)).rejects.toThrow('receipt');
+  await store.markCustomerDeletionClean('frozen',pid);
   await store.releaseCustomerDeletion('frozen',pid);
   const next='prn_01M45DR1GWC87109EH88VBJX26';
   await store.createCustomerTenant(makeTenant('frozen'),{ tenantName:'frozen',userId:next.toLowerCase(),principalId:next,login:'bob',catalogKey:'principal',role:'owner',invitedAt:new Date().toISOString(),invitedBy:'test' });
@@ -559,4 +578,13 @@ it('freezes name reuse until cleanup completes and cannot release a replacement 
   await store.releaseCustomerDeletion('frozen',pid);
   expect(await store.assertCustomerDeletion('frozen',pid)).toBe('complete');
   expect(await store.isTenantDeleting('frozen')).toBe(true);
+});
+
+
+it('does not treat a completed marker without a private cleanup receipt as clean', async () => {
+ const {store,knex}=await freshStore();currentKnex=knex;
+ const pid='prn_01M45DR1GWC87109EH88VBJX25';
+ await knex('customer_deletions').insert({tenant_name:'missing-receipt',principal_id:pid,status:'complete'});
+ await expect(store.assertCustomerDeletion('missing-receipt',pid)).rejects.toThrow('receipt');
+ await expect(store.releaseCustomerDeletion('missing-receipt',pid)).rejects.toThrow('receipt');
 });

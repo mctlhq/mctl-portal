@@ -224,7 +224,7 @@ export const tenantPlugin = createBackendPlugin({
               if (memberships.some(m => m.tenantName !== name)) throw new Error('Customer has another membership');
             }
             await store.delete(name);
-            if (principalId) await store.deleteCustomerSessions(principalId, login!);
+            if (principalId) await store.deleteCustomerSessions(principalId);
             const catalogUrl = await discovery.getBaseUrl('catalog');
             const { token: catalogToken } = await auth.getPluginRequestToken({
               onBehalfOf: await auth.getOwnServiceCredentials(), targetPluginId: 'catalog',
@@ -238,6 +238,7 @@ export const tenantPlugin = createBackendPlugin({
               });
               if (found.status !== 404) throw new Error('Catalog cleanup is not confirmed');
             }
+            if (principalId) await store.markCustomerDeletionClean(name, principalId);
           },
         });
         httpRouter.use(router);

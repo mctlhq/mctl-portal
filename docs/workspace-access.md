@@ -136,3 +136,15 @@ body and `scope: customer` when both exact `principal_id` and `login` are suppli
 An incomplete identity pair is rejected; the API account-deletion stage accepts
 only a customer-scope acknowledgment. A replay for an already-completed principal
 returns without touching a replacement workspace or re-running private cleanup.
+
+
+Release requires a durable `cleaned_ms` receipt written only after private
+session cleanup and catalog postconditions pass. TenantSync removing cache rows
+is not evidence of full account cleanup. A completed marker without this receipt
+is an error. Customer session deletion uses only the immutable principal entity
+reference, preserving login-keyed staff sessions even if their login matches.
+The supported Backstage `auth` and portal `oidc-provider` tables are required:
+a missing table fails cleanup instead of silently reporting success. PostgreSQL
+integration tests run the installed auth-backend migrations and the actual
+OidcStore initializer and public session-writing methods, rather than defining
+lookalike tables inside the test.

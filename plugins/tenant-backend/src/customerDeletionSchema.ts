@@ -14,9 +14,13 @@ export async function ensureCustomerDeletionSchema(db: Knex) {
         table.string('tenant_name').notNullable();
         table.string('principal_id').notNullable();
         table.string('status').notNullable();
+        table.bigInteger('cleaned_ms').nullable();
         table.primary(['tenant_name', 'principal_id']);
         table.index(['principal_id']);
       });
+    }
+    if (!(await tx.schema.hasColumn('customer_deletions', 'cleaned_ms'))) {
+      await tx.schema.alterTable('customer_deletions', table => table.bigInteger('cleaned_ms').nullable());
     }
     await tx.raw("CREATE UNIQUE INDEX IF NOT EXISTS uq_customer_deletion_active_tenant ON customer_deletions(tenant_name) WHERE status = 'active'");
   });
