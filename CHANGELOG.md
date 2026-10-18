@@ -1,5 +1,13 @@
 # Changelog
 
+## [4.25.1](https://github.com/mctlhq/mctl-portal/compare/4.25.0...4.25.1) (2026-10-18)
+
+
+### Bug Fixes
+
+* recognize configured Backstage workflow service subject ([9c3db7a](https://github.com/mctlhq/mctl-portal/commit/9c3db7a44e3623606a04c5b0702c2c881d6b610c))
+* recognize configured Backstage workflow service subject ([4755477](https://github.com/mctlhq/mctl-portal/commit/4755477a995925de0f17941336752dce423d16f9))
+
 ## [4.25.0](https://github.com/mctlhq/mctl-portal/compare/4.24.0...4.25.0) (2026-10-18)
 
 
