@@ -1,5 +1,23 @@
 # Changelog
 
+## [4.24.0](https://github.com/mctlhq/mctl-portal/compare/4.23.1...4.24.0) (2026-10-18)
+
+
+### Features
+
+* clean customer data and revoke portal sessions ([b7daa2b](https://github.com/mctlhq/mctl-portal/commit/b7daa2bf0275a8d7c1104f298baad8cf61054f19))
+* clean customer data and revoke portal sessions ([574302d](https://github.com/mctlhq/mctl-portal/commit/574302df291c24ea02f93c8c492904434396190f))
+
+
+### Bug Fixes
+
+* authorize lifecycle calls in production portal config ([2d83b36](https://github.com/mctlhq/mctl-portal/commit/2d83b367ddddc62feddfa74c72acdb72652d18a1))
+* make customer cleanup scope and completed replay explicit ([e135ce3](https://github.com/mctlhq/mctl-portal/commit/e135ce3282fc6576925e2c6f1caeb77cb4344763))
+* pin legacy OIDC admission and customer session scope ([0057245](https://github.com/mctlhq/mctl-portal/commit/00572457e80a4ae68b978c1145e3c350859aeaa3))
+* purge per-user notification data during account deletion ([3bf0f9b](https://github.com/mctlhq/mctl-portal/commit/3bf0f9bd6369a528bf8aeae654dce47903c3db5b))
+* require verified customer cleanup receipts ([43b7451](https://github.com/mctlhq/mctl-portal/commit/43b7451815dde96b69ca54d5a774cd1d7fa65821))
+* serialize notifications with customer teardown ([10b876f](https://github.com/mctlhq/mctl-portal/commit/10b876f77317e0571189b9a039de50d598f05c4f))
+
 ## [4.23.1](https://github.com/mctlhq/mctl-portal/compare/4.23.0...4.23.1) (2026-10-17)
 
 
