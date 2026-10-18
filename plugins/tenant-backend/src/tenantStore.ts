@@ -268,39 +268,27 @@ export class TenantStore {
     });
   }
 
-  /** Remove renewable portal and relying-party sessions for the frozen customer. */
+  /** Revoke Backstage sessions for the immutable customer principal.
+   * Legacy oidc-provider sessions are login-keyed staff sessions. Its exact-key
+   * membership gate (oidcUserExists) refuses principal-keyed customers; do not
+   * fabricate principal-keyed deletes or sweep a staff login namespace here.
+   */
   async deleteCustomerSessions(principalId: string): Promise<void> {
     const knex = await this.db.getClient();
     if (!isPostgresClient(knex)) throw new Error('Customer session cleanup requires PostgreSQL');
-    const ids = [principalId.toLowerCase()];
-    const refs = ids.map(id => `user:default/${id}`);
+    const refs = [`user:default/${principalId.toLowerCase()}`];
     await knex.transaction(async tx => {
-      // These names come from the installed auth-backend migrations. An
-      // unsupported/missing schema is unknown, never a successful revocation.
-      for (const [schema, tables] of [
-        ['auth', ['offline_sessions', 'user_info', 'oauth_authorization_sessions', 'oidc_authorization_codes']],
-        ['oidc-provider', ['oidc_sessions', 'oidc_codes', 'oidc_access_tokens', 'oidc_forward_auth_codes', 'oidc_forward_auth_sessions']],
-      ] as const) {
-        for (const table of tables) if (!(await tx.schema.withSchema(schema).hasTable(table))) throw new Error(`Unsupported session schema: missing ${schema}.${table}`);
+      // Installed auth-backend migration names. Missing schema is unknown.
+      for (const table of ['offline_sessions', 'user_info', 'oauth_authorization_sessions', 'oidc_authorization_codes']) {
+        if (!(await tx.schema.withSchema('auth').hasTable(table))) throw new Error(`Unsupported session schema: missing auth.${table}`);
       }
       for (const table of ['offline_sessions', 'user_info']) {
-        if (await tx.schema.withSchema('auth').hasTable(table)) {
-          await tx(table).withSchema('auth').whereIn('user_entity_ref', refs).delete();
-        }
+        await tx(table).withSchema('auth').whereIn('user_entity_ref', refs).delete();
       }
-      if (await tx.schema.withSchema('auth').hasTable('oauth_authorization_sessions')) {
-        const sessionIds = tx('oauth_authorization_sessions').withSchema('auth')
-          .whereIn('user_entity_ref', refs).select('id');
-        if (await tx.schema.withSchema('auth').hasTable('oidc_authorization_codes')) {
-          await tx('oidc_authorization_codes').withSchema('auth').whereIn('session_id', sessionIds).delete();
-        }
-        await tx('oauth_authorization_sessions').withSchema('auth').whereIn('user_entity_ref', refs).delete();
-      }
-      for (const table of ['oidc_sessions', 'oidc_codes', 'oidc_access_tokens', 'oidc_forward_auth_codes', 'oidc_forward_auth_sessions']) {
-        if (await tx.schema.withSchema('oidc-provider').hasTable(table)) {
-          await tx(table).withSchema('oidc-provider').whereIn('user_id', ids).delete();
-        }
-      }
+      const sessionIds = tx('oauth_authorization_sessions').withSchema('auth')
+        .whereIn('user_entity_ref', refs).select('id');
+      await tx('oidc_authorization_codes').withSchema('auth').whereIn('session_id', sessionIds).delete();
+      await tx('oauth_authorization_sessions').withSchema('auth').whereIn('user_entity_ref', refs).delete();
     });
   }
 

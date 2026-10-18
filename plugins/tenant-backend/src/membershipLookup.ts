@@ -82,3 +82,14 @@ function isMissingTableError(err: any): boolean {
   if (/no such table: tenant_members/i.test(msg)) return true;
   return false;
 }
+
+/** OIDC's legacy sign-in key is a GitHub login, not a customer principal.
+ * Keep this exact-key lookup: widening it to the display login would grant
+ * principal-keyed customers legacy OIDC sessions and requires lifecycle support.
+ */
+export async function oidcUserExists(db: Knex, userId: string): Promise<boolean> {
+  const query = isPostgresClient(db)
+    ? db('tenant_members').withSchema(TENANT_MGMT_SCHEMA)
+    : db('tenant_members');
+  return !!(await query.whereRaw('LOWER(user_id) = ?', [userId.toLowerCase()]).first());
+}

@@ -4,6 +4,7 @@ import { WorkspaceReadyOutbox } from './workspaceReadyEmail';
 import knexLib, { Knex } from 'knex';
 import { CustomerHasTenantError, TenantExistsError, TenantStore } from './tenantStore';
 import { Tenant } from './types';
+import { oidcUserExists } from './membershipLookup';
 import { SeedMember } from './memberKeys';
 
 // A login-keyed values.yaml member, as seedMemberOf resolves one.
@@ -438,6 +439,8 @@ const pgUrl = process.env.TENANT_TEST_PG_URL;
         await authDb('offline_sessions').insert({ id: user, user_entity_ref: ref, token_hash: 'test-hash' });
         await authDb('oauth_authorization_sessions').insert({ id: user, user_entity_ref: ref, client_id: 'test-client', redirect_uri: 'https://example.test/callback', response_type: 'code', expires_at: new Date(future) });
         await authDb('oidc_authorization_codes').insert({ code: user, session_id: user, expires_at: new Date(future) });
+        // OIDC callbacks only write login keys after oidcUserExists succeeds.
+        if (user === pid.toLowerCase()) continue;
         await oidc.saveSession(user, user, future);
         await oidc.saveCode(user, { userId: user, clientId: 'test-client', redirectUri: 'https://example.test/callback', expiresAt: future });
         await oidc.saveAccessToken(user, user, future);
@@ -446,6 +449,10 @@ const pgUrl = process.env.TENANT_TEST_PG_URL;
         await oidc.saveForwardAuthCode(user, { ...session, state: 'test-state', returnPath: '/', sessionExpiresAt: future });
       }
       const store = makeStore(knex); await store.init();
+      await store.seedMember('customer', { userId: pid.toLowerCase(), role: 'owner', catalogKey: 'principal', principalId: pid, login: 'charlie' });
+      await store.seedMember('staff', byLogin('alice', 'owner'));
+      expect(await oidcUserExists(admin, 'charlie')).toBe(false);
+      expect(await oidcUserExists(admin, 'ALICE')).toBe(true);
       await store.deleteCustomerSessions(pid);
       await store.deleteCustomerSessions(pid);
       for (const table of ['offline_sessions', 'user_info', 'oauth_authorization_sessions']) {

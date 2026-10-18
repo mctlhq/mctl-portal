@@ -148,3 +148,11 @@ a missing table fails cleanup instead of silently reporting success. PostgreSQL
 integration tests run the installed auth-backend migrations and the actual
 OidcStore initializer and public session-writing methods, rather than defining
 lookalike tables inside the test.
+
+Legacy relying-party OIDC sessions use GitHub login keys and are staff-only:
+the provider's production `oidcUserExists` lookup does not match the display
+login of a principal-keyed customer. Customer cleanup revokes Backstage's
+PID-bound sessions and preserves these staff OIDC rows. The PostgreSQL test
+exercises that exact production membership lookup and realistic login-keyed
+OIDC rows. Widening OIDC admission to customers requires adding their immutable
+identity and deletion fence to that provider first.
