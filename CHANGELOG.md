@@ -1,5 +1,13 @@
 # Changelog
 
+## [4.25.0](https://github.com/mctlhq/mctl-portal/compare/4.24.0...4.25.0) (2026-10-18)
+
+
+### Features
+
+* support cancellation before customer deletion begins ([97811e2](https://github.com/mctlhq/mctl-portal/commit/97811e2348dbae159d5817867aaebc646e4df7d6))
+* support cancellation before customer deletion begins ([10dfa70](https://github.com/mctlhq/mctl-portal/commit/10dfa709e44dbe60b5b4b841a99f3e376bb78a21))
+
 ## [4.24.0](https://github.com/mctlhq/mctl-portal/compare/4.23.1...4.24.0) (2026-10-18)
 
 
