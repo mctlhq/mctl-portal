@@ -1,3 +1,4 @@
+import { isTenantWorkflowPrincipal } from './workflowCaller';
 import { CustomerDeletionConflictError } from './customerDeletionSchema';
 import { Router, Request, Response, json } from 'express';
 import { createHmac, timingSafeEqual } from 'crypto';
@@ -283,8 +284,7 @@ export function createRouter(opts: RouterOptions): Router {
     let allowed = false;
     try {
       const { principal } = await httpAuth.credentials(req, { allow: ['service'] });
-      const subject = (principal as { subject?: string }).subject;
-      allowed = principal.type === 'service' && subject === 'external:mctl-api';
+      allowed = isTenantWorkflowPrincipal(principal);
     } catch { logger.warn('Customer lifecycle service credential rejected'); }
     if (!allowed) { res.status(403).json({ error: 'Workflow principal required' }); return; }
     const { name, stage } = req.params;
@@ -310,8 +310,7 @@ export function createRouter(opts: RouterOptions): Router {
     let allowed = false;
     try {
       const credentials = await httpAuth.credentials(req, { allow: ['service'] });
-      const subject = (credentials.principal as { subject?: string }).subject;
-      allowed = credentials.principal.type === 'service' && subject === 'external:mctl-api';
+      allowed = isTenantWorkflowPrincipal(credentials.principal);
     } catch { logger.warn('Tenant cleanup service credential rejected'); }
     if (!allowed) { res.status(403).json({ error: 'Workflow principal required' }); return; }
     const name = req.params.name;
