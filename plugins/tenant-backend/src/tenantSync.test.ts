@@ -140,3 +140,11 @@ describe('TenantSync member keys', () => {
     expect(log.warn).toHaveBeenCalledWith(expect.stringContaining(`bobs member ${pid.toLowerCase()} (principalId=${pid}) not seeded`));
   });
 });
+
+
+it('continues stale cleanup after another tenant has an in-flight delivery', async () => {
+ const {sync,store} = setup([], {});
+ store.delete.mockRejectedValueOnce(new Error('delivery lease active'));
+ await expect(sync.sync()).resolves.toBeUndefined();
+ expect(store.delete.mock.calls).toEqual([['alpha'],['beta'],['gone']]);
+});

@@ -1,3 +1,4 @@
+import { ensureCustomerDeletionSchema, lockTenantLifecycle, CustomerDeletionConflictError } from './customerDeletionSchema';
 import { DatabaseService, LoggerService } from '@backstage/backend-plugin-api';
 import { Tenant, TenantMember } from './types';
 import { isPostgresClient } from './membershipLookup';
@@ -86,6 +87,8 @@ export class TenantStore {
       }
     }
 
+    await ensureCustomerDeletionSchema(knex);
+
     // One workspace per self-service customer, held by the database rather
     // than by a check a concurrent request can pass too. Login-keyed rows
     // are exempt: staff legitimately belong to several tenants.
@@ -122,6 +125,10 @@ export class TenantStore {
   async createCustomerTenant(tenant: Tenant, owner: TenantMember): Promise<void> {
     const knex = await this.db.getClient();
     await knex.transaction(async trx => {
+      if (isPostgresClient(knex)) await trx.raw("SELECT pg_advisory_xact_lock(hashtext(?))", [`tenant-lifecycle|${tenant.name}`]);
+      if (await trx('customer_deletions').where({ tenant_name: tenant.name, status: 'active' }).first()) {
+        throw new Error('Tenant account deletion is in progress');
+      }
       try {
         await trx('tenants').insert(tenantRow(tenant));
       } catch (err) {
@@ -169,19 +176,124 @@ export class TenantStore {
    */
   async delete(name: string): Promise<void> {
     const knex = await this.db.getClient();
-    if (isPostgresClient(knex)) {
-      try {
-        await knex('repo_connections')
-          .withSchema(GITHUB_APP_CONNECT_SCHEMA)
-          .where({ team_id: name })
-          .delete();
-      } catch (err: any) {
-        // 42P01: github-app-connect never created its table, so there is nothing to clean.
-        if (err?.code !== '42P01') throw err;
+    await knex.transaction(async tx => {
+      await lockTenantLifecycle(tx, name);
+      // Lock the delivery rows before removing membership. An in-flight send
+      // must finish or lose its lease before deletion can report success.
+      if (await tx.schema.hasTable('workspace_ready_emails')) {
+        const deliveries = tx('workspace_ready_emails').where({ tenant_name: name });
+        const rows = await (isPostgresClient(knex) ? deliveries.forUpdate() : deliveries)
+          .select('lease_until_ms');
+        if (rows.some(row => row.lease_until_ms !== null && Number(row.lease_until_ms) >= Date.now())) {
+          throw new Error('Workspace ready delivery is in flight; retry tenant cleanup');
+        }
+        // Keep a non-deliverable receipt so a scheduler holding an old snapshot
+        // cannot recreate and send this tenant's notification after deletion.
+        await tx('workspace_ready_emails').where({ tenant_name: name }).update({
+          status: 'cancelled', recipient: '', snapshot: '{}', payload: '{}',
+          lease_until_ms: null, lease_token: null,
+        });
       }
-    }
-    await knex('tenant_members').where({ tenant_name: name }).delete();
-    await knex('tenants').where({ name }).delete();
+      if (isPostgresClient(knex) &&
+          await tx.schema.withSchema(GITHUB_APP_CONNECT_SCHEMA).hasTable('repo_connections')) {
+        await tx('repo_connections').withSchema(GITHUB_APP_CONNECT_SCHEMA)
+          .where({ team_id: name }).delete();
+      }
+      await tx('tenant_members').where({ tenant_name: name }).delete();
+      await tx('tenants').where({ name }).delete();
+    });
+  }
+
+  async isTenantDeleting(name: string): Promise<boolean> {
+    const knex = await this.db.getClient();
+    return Boolean(await knex('customer_deletions').where({ tenant_name: name, status: 'active' }).first());
+  }
+
+  /** Freeze name reuse before a customer deletion workflow can remove GitOps. */
+  async freezeCustomerDeletion(name: string, principalId: string, login: string): Promise<void> {
+    const knex = await this.db.getClient();
+    await knex.transaction(async tx => {
+      if (isPostgresClient(knex)) await tx.raw("SELECT pg_advisory_xact_lock(hashtext(?))", [`tenant-lifecycle|${name}`]);
+      const existing = await tx('customer_deletions').where({ tenant_name: name, principal_id: principalId }).first();
+      if (existing) return;
+      const members = await tx('tenant_members').where({ principal_id: principalId })
+        .orWhereRaw('lower(user_id) = ?', [login.toLowerCase()])
+        .orWhereRaw('lower(login) = ?', [login.toLowerCase()]);
+      if (members.length !== 1 || members[0].tenant_name !== name || members[0].role !== 'owner' ||
+          members[0].catalog_key !== 'principal' || members[0].principal_id !== principalId) {
+        throw new CustomerDeletionConflictError('Exclusive customer ownership is not observed in the portal');
+      }
+      const all = await tx('tenant_members').where({ tenant_name: name });
+      if (all.length !== 1) throw new CustomerDeletionConflictError('Workspace has other members');
+      await tx('customer_deletions').insert({ tenant_name: name, principal_id: principalId, status: 'active' });
+    });
+  }
+
+  async assertCustomerDeletion(name: string, principalId: string): Promise<'active' | 'complete'> {
+    const knex = await this.db.getClient();
+    const row = await knex('customer_deletions').where({ tenant_name: name, principal_id: principalId }).first();
+    if (!row || !['active', 'complete'].includes(row.status)) throw new Error('Customer deletion freeze is not active');
+    if (row.status === 'complete' && (row.cleaned_ms === null || row.cleaned_ms === undefined)) throw new Error('Customer cleanup receipt is missing');
+    return row.status;
+  }
+
+  /** A replay can release only its own freeze, never a replacement account's. */
+  async releaseCustomerDeletion(name: string, principalId: string): Promise<void> {
+    const knex = await this.db.getClient();
+    await knex.transaction(async tx => {
+      if (isPostgresClient(knex)) await tx.raw("SELECT pg_advisory_xact_lock(hashtext(?))", [`tenant-lifecycle|${name}`]);
+      const row = await tx('customer_deletions').where({ tenant_name: name, principal_id: principalId }).first();
+      if (!row) throw new Error('Customer deletion freeze missing');
+      if (row.status === 'complete') {
+        if ((row.cleaned_ms === null || row.cleaned_ms === undefined)) throw new Error('Customer cleanup receipt is missing');
+        return;
+      }
+      if (await tx('tenants').where({ name }).first() || await tx('tenant_members').where({ tenant_name: name }).first()) {
+        throw new Error('Tenant state still exists');
+      }
+      if ((row.cleaned_ms === null || row.cleaned_ms === undefined)) throw new Error('Customer cleanup receipt is missing');
+      await tx('customer_deletions').where({ tenant_name: name, principal_id: principalId }).update({ status: 'complete' });
+    });
+  }
+
+  /** Receipt is written only after private cleanup and catalog postconditions. */
+  async markCustomerDeletionClean(name: string, principalId: string): Promise<void> {
+    const knex = await this.db.getClient();
+    await knex.transaction(async tx => {
+      await lockTenantLifecycle(tx, name);
+      const row = await tx('customer_deletions').where({ tenant_name: name, principal_id: principalId }).first();
+      if (!row || row.status !== 'active') throw new Error('Customer deletion freeze is not active');
+      if (await tx('tenants').where({ name }).first() || await tx('tenant_members').where({ tenant_name: name }).first()) throw new Error('Tenant state still exists');
+      await tx('customer_deletions').where({ tenant_name: name, principal_id: principalId }).update({ cleaned_ms: Date.now() });
+    });
+  }
+
+  /** Revoke Backstage sessions for the immutable customer principal.
+   * Legacy oidc-provider sessions are login-keyed staff sessions. Its exact-key
+   * membership gate (oidcUserExists) refuses principal-keyed customers; do not
+   * fabricate principal-keyed deletes or sweep a staff login namespace here.
+   */
+  async deleteCustomerSessions(principalId: string): Promise<void> {
+    const knex = await this.db.getClient();
+    if (!isPostgresClient(knex)) throw new Error('Customer session cleanup requires PostgreSQL');
+    const refs = [`user:default/${principalId.toLowerCase()}`];
+    await knex.transaction(async tx => {
+      // Installed auth-backend migration names. Missing schema is unknown.
+      for (const table of ['offline_sessions', 'user_info', 'oauth_authorization_sessions', 'oidc_authorization_codes']) {
+        if (!(await tx.schema.withSchema('auth').hasTable(table))) throw new Error(`Unsupported session schema: missing auth.${table}`);
+      }
+      for (const table of ['notification', 'user_settings', 'broadcast_user_status']) {
+        if (!(await tx.schema.withSchema('notifications').hasTable(table))) throw new Error(`Unsupported session schema: missing notifications.${table}`);
+        await tx(table).withSchema('notifications').whereIn('user', refs).delete();
+      }
+      for (const table of ['offline_sessions', 'user_info']) {
+        await tx(table).withSchema('auth').whereIn('user_entity_ref', refs).delete();
+      }
+      const sessionIds = tx('oauth_authorization_sessions').withSchema('auth')
+        .whereIn('user_entity_ref', refs).select('id');
+      await tx('oidc_authorization_codes').withSchema('auth').whereIn('session_id', sessionIds).delete();
+      await tx('oauth_authorization_sessions').withSchema('auth').whereIn('user_entity_ref', refs).delete();
+    });
   }
 
   /** Get all tenant names currently in DB */

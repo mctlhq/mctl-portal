@@ -205,6 +205,44 @@ export const tenantPlugin = createBackendPlugin({
           resolveCreatorPrincipal,
           resolveZitadelCustomer,
           readWorkspaceAccess,
+          cleanupDeletedTenant: async (name, principalId, login) => {
+            // A completed immutable principal is already clean. Replaying its
+            // cleanup must not mutate a replacement workspace with this name.
+            if (principalId && await store.assertCustomerDeletion(name, principalId) === 'complete') return;
+            const token = await getToken();
+            const response = await fetch(
+              `https://api.github.com/repos/${encodeURIComponent(githubOrg)}/${encodeURIComponent(repoName)}/contents/${tenantsPath}/${encodeURIComponent(name)}?ref=main`,
+              { headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json' }, signal: AbortSignal.timeout(10_000) },
+            );
+            // Only the documented absence signal authorizes removing private state.
+            if (response.status !== 404) throw new Error('GitOps tenant absence is not confirmed');
+            if (principalId) {
+              const memberships = [
+                ...await store.listMembershipsForUser(principalId.toLowerCase()),
+                ...await store.listMembershipsForUser(login!.toLowerCase()),
+              ];
+              if (memberships.some(m => m.tenantName !== name)) throw new Error('Customer has another membership');
+            }
+            await store.delete(name);
+            // Active customer auth/contact/notification data is erased. Scaffolder
+            // tasks, specs and task_events remain historical execution audit,
+            // like Argo workflows and API audit; this is not a history purge.
+            if (principalId) await store.deleteCustomerSessions(principalId);
+            const catalogUrl = await discovery.getBaseUrl('catalog');
+            const { token: catalogToken } = await auth.getPluginRequestToken({
+              onBehalfOf: await auth.getOwnServiceCredentials(), targetPluginId: 'catalog',
+            });
+            for (const [kind, entityName] of [
+              ['group', name], ['system', `team-${name}`], ['resource', `tenant-${name}`],
+              ...(principalId ? [['user', principalId.toLowerCase()]] : []),
+            ]) {
+              const found = await fetch(`${catalogUrl}/entities/by-name/${kind}/default/${encodeURIComponent(entityName)}`, {
+                headers: { Authorization: `Bearer ${catalogToken}` }, signal: AbortSignal.timeout(10_000),
+              });
+              if (found.status !== 404) throw new Error('Catalog cleanup is not confirmed');
+            }
+            if (principalId) await store.markCustomerDeletionClean(name, principalId);
+          },
         });
         httpRouter.use(router);
         // Bearer-only operator dump; query-string tokens are rejected in the handler.

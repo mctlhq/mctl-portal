@@ -29,8 +29,8 @@ backend:
   # this tier originally existed for, always answers 410 regardless of
   # caller. Left in place rather than removed so a stale caller degrades to
   # a diagnosable 410/403 instead of the entry disappearing out from under it.
-  # Restricted to custom-domains, the only plugin needing it; mctl-api's
-  # other calls still ride the plugins' own unauthenticated policies.
+  # Restricted to custom-domains and tenant-management. Customer lifecycle
+  # endpoints also require this exact external service subject.
   # Its tenant notification is deliberately absent: that one posts to
   # /api/plugin-tenant/..., but tenant-backend registers as 'tenant-management',
   # so the path 404s regardless of auth — a separate bug, long hidden because
@@ -45,6 +45,7 @@ backend:
           subject: mctl-api
         accessRestrictions:
           - plugin: custom-domains
+          - plugin: tenant-management
   database:
     client: pg
     connection:

@@ -1,3 +1,4 @@
+import { CustomerDeletionConflictError } from './customerDeletionSchema';
 import express from 'express';
 import { Server } from 'http';
 import { AddressInfo } from 'net';
@@ -664,6 +665,7 @@ describe('self-service customers create their workspace by principal', () => {
   const upsert = jest.fn().mockResolvedValue(undefined);
   const addMember = jest.fn().mockResolvedValue(undefined);
   const createCustomerTenant = jest.fn().mockResolvedValue(undefined);
+  const isTenantDeleting = jest.fn().mockResolvedValue(false);
   const deleteTenant = jest.fn().mockResolvedValue(undefined);
   const memberTenant: Record<string, string> = {};
   const logger = {
@@ -706,6 +708,7 @@ describe('self-service customers create their workspace by principal', () => {
         })),
       },
       store: {
+        isTenantDeleting,
         findByName: jest.fn(async (name: string) =>
           name === 'labs' ? { name } : undefined,
         ),
@@ -781,6 +784,7 @@ describe('self-service customers create their workspace by principal', () => {
     addMember.mockClear();
     createCustomerTenant.mockReset().mockResolvedValue(undefined);
     deleteTenant.mockClear();
+    isTenantDeleting.mockReset().mockResolvedValue(false);
     for (const k of Object.keys(memberTenant)) delete memberTenant[k];
     if (server) {
       server.close(() => done());
@@ -871,6 +875,17 @@ describe('self-service customers create their workspace by principal', () => {
     expect(r.status).toBe(409);
     expect((await r.json()).code).toBe('creator_has_tenant');
     expect(upsert).not.toHaveBeenCalled();
+    expect(submitWorkflow).not.toHaveBeenCalled();
+  });
+
+  it('refuses creation and availability for a name frozen by deletion', async () => {
+    isTenantDeleting.mockResolvedValue(true);
+    const base = await startApp(jest.fn().mockResolvedValue(bob));
+    const availability = await post(base, '/tenants/availability', { name: 'bobs', creatorIdToken: 'site-id-token' });
+    expect(await availability.json()).toEqual({ name: 'bobs', available: false, reason: 'name_taken' });
+    const created = await create(base, { creatorIdToken: 'site-id-token' });
+    expect(created.status).toBe(409);
+    expect((await created.json()).code).toBe('name_taken');
     expect(submitWorkflow).not.toHaveBeenCalled();
   });
 
@@ -1068,4 +1083,90 @@ describe('self-service customers create their workspace by principal', () => {
       expect(resolve).not.toHaveBeenCalled();
     });
   });
+});
+
+
+describe('POST /internal/tenants/:name/cleanup', () => {
+  let server: Server;
+  let base: string;
+  const cleanup = jest.fn();
+  beforeEach(async () => {
+    cleanup.mockReset().mockResolvedValue(undefined);
+    const app = express();
+    app.use(createRouter({
+      logger: { warn: jest.fn(), info: jest.fn() } as any,
+      httpAuth: { credentials: jest.fn(async (req: express.Request) => {
+        const subject = req.header('x-test-service');
+        if (!subject) throw new Error('No service credential');
+        return { principal: { type: 'service', subject } };
+      }) } as any,
+      userInfo: {} as any, store: {} as any, argoClient: {} as any,
+      argoNamespace: 'argo-workflows', getGithubToken: async () => 'unused',
+      cleanupDeletedTenant: cleanup,
+    }));
+    await new Promise<void>(resolve => { server = app.listen(0, '127.0.0.1', resolve); });
+    base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  });
+  afterEach(async () => { await new Promise<void>(resolve => server.close(() => resolve())); });
+  const post = (service?: string, name = 'acme', body = {}) => fetch(`${base}/internal/tenants/${name}/cleanup`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', ...(service ? { 'x-test-service': service } : {}) }, body: JSON.stringify(body),
+  });
+  it.each([undefined, 'plugin:tenant-management', 'external:landing', 'external:other', 'mctl-api'])('refuses %s without touching state', async service => {
+    expect((await post(service)).status).toBe(403);
+    expect(cleanup).not.toHaveBeenCalled();
+  });
+  it.each(['external:mctl-api'])('accepts only the workflow caller %s', async service => {
+    const res = await post(service);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ tenant: 'acme', cleaned: true, scope: 'workspace' });
+    expect(cleanup).toHaveBeenCalledWith('acme', undefined, undefined);
+  });
+  it('reports an unobserved cleanup as incomplete', async () => {
+    cleanup.mockRejectedValueOnce(new Error('GitHub read failed'));
+    expect((await post('external:mctl-api')).status).toBe(503);
+  });
+  it('refuses protected tenants and malformed customer identities', async () => {
+    expect((await post('external:mctl-api', 'admins')).status).toBe(400);
+    expect((await post('external:mctl-api', 'acme', { principal_id: 'not-a-principal', login: 'alice' })).status).toBe(400);
+    expect((await post('external:mctl-api', 'acme', { login: 'alice' })).status).toBe(400);
+    expect(cleanup).not.toHaveBeenCalled();
+  });
+});
+
+
+describe('customer lifecycle private route', () => {
+ let server: Server;
+ let base: string;
+ const pid = 'prn_01M45DR1GWC87109EH88VBJX25';
+ const freeze = jest.fn();
+ const release = jest.fn();
+ beforeEach(async () => {
+  freeze.mockReset().mockResolvedValue(undefined); release.mockReset().mockResolvedValue(undefined);
+  const app = express();
+  app.use(createRouter({
+   logger: { warn: jest.fn(), info: jest.fn() } as any,
+   httpAuth: { credentials: async (req: express.Request) => ({ principal: { type: 'service', subject: req.header('x-test-service') } }) } as any,
+   userInfo: {} as any, store: { freezeCustomerDeletion: freeze, releaseCustomerDeletion: release } as any,
+   argoClient: {} as any, argoNamespace: 'argo-workflows', getGithubToken: async () => 'unused',
+  }));
+  await new Promise<void>(resolve => { server = app.listen(0, '127.0.0.1', resolve); });
+  base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+ });
+ afterEach(async () => { await new Promise<void>(resolve => server.close(() => resolve())); });
+ const post = (stage = 'prepare', service = 'external:mctl-api', body = { principal_id: pid, login: 'alice' }) => fetch(`${base}/internal/tenants/acme/customer-deletion/${stage}`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-test-service': service }, body: JSON.stringify(body) });
+ it.each(['mctl-api', 'plugin:tenant-management', 'external:other'])('refuses %s without changes', async subject => {
+  expect((await post('prepare', subject)).status).toBe(403); expect(freeze).not.toHaveBeenCalled();
+ });
+ it('dispatches only validated lifecycle stages', async () => {
+  expect((await post()).status).toBe(200); expect(freeze).toHaveBeenCalledWith('acme',pid,'alice');
+  expect((await post('release')).status).toBe(200); expect(release).toHaveBeenCalledWith('acme',pid);
+  expect((await post('bogus')).status).toBe(400);
+  expect((await post('prepare','external:mctl-api',{ principal_id: 'invalid', login: 'alice' })).status).toBe(400);
+ });
+ it('distinguishes invariant conflicts from unavailable storage', async () => {
+  freeze.mockRejectedValueOnce(new CustomerDeletionConflictError('ownership conflict'));
+  expect((await post()).status).toBe(409);
+  freeze.mockRejectedValueOnce(new Error('database unavailable'));
+  expect((await post()).status).toBe(503);
+ });
 });

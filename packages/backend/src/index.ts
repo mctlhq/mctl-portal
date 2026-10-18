@@ -7,6 +7,8 @@
  */
 
 import { createBackend } from '@backstage/backend-defaults';
+import { rootHttpRouterServiceFactory } from '@backstage/backend-defaults/rootHttpRouter';
+import { DatabaseManager } from '@backstage/backend-defaults/database';
 import { githubAuthModule } from './githubAuthModule';
 import { kubernetesEntityScopeModule } from './kubernetesEntityScope';
 import { zitadelAuthModule } from './zitadelAuthModule';
@@ -15,9 +17,35 @@ import {
   scaffolderFiltersModule,
   githubDiscoveryProcessorModule,
 } from '@internal/plugin-github-app-connect-backend';
-import { tenantCatalogModule } from '@internal/plugin-tenant-backend';
+import { tenantCatalogModule, createCustomerRevocationMiddleware, ensureCustomerDeletionSchema } from '@internal/plugin-tenant-backend';
 
 const backend = createBackend();
+
+backend.add(rootHttpRouterServiceFactory({
+  configure({ app, config, logger, lifecycle, applyDefaults }) {
+    const database = DatabaseManager.fromConfig(config).forPlugin('tenant-management', { logger, lifecycle });
+    let ready: ReturnType<typeof database.getClient> | undefined;
+    const getReady = () => {
+      ready ??= database.getClient().then(async db => {
+        await ensureCustomerDeletionSchema(db);
+        return db;
+      }).catch(error => { ready = undefined; throw error; });
+      return ready;
+    };
+    // Register before the default plugin router, so no plugin can accidentally
+    // accept an old customer user JWT after its account has been deleted.
+    app.use(createCustomerRevocationMiddleware({
+      logger,
+      appOrigin: new URL(config.getString('app.baseUrl')).origin,
+      isRevoked: async principalId => {
+        const db = await getReady();
+        return Boolean(await db('customer_deletions').where({ principal_id: principalId })
+          .whereIn('status', ['active', 'complete']).first().timeout(3000, { cancel: true }));
+      },
+    }));
+    applyDefaults();
+  },
+}));
 
 backend.add(import('@backstage/plugin-app-backend'));
 backend.add(import('@backstage/plugin-proxy-backend'));

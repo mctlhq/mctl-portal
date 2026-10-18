@@ -6,7 +6,7 @@ import { KeyStore } from './keyStore';
 import { OidcStore } from './oidcStore';
 import { createRouter, ForwardAuthHost, OidcClient, MembershipLookup } from './router';
 import { readUpstreamConfig } from './upstreamConfig';
-import { isPostgresClient } from '../../tenant-backend/src/membershipLookup';
+import { isPostgresClient, oidcUserExists } from '../../tenant-backend/src/membershipLookup';
 
 export const oidcProviderPlugin = createBackendPlugin({
   pluginId: 'oidc-provider',
@@ -68,18 +68,7 @@ export const oidcProviderPlugin = createBackendPlugin({
                   .whereRaw('LOWER(user_id) = ?', [id]);
             return rows.map((r: any) => r.tenant_name);
           },
-          async userExists(userId: string): Promise<boolean> {
-            const id = userId.toLowerCase();
-            const row = isPostgres
-              ? await dbClient('tenant_members')
-                  .withSchema(tmSchema)
-                  .whereRaw('LOWER(user_id) = ?', [id])
-                  .first()
-              : await dbClient('tenant_members')
-                  .whereRaw('LOWER(user_id) = ?', [id])
-                  .first();
-            return !!row;
-          },
+          userExists: userId => oidcUserExists(dbClient, userId),
           async getUserRole(userId: string, tenantName: string): Promise<string | null> {
             const id = userId.toLowerCase();
             const tenant = tenantName.toLowerCase();

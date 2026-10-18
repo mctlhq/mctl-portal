@@ -107,3 +107,60 @@ ambiguous/crashed attempt exists (all earlier sends were explicitly refused).
 The provider idempotency key remains unchanged. If Resend remembers the old
 refused payload, retries wait out its key retention rather than minting a new
 key. Any earlier ambiguous attempt instead requires provider reconciliation.
+
+
+## Account-deletion recovery
+
+A complete customer deletion is an irreversible operation with a durable API
+manifest. Portal `prepare` freezes the exact principal before teardown; failure
+or workflow cancellation does not reactivate old credentials. Retry the same
+MCP deletion with `delete_customer_account=true` and the original
+`customer_principal_id`. The API resumes its immutable manifest, including after
+GitOps membership or the ZITADEL user has disappeared. No SQL unfreeze is needed.
+A standalone portal cancel route would be unsafe after another provider already
+revoked or deleted identity state, so recovery resumes deletion instead.
+
+The root fence initializes and awaits its schema before observing revocations;
+failed reads are logged and return 503, never a clean result. Its indexed reads
+are deliberately uncached to invalidate a customer across portal replicas
+immediately. Completed tombstones remain: a re-registering GitHub identity gets
+a new ZITADEL subject and a new API principal ID, never the deleted principal.
+
+Ready-email preparation, lease acquisition and tenant deletion serialize on the
+same tenant lifecycle lock. Preparation and claim recheck current principal
+membership and deletion state, so a stale scheduler snapshot cannot recreate
+contact data or deliver a first notification after cleanup.
+
+The private cleanup response explicitly reports `scope: workspace` for an empty
+body and `scope: customer` when both exact `principal_id` and `login` are supplied.
+An incomplete identity pair is rejected; the API account-deletion stage accepts
+only a customer-scope acknowledgment. A replay for an already-completed principal
+returns without touching a replacement workspace or re-running private cleanup.
+
+
+Release requires a durable `cleaned_ms` receipt written only after private
+session cleanup and catalog postconditions pass. TenantSync removing cache rows
+is not evidence of full account cleanup. A completed marker without this receipt
+is an error. Customer session deletion uses only the immutable principal entity
+reference, preserving login-keyed staff sessions even if their login matches.
+The four supported Backstage `auth` tables and three per-user `notifications`
+tables (notification, user_settings, broadcast_user_status) are required: a
+missing table fails cleanup instead of silently reporting success. PostgreSQL
+tests run their installed package migrations. The real OidcStore initializer
+and writers supply login-keyed staff preservation fixtures.
+
+Legacy relying-party OIDC sessions use GitHub login keys and are staff-only:
+the provider's production `oidcUserExists` lookup does not match the display
+login of a principal-keyed customer. Customer cleanup revokes Backstage's
+PID-bound sessions and preserves these staff OIDC rows. The PostgreSQL test
+exercises that exact production membership lookup and realistic login-keyed
+OIDC rows. Widening OIDC admission to customers requires adding their immutable
+identity and deletion fence to that provider first.
+
+Execution history is deliberately retained: Scaffolder `tasks` (including
+`created_by`, template `spec`, and execution metadata) and `task_events`, like
+Argo workflow history and the API audit trail, remain evidence of past platform
+operations. Full-account deletion removes the active identity, renewable access,
+membership, contact and per-user notification records; it is not a purge of
+historical workflow inputs or logs. Any later history-erasure policy must be a
+separately reviewed retention change and must not silently destroy audit evidence.

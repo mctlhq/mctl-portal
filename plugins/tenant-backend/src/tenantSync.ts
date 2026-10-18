@@ -144,7 +144,8 @@ export class TenantSync {
       for (const name of existingNames) {
         if (!directories.includes(name)) {
           this.logger.info(`[TenantSync] Removing stale tenant '${name}' from DB`);
-          await this.store.delete(name);
+          try { await this.store.delete(name); }
+          catch (err) { this.logger.warn(`[TenantSync] Stale tenant '${name}' cleanup incomplete: ${err}`); }
         }
       }
     }

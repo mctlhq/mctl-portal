@@ -1,6 +1,10 @@
+import { dirname, join } from 'path';
+import { OidcStore } from '../../oidc-provider-backend/src/oidcStore';
+import { WorkspaceReadyOutbox } from './workspaceReadyEmail';
 import knexLib, { Knex } from 'knex';
 import { CustomerHasTenantError, TenantExistsError, TenantStore } from './tenantStore';
 import { Tenant } from './types';
+import { oidcUserExists } from './membershipLookup';
 import { SeedMember } from './memberKeys';
 
 // A login-keyed values.yaml member, as seedMemberOf resolves one.
@@ -414,6 +418,94 @@ const pgUrl = process.env.TENANT_TEST_PG_URL;
     expect(await store.findByName('nfc')).toBeUndefined();
   });
 
+  it('removes only customer sessions using installed Backstage migrations and the real OIDC store', async () => {
+    for (const schema of ['auth', 'oidc-provider', 'notifications']) {
+      await admin.raw(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`);
+      await admin.raw(`CREATE SCHEMA "${schema}"`);
+    }
+    const authDb = knexLib({ client: 'pg', connection: pgUrl, searchPath: ['auth'] });
+    const notificationsDb = knexLib({ client: 'pg', connection: pgUrl, searchPath: ['notifications'] });
+    try {
+      const directory = join(dirname(require.resolve('@backstage/plugin-auth-backend/package.json')), 'migrations');
+      await authDb.migrate.latest({ directory, schemaName: 'auth' });
+      await notificationsDb.migrate.latest({ directory: join(dirname(require.resolve('@backstage/plugin-notifications-backend/package.json')), 'migrations'), schemaName: 'notifications' });
+      await notificationsDb('broadcast').insert({ id:'00000000-0000-4000-8000-000000000001', title:'Broadcast', severity:'normal', origin:'test' });
+      const logger = { info: () => {}, debug: () => {}, warn: () => {}, error: () => {} } as any;
+      const oidc = new OidcStore(admin, logger, true);
+      await oidc.init();
+      const pid = 'prn_01M45DR1GWC87109EH88VBJX25';
+      const users = [pid.toLowerCase(), 'alice', 'bob'];
+      const future = Date.now() + 60_000;
+      for (const user of users) {
+        const ref = `user:default/${user}`;
+        await notificationsDb('notification').insert({ id: `00000000-0000-4000-8000-${String(users.indexOf(user)+2).padStart(12,'0')}`, user:ref, title:'Private notification', description:'Workspace details', severity:'normal', link:'https://example.test',origin:'test' });
+        await notificationsDb('user_settings').insert({ user:ref, channel:'web', origin:'test', enabled:true, settings_key_hash:user });
+        await notificationsDb('broadcast_user_status').insert({broadcast_id:'00000000-0000-4000-8000-000000000001',user:ref});
+        await authDb('user_info').insert({ user_entity_ref: ref, user_info: '{}', updated_at: new Date(), created_at: new Date() });
+        await authDb('offline_sessions').insert({ id: user, user_entity_ref: ref, token_hash: 'test-hash' });
+        await authDb('oauth_authorization_sessions').insert({ id: user, user_entity_ref: ref, client_id: 'test-client', redirect_uri: 'https://example.test/callback', response_type: 'code', expires_at: new Date(future) });
+        await authDb('oidc_authorization_codes').insert({ code: user, session_id: user, expires_at: new Date(future) });
+        // OIDC callbacks only write login keys after oidcUserExists succeeds.
+        if (user === pid.toLowerCase()) continue;
+        await oidc.saveSession(user, user, future);
+        await oidc.saveCode(user, { userId: user, clientId: 'test-client', redirectUri: 'https://example.test/callback', expiresAt: future });
+        await oidc.saveAccessToken(user, user, future);
+        const session = { userId: user, portalSessionId: user, tenant: 'acme', service: 'web', host: 'example.test', expiresAt: future };
+        await oidc.saveForwardAuthSession(user, session);
+        await oidc.saveForwardAuthCode(user, { ...session, state: 'test-state', returnPath: '/', sessionExpiresAt: future });
+      }
+      const store = makeStore(knex); await store.init();
+      await store.seedMember('customer', { userId: pid.toLowerCase(), role: 'owner', catalogKey: 'principal', principalId: pid, login: 'charlie' });
+      await store.seedMember('staff', byLogin('alice', 'owner'));
+      expect(await oidcUserExists(admin, 'charlie')).toBe(false);
+      expect(await oidcUserExists(admin, 'ALICE')).toBe(true);
+      await store.deleteCustomerSessions(pid);
+      await store.deleteCustomerSessions(pid);
+      for (const table of ['offline_sessions', 'user_info', 'oauth_authorization_sessions']) {
+        const rows = await authDb(table).orderBy('user_entity_ref').select('user_entity_ref');
+        expect(rows).toEqual([{ user_entity_ref: 'user:default/alice' }, { user_entity_ref: 'user:default/bob' }]);
+      }
+      expect(await authDb('oidc_authorization_codes').orderBy('session_id').select('session_id')).toEqual([{ session_id: 'alice' }, { session_id: 'bob' }]);
+      for (const table of ['oidc_sessions', 'oidc_codes', 'oidc_access_tokens', 'oidc_forward_auth_codes', 'oidc_forward_auth_sessions']) {
+        expect(await admin(table).withSchema('oidc-provider').orderBy('user_id').select('user_id')).toEqual([{ user_id: 'alice' }, { user_id: 'bob' }]);
+      }
+      for (const table of ['notification', 'user_settings', 'broadcast_user_status']) {
+        expect(await notificationsDb(table).orderBy('user').select('user')).toEqual([{user:'user:default/alice'},{user:'user:default/bob'}]);
+      }
+      await authDb.schema.dropTable('user_info');
+      await expect(store.deleteCustomerSessions(pid)).rejects.toThrow('Unsupported session schema');
+    } finally { await authDb.destroy(); await notificationsDb.destroy(); }
+  });
+
+  it('serializes ready-email work with deletion and refuses stale post-delete preparation', async () => {
+    const store = makeStore(knex);
+    await store.init();
+    await store.upsert(makeTenant('acme'));
+    const pid = 'prn_01M45DR1GWC87109EH88VBJX25';
+    await store.seedMember('acme', { userId: pid.toLowerCase(), principalId: pid, login: 'alice', catalogKey: 'principal', role: 'owner' });
+    const outbox = new WorkspaceReadyOutbox(knex);
+    await outbox.init();
+    const access = { tenant: 'acme', principalId: pid, account: 'alice@mctl.ai', role: 'owner', observedAt: new Date().toISOString(), status: 'ready', environments: [], capabilities: [], mcp: 'blocked', accessUrl: 'https://app.mctl.ai/workspace/access' } as any;
+    const blocker = await knex.transaction();
+    await blocker.raw('SELECT pg_advisory_xact_lock(hashtext(?))', ['tenant-lifecycle|acme']);
+    let settled = false;
+    const preparation = outbox.prepare(access, 'alice@example.com').then(id => { settled = true; return id; });
+    await new Promise(resolve => setTimeout(resolve, 50));
+    expect(settled).toBe(false);
+    await blocker.commit();
+    const id = await preparation;
+    const delivery = await outbox.claim(id, Date.now());
+    expect(delivery).toBeDefined();
+    await expect(store.delete('acme')).rejects.toThrow('in flight');
+    await outbox.finish(delivery!, 'provider-id', Date.now());
+    await store.delete('acme');
+    await outbox.prepare(access, 'alice@example.com');
+    expect(await outbox.claim(id, Date.now())).toBeUndefined();
+    const row = await knex('workspace_ready_emails').where({ id }).first();
+    expect(row.recipient).toBe('');
+    expect(row.payload).toBe('{}');
+  });
+
   it('keeps the tenant when the connection cleanup fails', async () => {
     await admin.raw('CREATE SCHEMA "github-app-connect"');
     // A table without team_id makes the cleanup fail with something other than 42P01.
@@ -434,4 +526,81 @@ it('preserves private contact data when GitOps sync omits it', async () => {
   expect(await store.findByName('acme')).toEqual(expect.objectContaining({ contactEmail: 'owner@example.com', displayName: 'Synced name' }));
   await store.upsert(makeTenant('acme', { contactEmail: 'corrected@example.com' }));
   expect((await store.findByName('acme'))?.contactEmail).toBe('corrected@example.com');
+});
+
+
+describe('TenantStore.delete notification cleanup', () => {
+  async function prepared() {
+    const { store, knex } = await freshStore();
+    currentKnex = knex;
+    await store.upsert(makeTenant('acme'));
+    await store.seedMember('acme', byLogin('alice', 'owner'));
+    await knex.schema.createTable('workspace_ready_emails', table => {
+      table.string('id').primary(); table.string('tenant_name'); table.string('status');
+      table.string('recipient'); table.text('snapshot'); table.text('payload');
+      table.bigInteger('lease_until_ms').nullable(); table.string('lease_token').nullable();
+    });
+    for (const tenant of ['acme', 'other']) await knex('workspace_ready_emails').insert({
+      id: tenant, tenant_name: tenant, status: 'pending', recipient: `${tenant}@example.com`,
+      snapshot: '{"private":true}', payload: '{"private":true}',
+    });
+    return { store, knex };
+  }
+
+  it('cancels old deliveries, erases message/contact data, and preserves other tenants', async () => {
+    const { store, knex } = await prepared();
+    await store.delete('acme');
+    await store.delete('acme');
+    expect(await store.findByName('acme')).toBeUndefined();
+    expect(await store.listMembershipsForUser('alice')).toEqual([]);
+    expect(await knex('workspace_ready_emails').where({ id: 'acme' }).first()).toMatchObject({
+      status: 'cancelled', recipient: '', snapshot: '{}', payload: '{}',
+    });
+    expect(await knex('workspace_ready_emails').where({ id: 'other' }).first()).toMatchObject({
+      status: 'pending', recipient: 'other@example.com',
+    });
+  });
+
+  it('leaves membership and payload intact while a send is in flight, then retries', async () => {
+    const { store, knex } = await prepared();
+    await knex('workspace_ready_emails').where({ id: 'acme' }).update({ lease_until_ms: Date.now() + 60_000 });
+    await expect(store.delete('acme')).rejects.toThrow('in flight');
+    expect(await store.findByName('acme')).toBeDefined();
+    expect(await store.listMembershipsForUser('alice')).toHaveLength(1);
+    expect((await knex('workspace_ready_emails').where({ id: 'acme' }).first()).recipient).toBe('acme@example.com');
+    await knex('workspace_ready_emails').where({ id: 'acme' }).update({ lease_until_ms: null });
+    await store.delete('acme');
+    expect(await store.findByName('acme')).toBeUndefined();
+  });
+});
+
+
+it('freezes name reuse until cleanup completes and cannot release a replacement freeze', async () => {
+  const {store,knex}=await freshStore();currentKnex=knex;
+  const pid='prn_01M45DR1GWC87109EH88VBJX25';
+  await store.createCustomerTenant(makeTenant('frozen'),{ tenantName:'frozen',userId:pid.toLowerCase(),principalId:pid,login:'alice',catalogKey:'principal',role:'owner',invitedAt:new Date().toISOString(),invitedBy:'test' });
+  await store.freezeCustomerDeletion('frozen',pid,'alice');
+  await store.freezeCustomerDeletion('frozen',pid,'alice');
+  expect(await store.isTenantDeleting('frozen')).toBe(true);
+  await expect(store.releaseCustomerDeletion('frozen',pid)).rejects.toThrow('still exists');
+  await store.delete('frozen');
+  await expect(store.createCustomerTenant(makeTenant('frozen'),{ tenantName:'frozen',userId:'bob',role:'owner',catalogKey:'login',invitedAt:new Date().toISOString(),invitedBy:'test' })).rejects.toThrow('deletion is in progress');
+  await expect(store.releaseCustomerDeletion('frozen',pid)).rejects.toThrow('receipt');
+  await store.markCustomerDeletionClean('frozen',pid);
+  await store.releaseCustomerDeletion('frozen',pid);
+  const next='prn_01M45DR1GWC87109EH88VBJX26';
+  await store.createCustomerTenant(makeTenant('frozen'),{ tenantName:'frozen',userId:next.toLowerCase(),principalId:next,login:'bob',catalogKey:'principal',role:'owner',invitedAt:new Date().toISOString(),invitedBy:'test' });
+  await store.freezeCustomerDeletion('frozen',next,'bob');
+  await store.releaseCustomerDeletion('frozen',pid);
+  expect(await store.assertCustomerDeletion('frozen',pid)).toBe('complete');
+  expect(await store.isTenantDeleting('frozen')).toBe(true);
+});
+
+
+it('does not treat a completed marker without a private cleanup receipt as clean', async () => {
+ const {store,knex}=await freshStore();currentKnex=knex;
+ const pid='prn_01M45DR1GWC87109EH88VBJX25';
+ await knex('customer_deletions').insert({tenant_name:'missing-receipt',principal_id:pid,status:'complete'});
+ await expect(store.assertCustomerDeletion('missing-receipt',pid)).rejects.toThrow('receipt');
+ await expect(store.releaseCustomerDeletion('missing-receipt',pid)).rejects.toThrow('receipt');
 });
