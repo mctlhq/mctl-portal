@@ -229,6 +229,18 @@ export class TenantStore {
     });
   }
 
+  /** API serializes this with begin and removes its prepared intent first. */
+  async cancelCustomerDeletion(name: string, principalId: string): Promise<void> {
+    const knex = await this.db.getClient();
+    await knex.transaction(async tx => {
+      await lockTenantLifecycle(tx, name);
+      const row = await tx('customer_deletions').where({ tenant_name: name, principal_id: principalId }).first();
+      if (!row) return;
+      if (row.status !== 'active' || row.cleaned_ms !== null && row.cleaned_ms !== undefined) throw new CustomerDeletionConflictError('Private cleanup has already run');
+      await tx('customer_deletions').where({ tenant_name: name, principal_id: principalId }).delete();
+    });
+  }
+
   async assertCustomerDeletion(name: string, principalId: string): Promise<'active' | 'complete'> {
     const knex = await this.db.getClient();
     const row = await knex('customer_deletions').where({ tenant_name: name, principal_id: principalId }).first();

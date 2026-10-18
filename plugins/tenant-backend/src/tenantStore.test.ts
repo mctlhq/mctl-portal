@@ -604,3 +604,20 @@ it('does not treat a completed marker without a private cleanup receipt as clean
  await expect(store.assertCustomerDeletion('missing-receipt',pid)).rejects.toThrow('receipt');
  await expect(store.releaseCustomerDeletion('missing-receipt',pid)).rejects.toThrow('receipt');
 });
+
+it('cancels only an uncleaned freeze and preserves workspace/customer data', async () => {
+ const {store,knex}=await freshStore();currentKnex=knex;
+ const pid='prn_01M45DR1GWC87109EH88VBJX25';
+ await store.createCustomerTenant(makeTenant('cancelme',{contactEmail:'owner@example.test'}),{tenantName:'cancelme',userId:pid.toLowerCase(),principalId:pid,login:'alice',catalogKey:'principal',role:'owner',invitedAt:new Date().toISOString(),invitedBy:'test'});
+ await store.freezeCustomerDeletion('cancelme',pid,'alice');
+ await store.cancelCustomerDeletion('cancelme',pid);
+ await store.cancelCustomerDeletion('cancelme',pid);
+ expect(await store.isTenantDeleting('cancelme')).toBe(false);
+ expect((await store.findByName('cancelme'))?.contactEmail).toBe('owner@example.test');
+ expect(await store.listMembershipsForUser(pid.toLowerCase())).toHaveLength(1);
+ await store.freezeCustomerDeletion('cancelme',pid,'alice');
+ await knex('customer_deletions').where({tenant_name:'cancelme',principal_id:pid}).update({cleaned_ms:Date.now()});
+ await expect(store.cancelCustomerDeletion('cancelme',pid)).rejects.toThrow('already run');
+ await knex('customer_deletions').where({tenant_name:'cancelme',principal_id:pid}).update({status:'complete',cleaned_ms:null});
+ await expect(store.cancelCustomerDeletion('cancelme',pid)).rejects.toThrow('already run');
+});

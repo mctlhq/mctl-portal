@@ -1140,13 +1140,14 @@ describe('customer lifecycle private route', () => {
  const pid = 'prn_01M45DR1GWC87109EH88VBJX25';
  const freeze = jest.fn();
  const release = jest.fn();
+ const cancel = jest.fn();
  beforeEach(async () => {
-  freeze.mockReset().mockResolvedValue(undefined); release.mockReset().mockResolvedValue(undefined);
+  freeze.mockReset().mockResolvedValue(undefined); release.mockReset().mockResolvedValue(undefined); cancel.mockReset().mockResolvedValue(undefined);
   const app = express();
   app.use(createRouter({
    logger: { warn: jest.fn(), info: jest.fn() } as any,
    httpAuth: { credentials: async (req: express.Request) => ({ principal: { type: 'service', subject: req.header('x-test-service') } }) } as any,
-   userInfo: {} as any, store: { freezeCustomerDeletion: freeze, releaseCustomerDeletion: release } as any,
+   userInfo: {} as any, store: { freezeCustomerDeletion: freeze, releaseCustomerDeletion: release, cancelCustomerDeletion: cancel } as any,
    argoClient: {} as any, argoNamespace: 'argo-workflows', getGithubToken: async () => 'unused',
   }));
   await new Promise<void>(resolve => { server = app.listen(0, '127.0.0.1', resolve); });
@@ -1160,6 +1161,7 @@ describe('customer lifecycle private route', () => {
  it('dispatches only validated lifecycle stages', async () => {
   expect((await post()).status).toBe(200); expect(freeze).toHaveBeenCalledWith('acme',pid,'alice');
   expect((await post('release')).status).toBe(200); expect(release).toHaveBeenCalledWith('acme',pid);
+  expect((await post('cancel','external:mctl-api',{principal_id:pid,login:''})).status).toBe(200); expect(cancel).toHaveBeenCalledWith('acme',pid);
   expect((await post('bogus')).status).toBe(400);
   expect((await post('prepare','external:mctl-api',{ principal_id: 'invalid', login: 'alice' })).status).toBe(400);
  });
