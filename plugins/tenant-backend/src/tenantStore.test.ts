@@ -419,14 +419,17 @@ const pgUrl = process.env.TENANT_TEST_PG_URL;
   });
 
   it('removes only customer sessions using installed Backstage migrations and the real OIDC store', async () => {
-    for (const schema of ['auth', 'oidc-provider']) {
+    for (const schema of ['auth', 'oidc-provider', 'notifications']) {
       await admin.raw(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`);
       await admin.raw(`CREATE SCHEMA "${schema}"`);
     }
     const authDb = knexLib({ client: 'pg', connection: pgUrl, searchPath: ['auth'] });
+    const notificationsDb = knexLib({ client: 'pg', connection: pgUrl, searchPath: ['notifications'] });
     try {
       const directory = join(dirname(require.resolve('@backstage/plugin-auth-backend/package.json')), 'migrations');
       await authDb.migrate.latest({ directory, schemaName: 'auth' });
+      await notificationsDb.migrate.latest({ directory: join(dirname(require.resolve('@backstage/plugin-notifications-backend/package.json')), 'migrations'), schemaName: 'notifications' });
+      await notificationsDb('broadcast').insert({ id:'00000000-0000-4000-8000-000000000001', title:'Broadcast', severity:'normal', origin:'test' });
       const logger = { info: () => {}, debug: () => {}, warn: () => {}, error: () => {} } as any;
       const oidc = new OidcStore(admin, logger, true);
       await oidc.init();
@@ -435,6 +438,9 @@ const pgUrl = process.env.TENANT_TEST_PG_URL;
       const future = Date.now() + 60_000;
       for (const user of users) {
         const ref = `user:default/${user}`;
+        await notificationsDb('notification').insert({ id: `00000000-0000-4000-8000-${String(users.indexOf(user)+2).padStart(12,'0')}`, user:ref, title:'Private notification', description:'Workspace details', severity:'normal', link:'https://example.test',origin:'test' });
+        await notificationsDb('user_settings').insert({ user:ref, channel:'web', origin:'test', enabled:true, settings_key_hash:user });
+        await notificationsDb('broadcast_user_status').insert({broadcast_id:'00000000-0000-4000-8000-000000000001',user:ref});
         await authDb('user_info').insert({ user_entity_ref: ref, user_info: '{}', updated_at: new Date(), created_at: new Date() });
         await authDb('offline_sessions').insert({ id: user, user_entity_ref: ref, token_hash: 'test-hash' });
         await authDb('oauth_authorization_sessions').insert({ id: user, user_entity_ref: ref, client_id: 'test-client', redirect_uri: 'https://example.test/callback', response_type: 'code', expires_at: new Date(future) });
@@ -463,9 +469,12 @@ const pgUrl = process.env.TENANT_TEST_PG_URL;
       for (const table of ['oidc_sessions', 'oidc_codes', 'oidc_access_tokens', 'oidc_forward_auth_codes', 'oidc_forward_auth_sessions']) {
         expect(await admin(table).withSchema('oidc-provider').orderBy('user_id').select('user_id')).toEqual([{ user_id: 'alice' }, { user_id: 'bob' }]);
       }
+      for (const table of ['notification', 'user_settings', 'broadcast_user_status']) {
+        expect(await notificationsDb(table).orderBy('user').select('user')).toEqual([{user:'user:default/alice'},{user:'user:default/bob'}]);
+      }
       await authDb.schema.dropTable('user_info');
       await expect(store.deleteCustomerSessions(pid)).rejects.toThrow('Unsupported session schema');
-    } finally { await authDb.destroy(); }
+    } finally { await authDb.destroy(); await notificationsDb.destroy(); }
   });
 
   it('serializes ready-email work with deletion and refuses stale post-delete preparation', async () => {

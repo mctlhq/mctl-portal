@@ -224,6 +224,9 @@ export const tenantPlugin = createBackendPlugin({
               if (memberships.some(m => m.tenantName !== name)) throw new Error('Customer has another membership');
             }
             await store.delete(name);
+            // Active customer auth/contact/notification data is erased. Scaffolder
+            // tasks, specs and task_events remain historical execution audit,
+            // like Argo workflows and API audit; this is not a history purge.
             if (principalId) await store.deleteCustomerSessions(principalId);
             const catalogUrl = await discovery.getBaseUrl('catalog');
             const { token: catalogToken } = await auth.getPluginRequestToken({

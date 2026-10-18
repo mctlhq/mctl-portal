@@ -143,11 +143,11 @@ session cleanup and catalog postconditions pass. TenantSync removing cache rows
 is not evidence of full account cleanup. A completed marker without this receipt
 is an error. Customer session deletion uses only the immutable principal entity
 reference, preserving login-keyed staff sessions even if their login matches.
-The supported Backstage `auth` and portal `oidc-provider` tables are required:
-a missing table fails cleanup instead of silently reporting success. PostgreSQL
-integration tests run the installed auth-backend migrations and the actual
-OidcStore initializer and public session-writing methods, rather than defining
-lookalike tables inside the test.
+The four supported Backstage `auth` tables and three per-user `notifications`
+tables (notification, user_settings, broadcast_user_status) are required: a
+missing table fails cleanup instead of silently reporting success. PostgreSQL
+tests run their installed package migrations. The real OidcStore initializer
+and writers supply login-keyed staff preservation fixtures.
 
 Legacy relying-party OIDC sessions use GitHub login keys and are staff-only:
 the provider's production `oidcUserExists` lookup does not match the display
@@ -156,3 +156,11 @@ PID-bound sessions and preserves these staff OIDC rows. The PostgreSQL test
 exercises that exact production membership lookup and realistic login-keyed
 OIDC rows. Widening OIDC admission to customers requires adding their immutable
 identity and deletion fence to that provider first.
+
+Execution history is deliberately retained: Scaffolder `tasks` (including
+`created_by`, template `spec`, and execution metadata) and `task_events`, like
+Argo workflow history and the API audit trail, remain evidence of past platform
+operations. Full-account deletion removes the active identity, renewable access,
+membership, contact and per-user notification records; it is not a purge of
+historical workflow inputs or logs. Any later history-erasure policy must be a
+separately reviewed retention change and must not silently destroy audit evidence.

@@ -282,6 +282,10 @@ export class TenantStore {
       for (const table of ['offline_sessions', 'user_info', 'oauth_authorization_sessions', 'oidc_authorization_codes']) {
         if (!(await tx.schema.withSchema('auth').hasTable(table))) throw new Error(`Unsupported session schema: missing auth.${table}`);
       }
+      for (const table of ['notification', 'user_settings', 'broadcast_user_status']) {
+        if (!(await tx.schema.withSchema('notifications').hasTable(table))) throw new Error(`Unsupported session schema: missing notifications.${table}`);
+        await tx(table).withSchema('notifications').whereIn('user', refs).delete();
+      }
       for (const table of ['offline_sessions', 'user_info']) {
         await tx(table).withSchema('auth').whereIn('user_entity_ref', refs).delete();
       }
