@@ -686,6 +686,7 @@ describe('self-service customers create their workspace by principal', () => {
     ) => Promise<unknown>,
     caller?: string,
     workflowBaseUrl?: string,
+    admission: RouterOptions['claimSignupAdmission'] = jest.fn().mockResolvedValue(undefined),
   ): Promise<string> {
     const options = {
       logger,
@@ -735,6 +736,7 @@ describe('self-service customers create their workspace by principal', () => {
         .fn()
         .mockResolvedValue('prn_01M39HRB7JRXZ2PHW5VVB695YZ'),
       resolveZitadelCustomer,
+      claimSignupAdmission: admission,
       workflowBaseUrl,
     } as unknown as RouterOptions;
     const app = express();
@@ -1083,6 +1085,16 @@ describe('self-service customers create their workspace by principal', () => {
       expect(resolve).not.toHaveBeenCalled();
     });
   });
+  it('refuses customer provisioning when the central reservation fails', async () => {
+    const admission = jest.fn().mockRejectedValue(new Error('capacity exhausted'));
+    const base = await startApp(async () => bob, undefined, undefined, admission);
+    const response = await fetch(`${base}/tenants`, { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ tenantName: 'new-team', displayName: 'New Team', creatorIdToken: 'customer-token', contactEmail: 'test@example.com' }) });
+    expect(response.status).toBe(503);
+    expect(admission).toHaveBeenCalledWith(expect.objectContaining({ principal_id: BOB, tenant: 'new-team' }));
+    expect(createCustomerTenant).not.toHaveBeenCalled();
+    expect(submitWorkflow).not.toHaveBeenCalled();
+  });
+
 });
 
 

@@ -1,3 +1,4 @@
+import { SignupAdmission } from './signupAdmission';
 import { isTenantWorkflowPrincipal } from './workflowCaller';
 import { CustomerDeletionConflictError } from './customerDeletionSchema';
 import { Router, Request, Response, json } from 'express';
@@ -75,6 +76,7 @@ export interface RouterOptions {
    * (stage C2). Unset, a landing request with creatorIdToken is refused.
    */
   resolveZitadelCustomer?: ZitadelCustomerResolver;
+  claimSignupAdmission?: SignupAdmission;
   /** Per-client budgets; defaults to DEFAULT_LIMITS. Tests lower them. */
   rateLimits?: RateLimits;
   readWorkspaceAccess?: WorkspaceAccessReader;
@@ -844,6 +846,23 @@ export function createRouter(opts: RouterOptions): Router {
           .status(400)
           .json({ error: 'A valid customer contact email is required' });
         return;
+      }
+
+      if (creator?.catalogKey === 'principal') {
+        if (!opts.claimSignupAdmission) {
+          res.status(503).json({ error: 'Workspace admission is unavailable' });
+          return;
+        }
+        try {
+          await opts.claimSignupAdmission({ principal_id: creator.principalId, tenant: body.tenantName,
+            memory: body.quotaMemoryReq ?? dq.memReq, cpu: body.quotaCpuReq ?? dq.cpuReq,
+            memory_limit: body.quotaMemoryLim ?? dq.memLim, cpu_limit: body.quotaCpuLim ?? dq.cpuLim,
+            pods: body.quotaPods ?? dq.pods, pvcs: dq.pvcs, services: dq.services });
+        } catch {
+          logger.warn('[tenant-backend] Customer workspace admission is pending or unavailable');
+          res.status(503).json({ error: 'Workspace reservation is unavailable. Please retry with the same team name or contact MCTL.' });
+          return;
+        }
       }
 
       logger.info(
