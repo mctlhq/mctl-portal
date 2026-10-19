@@ -1,5 +1,13 @@
 # Changelog
 
+## [4.27.1](https://github.com/mctlhq/mctl-portal/compare/4.27.0...4.27.1) (2026-10-19)
+
+
+### Bug Fixes
+
+* **signup:** align starter CPU with workflow headroom ([08a2d47](https://github.com/mctlhq/mctl-portal/commit/08a2d470d7d1d994b992f635db082c40b370bb60))
+* **signup:** align starter CPU with workflow headroom ([0ee2e48](https://github.com/mctlhq/mctl-portal/commit/0ee2e48625a73fc8c917975b3092242b52ff629a))
+
 ## [4.27.0](https://github.com/mctlhq/mctl-portal/compare/4.26.0...4.27.0) (2026-10-19)
 
 
