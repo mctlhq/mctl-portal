@@ -1,5 +1,13 @@
 # Changelog
 
+## [4.27.0](https://github.com/mctlhq/mctl-portal/compare/4.26.0...4.27.0) (2026-10-19)
+
+
+### Features
+
+* **signup:** create customers with the starter profile ([a95fee6](https://github.com/mctlhq/mctl-portal/commit/a95fee6a7791da4e758a6f9289f75f232dae249d))
+* **signup:** create customers with the starter profile ([de6387a](https://github.com/mctlhq/mctl-portal/commit/de6387ac140c57657d5cb7e55c2860b909a6b0dc))
+
 ## [4.26.0](https://github.com/mctlhq/mctl-portal/compare/4.25.1...4.26.0) (2026-10-19)
 
 
