@@ -15,7 +15,8 @@ export function createSignupAdmission(baseUrl: string, surfaceToken: string): Si
   return async claim => {
     const response = await fetch(`${baseUrl.replace(/\/$/, '')}/api/v1/surface-principals/signup-claim`, {
       method: 'POST', redirect: 'manual', signal: AbortSignal.timeout(10_000),
-      headers: { Authorization: `Bearer ${surfaceToken}`, 'Content-Type': 'application/json' },
+      headers: { Authorization: `Bearer ${surfaceToken}`, 'Content-Type': 'application/json',
+        'X-MCTL-Surface-Actor': `principal:${claim.principal_id}` },
       body: JSON.stringify(claim),
     });
     if (!response.ok) throw new Error('Workspace admission refused or unavailable');

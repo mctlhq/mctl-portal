@@ -8,7 +8,7 @@ describe('signup admission', () => {
    const provider = jest.fn().mockResolvedValue(new Response(JSON.stringify({ admitted: true }), { status: 200 }));
    global.fetch = provider;
    await createSignupAdmission('https://api.example', 'surface-secret')(claim);
-   expect(provider).toHaveBeenCalledWith('https://api.example/api/v1/surface-principals/signup-claim', expect.objectContaining({ redirect: 'manual', body: JSON.stringify(claim), headers: expect.objectContaining({ Authorization: 'Bearer surface-secret' }) }));
+   expect(provider).toHaveBeenCalledWith('https://api.example/api/v1/surface-principals/signup-claim', expect.objectContaining({ redirect: 'manual', body: JSON.stringify(claim), headers: expect.objectContaining({ Authorization: 'Bearer surface-secret', 'X-MCTL-Surface-Actor': 'principal:prn_test' }) }));
  });
  it.each([403, 409, 503, 302])('refuses provisioning on HTTP %s', async status => {
    global.fetch = jest.fn().mockResolvedValue(new Response(null, { status }));
