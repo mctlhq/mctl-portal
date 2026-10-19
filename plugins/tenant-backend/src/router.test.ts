@@ -915,13 +915,34 @@ describe('self-service customers create their workspace by principal', () => {
     expect(submitWorkflow).not.toHaveBeenCalled();
   });
 
-  it("releases the customer's reservation when the workflow cannot be submitted", async () => {
-    submitWorkflow.mockRejectedValue(new Error('argo down'));
-    const base = await startApp(jest.fn().mockResolvedValue(bob));
-    expect(
-      (await create(base, { creatorIdToken: 'site-id-token' })).status,
-    ).toBe(500);
+  it('retries an uncertain submission with the same central claim after releasing the local row', async () => {
+    submitWorkflow.mockRejectedValueOnce(new Error('submission transport failed'));
+    const admission = jest.fn().mockResolvedValue(undefined);
+    const base = await startApp(jest.fn().mockResolvedValue(bob), undefined, undefined, admission);
+    expect((await create(base, { creatorIdToken: 'site-id-token' })).status).toBe(500);
     expect(deleteTenant).toHaveBeenCalledWith('bobs');
+    expect((await create(base, { creatorIdToken: 'site-id-token' })).status).toBe(202);
+    expect(admission).toHaveBeenCalledTimes(2);
+    expect(admission.mock.calls[0]).toEqual(admission.mock.calls[1]);
+  });
+
+  it('a definite DB conflict may lose to another in-flight request sharing the claim', async () => {
+    const admission = jest.fn().mockResolvedValue(undefined);
+    const base = await startApp(jest.fn().mockResolvedValue(bob), undefined, undefined, admission);
+    let completeWorkflow!: (name: string) => void;
+    let signalSubmission!: () => void;
+    const submitted = new Promise<void>(resolve => { signalSubmission = resolve; });
+    submitWorkflow.mockImplementationOnce(() => { signalSubmission(); return new Promise<string>(resolve => { completeWorkflow = resolve; }); });
+    const winner = create(base, { creatorIdToken: 'site-id-token' });
+    await submitted;
+    createCustomerTenant.mockRejectedValueOnce(new TenantExistsError('Concurrent request owns the row'));
+    const loser = await create(base, { creatorIdToken: 'site-id-token' });
+    expect(loser.status).toBe(409);
+    completeWorkflow('create-tenant-winner');
+    expect((await winner).status).toBe(202);
+    expect(admission).toHaveBeenCalledTimes(2);
+    expect(admission.mock.calls[0]).toEqual(admission.mock.calls[1]);
+    expect(deleteTenant).not.toHaveBeenCalled();
   });
 
   it.each([

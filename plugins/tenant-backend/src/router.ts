@@ -848,6 +848,8 @@ export function createRouter(opts: RouterOptions): Router {
         return;
       }
 
+      // A claim is shared by idempotent requests for this principal/name.
+      // A losing DB-conflict request must not free another request's claim.
       if (creator?.catalogKey === 'principal') {
         if (!opts.claimSignupAdmission) {
           res.status(503).json({ error: 'Workspace admission is unavailable' });
@@ -957,8 +959,10 @@ export function createRouter(opts: RouterOptions): Router {
       try {
         workflowName = await argoClient.submitWorkflow(workflowSpec);
       } catch (err) {
-        // A customer's reservation without a workflow would hold their one
-        // workspace forever; release it so they can try again.
+        // Release the local catalog row so the same name can be retried.
+        // Keep central admission: submission may have succeeded before the
+        // transport failed, and concurrent requests share the same claim.
+        // Freeing capacity requires observing workflow/resource absence.
         if (customer) {
           await store
             .delete(body.tenantName)
