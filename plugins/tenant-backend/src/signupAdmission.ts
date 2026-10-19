@@ -1,3 +1,4 @@
+export class SignupAdmissionError extends Error {}
 /** Central admission must succeed before any customer provisioning side effect. */
 export interface SignupClaim {
   principal_id: string;

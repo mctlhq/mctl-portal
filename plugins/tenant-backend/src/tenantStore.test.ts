@@ -294,6 +294,25 @@ describe('TenantStore.createCustomerTenant', () => {
     login: 'alice',
   });
 
+  it('rolls back tenant and membership when central admission is refused', async () => {
+    const { store, knex } = await freshStore(); currentKnex = knex;
+    const admission = jest.fn().mockRejectedValue(new Error('No funded slot'));
+    await expect(store.createCustomerTenant(makeTenant('unfunded'), owner('unfunded'), admission)).rejects.toThrow('No funded slot');
+    expect(admission).toHaveBeenCalledTimes(1);
+    expect(await store.findByName('unfunded')).toBeUndefined();
+    expect(await store.getMemberTenant(PID.toLowerCase())).toBeUndefined();
+  });
+
+  it('checks both unique constraints before admitting and commits only the winner', async () => {
+    const { store, knex } = await freshStore(); currentKnex = knex;
+    const admission = jest.fn().mockResolvedValue(undefined);
+    await store.createCustomerTenant(makeTenant('first-admitted'), owner('first-admitted'), admission);
+    await expect(store.createCustomerTenant(makeTenant('second-admitted'), owner('second-admitted'), admission)).rejects.toBeInstanceOf(CustomerHasTenantError);
+    await expect(store.createCustomerTenant(makeTenant('first-admitted'), owner('first-admitted'), admission)).rejects.toBeInstanceOf(TenantExistsError);
+    expect(admission).toHaveBeenCalledTimes(1);
+    expect((await store.listAll()).map(t => t.name)).toEqual(['first-admitted']);
+  });
+
   it('writes the tenant and its principal-keyed owner', async () => {
     const { store, knex } = await freshStore();
     currentKnex = knex;
@@ -391,6 +410,37 @@ const pgUrl = process.env.TENANT_TEST_PG_URL;
   afterEach(async () => {
     await knex.destroy();
     await admin.destroy();
+  });
+
+  it('keeps uncommitted ownership invisible until admission and rolls back refusals', async () => {
+    const store = makeStore(knex); await store.init();
+    const pid = 'prn_01M45DR1GWC87109EH88VBJX25';
+    const member = { tenantName: 'unfunded', userId: pid.toLowerCase(), role: 'owner' as const, invitedAt: new Date().toISOString(), invitedBy: 'test', catalogKey: 'principal' as const, principalId: pid, login: 'test' };
+    const admission = jest.fn(async () => {
+      expect(await admin('tenants').withSchema('tenant-management').where({ name: 'unfunded' }).first()).toBeUndefined();
+      expect(await admin('tenant_members').withSchema('tenant-management').where({ principal_id: pid }).first()).toBeUndefined();
+      throw new Error('No funded slot');
+    });
+    await expect(store.createCustomerTenant(makeTenant('unfunded'), member, admission)).rejects.toThrow('No funded slot');
+    expect(admission).toHaveBeenCalledTimes(1);
+    expect(await store.findByName('unfunded')).toBeUndefined();
+    expect(await store.getMemberTenant(pid.toLowerCase())).toBeUndefined();
+  });
+
+  it('admits one concurrent customer transaction and never claims for the uniqueness loser', async () => {
+    const store = makeStore(knex); await store.init();
+    const pid = 'prn_01M45DR1GWC87109EH88VBJX25';
+    const owner = (name: string) => ({ tenantName: name, userId: pid.toLowerCase(), role: 'owner' as const, invitedAt: new Date().toISOString(), invitedBy: 'test', catalogKey: 'principal' as const, principalId: pid, login: 'test' });
+    const admission = jest.fn().mockResolvedValue(undefined);
+    const results = await Promise.allSettled([
+      store.createCustomerTenant(makeTenant('first'), owner('first'), admission),
+      store.createCustomerTenant(makeTenant('second'), owner('second'), admission),
+    ]);
+    expect(results.filter(r => r.status === 'fulfilled')).toHaveLength(1);
+    const rejected = results.find(r => r.status === 'rejected') as PromiseRejectedResult;
+    expect(rejected.reason).toBeInstanceOf(CustomerHasTenantError);
+    expect(admission).toHaveBeenCalledTimes(1);
+    expect(await store.listAll()).toHaveLength(1);
   });
 
   it("deletes the tenant's repo connections and only those", async () => {
