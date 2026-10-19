@@ -1,5 +1,19 @@
 # Changelog
 
+## [4.26.0](https://github.com/mctlhq/mctl-portal/compare/4.25.1...4.26.0) (2026-10-19)
+
+
+### Features
+
+* claim customer signup capacity before provisioning ([e29c700](https://github.com/mctlhq/mctl-portal/commit/e29c70052ef55c4bd67dc0920b08e852b359d750))
+* reserve customer signup capacity before provisioning ([54b09ba](https://github.com/mctlhq/mctl-portal/commit/54b09bad94ec474ff95286ad2716bd30da177663))
+
+
+### Bug Fixes
+
+* claim signup capacity after portal uniqueness checks ([f19b04d](https://github.com/mctlhq/mctl-portal/commit/f19b04dc5456fce3e0ce93d9e928795460b82e02))
+* identify customer actor in signup admission requests ([17d7999](https://github.com/mctlhq/mctl-portal/commit/17d799955389844363cbcd8ce54fe8670107ec0a))
+
 ## [4.25.1](https://github.com/mctlhq/mctl-portal/compare/4.25.0...4.25.1) (2026-10-18)
 
 
