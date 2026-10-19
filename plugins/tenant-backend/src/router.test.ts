@@ -334,7 +334,7 @@ describe('POST /tenants resolves the creator principal', () => {
     const admission = jest.fn().mockResolvedValue(undefined);
     const base = await startApp(async () => PID, admission);
     expect((await create(base, { creatorUserId: 'alice', quotaMemoryReq: '8Gi', quotaCpuReq: '8', quotaMemoryLim: '16Gi' })).status).toBe(202);
-    expect(admission).toHaveBeenCalledWith(expect.objectContaining({ workspace_profile: 'starter', memory: '512Mi', cpu: '250m', memory_limit: '1Gi', pvcs: '1' }));
+    expect(admission).toHaveBeenCalledWith(expect.objectContaining({ workspace_profile: 'starter', memory: '512Mi', cpu: '500m', memory_limit: '1Gi', pvcs: '1' }));
     expect(params()).toEqual(expect.arrayContaining(['workspace_profile=starter', 'quota_memory_req=512Mi', 'quota_memory_lim=1Gi']));
     expect(upsert).toHaveBeenCalledWith(expect.objectContaining({ quotas: expect.objectContaining({ 'requests.storage': '10Gi', 'requests.memory': '512Mi' }) }));
   });
@@ -847,8 +847,8 @@ describe('self-service customers create their workspace by principal', () => {
     const admission = jest.fn().mockResolvedValue(undefined);
     const base = await startApp(jest.fn().mockResolvedValue(bob), undefined, undefined, admission);
     expect((await create(base, { creatorIdToken: 'site-id-token', quotaMemoryReq: '8Gi', quotaCpuLim: '16' })).status).toBe(202);
-    expect(admission).toHaveBeenCalledWith(expect.objectContaining({ workspace_profile: 'starter', memory: '512Mi', cpu_limit: '1', pvcs: '1' }));
-    expect(params()).toEqual(expect.arrayContaining(['workspace_profile=starter', 'quota_memory_req=512Mi', 'quota_cpu_lim=1']));
+    expect(admission).toHaveBeenCalledWith(expect.objectContaining({ workspace_profile: 'starter', memory: '512Mi', cpu_limit: '2', pvcs: '1' }));
+    expect(params()).toEqual(expect.arrayContaining(['workspace_profile=starter', 'quota_memory_req=512Mi', 'quota_cpu_lim=2']));
     expect(createCustomerTenant).toHaveBeenCalledWith(expect.objectContaining({ quotas: expect.objectContaining({ 'requests.storage': '10Gi', 'persistentvolumeclaims': '1' }) }), expect.anything(), expect.any(Function));
   });
 
