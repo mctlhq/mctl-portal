@@ -1,3 +1,4 @@
+import { SignupAdmission, SignupAdmissionError } from './signupAdmission';
 import { isTenantWorkflowPrincipal } from './workflowCaller';
 import { CustomerDeletionConflictError } from './customerDeletionSchema';
 import { Router, Request, Response, json } from 'express';
@@ -75,6 +76,7 @@ export interface RouterOptions {
    * (stage C2). Unset, a landing request with creatorIdToken is refused.
    */
   resolveZitadelCustomer?: ZitadelCustomerResolver;
+  claimSignupAdmission?: SignupAdmission;
   /** Per-client budgets; defaults to DEFAULT_LIMITS. Tests lower them. */
   rateLimits?: RateLimits;
   readWorkspaceAccess?: WorkspaceAccessReader;
@@ -846,6 +848,22 @@ export function createRouter(opts: RouterOptions): Router {
         return;
       }
 
+      const needsAdmission = Boolean(creator && (creator.catalogKey === 'principal' || auth.isLanding));
+      if (needsAdmission && !opts.claimSignupAdmission) {
+        res.status(503).json({ error: 'Workspace admission is unavailable' });
+        return;
+      }
+
+      const admit = async () => {
+        if (!creator || !opts.claimSignupAdmission) throw new SignupAdmissionError('Workspace admission unavailable');
+        try {
+          await opts.claimSignupAdmission({ principal_id: creator.principalId, tenant: body.tenantName,
+            memory: body.quotaMemoryReq ?? dq.memReq, cpu: body.quotaCpuReq ?? dq.cpuReq,
+            memory_limit: body.quotaMemoryLim ?? dq.memLim, cpu_limit: body.quotaCpuLim ?? dq.cpuLim,
+            pods: body.quotaPods ?? dq.pods, pvcs: dq.pvcs, services: dq.services });
+        } catch { throw new SignupAdmissionError('Workspace admission unavailable'); }
+      };
+
       logger.info(
         `[tenant-backend] Creating tenant '${body.tenantName}' requested by ${auth.callerInfo}`,
       );
@@ -889,8 +907,13 @@ export function createRouter(opts: RouterOptions): Router {
             catalogKey: 'principal',
             principalId: customer.principalId,
             login: customer.login,
-          });
+          }, admit);
         } catch (err) {
+          if (err instanceof SignupAdmissionError) {
+            logger.warn('[tenant-backend] Customer workspace admission is pending or unavailable');
+            res.status(503).json({ error: 'Workspace reservation is unavailable. Please retry with the same team name or contact MCTL.' });
+            return;
+          }
           if (err instanceof CustomerHasTenantError) {
             res
               .status(409)
@@ -904,6 +927,15 @@ export function createRouter(opts: RouterOptions): Router {
           throw err;
         }
       } else {
+        // Legacy GitHub landing identities still sign in, but cannot bypass
+        // the funded admission gate by choosing the old authentication route.
+        if (needsAdmission) {
+          try { await admit(); }
+          catch {
+            res.status(503).json({ error: 'Workspace reservation is unavailable. Please retry with the same team name or contact MCTL.' });
+            return;
+          }
+        }
         await store.upsert(tenantRecord);
       }
       logger.info(`[tenant-backend] Tenant '${body.tenantName}' written to DB`);
@@ -938,8 +970,10 @@ export function createRouter(opts: RouterOptions): Router {
       try {
         workflowName = await argoClient.submitWorkflow(workflowSpec);
       } catch (err) {
-        // A customer's reservation without a workflow would hold their one
-        // workspace forever; release it so they can try again.
+        // Release the local catalog row so the same name can be retried.
+        // Keep central admission: submission may have succeeded before the
+        // transport failed, and concurrent requests share the same claim.
+        // Freeing capacity requires observing workflow/resource absence.
         if (customer) {
           await store
             .delete(body.tenantName)

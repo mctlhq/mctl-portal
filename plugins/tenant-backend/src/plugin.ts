@@ -1,3 +1,4 @@
+import { createSignupAdmission } from './signupAdmission';
 import {
   createBackendPlugin,
   coreServices,
@@ -204,6 +205,7 @@ export const tenantPlugin = createBackendPlugin({
           getGithubToken: getToken,
           resolveCreatorPrincipal,
           resolveZitadelCustomer,
+          claimSignupAdmission: mctlApiUrl && surfaceToken ? createSignupAdmission(mctlApiUrl, surfaceToken) : undefined,
           readWorkspaceAccess,
           cleanupDeletedTenant: async (name, principalId, login) => {
             // A completed immutable principal is already clean. Replaying its

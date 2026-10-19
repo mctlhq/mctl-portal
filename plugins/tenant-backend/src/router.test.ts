@@ -264,6 +264,7 @@ describe('POST /tenants resolves the creator principal', () => {
 
   function startApp(
     resolveCreatorPrincipal?: (login: string) => Promise<string>,
+    admission: RouterOptions['claimSignupAdmission'] = jest.fn().mockResolvedValue(undefined),
   ): Promise<string> {
     const options = {
       logger,
@@ -281,6 +282,7 @@ describe('POST /tenants resolves the creator principal', () => {
       getGithubToken: jest.fn(),
       landingPageToken: token,
       resolveCreatorPrincipal,
+      claimSignupAdmission: admission,
     } as unknown as RouterOptions;
     const app = express();
     app.use(createRouter(options));
@@ -317,6 +319,15 @@ describe('POST /tenants resolves the creator principal', () => {
     } else {
       done();
     }
+  });
+
+  it('legacy GitHub landing cannot bypass central signup capacity', async () => {
+    const admission = jest.fn().mockRejectedValue(new Error('No funded slot'));
+    const base = await startApp(async () => PID, admission);
+    expect((await create(base, { creatorUserId: 'alice' })).status).toBe(503);
+    expect(admission).toHaveBeenCalledWith(expect.objectContaining({ principal_id: PID, tenant: 'acme' }));
+    expect(upsert).not.toHaveBeenCalled();
+    expect(submitWorkflow).not.toHaveBeenCalled();
   });
 
   it('passes the creator principal to create-tenant', async () => {
@@ -664,7 +675,7 @@ describe('self-service customers create their workspace by principal', () => {
   const submitWorkflow = jest.fn().mockResolvedValue('create-tenant-abc');
   const upsert = jest.fn().mockResolvedValue(undefined);
   const addMember = jest.fn().mockResolvedValue(undefined);
-  const createCustomerTenant = jest.fn().mockResolvedValue(undefined);
+  const createCustomerTenant = jest.fn().mockImplementation(async (_tenant, _owner, admit?: () => Promise<void>) => { if (admit) await admit(); });
   const isTenantDeleting = jest.fn().mockResolvedValue(false);
   const deleteTenant = jest.fn().mockResolvedValue(undefined);
   const memberTenant: Record<string, string> = {};
@@ -686,6 +697,7 @@ describe('self-service customers create their workspace by principal', () => {
     ) => Promise<unknown>,
     caller?: string,
     workflowBaseUrl?: string,
+    admission: RouterOptions['claimSignupAdmission'] | null = jest.fn().mockResolvedValue(undefined),
   ): Promise<string> {
     const options = {
       logger,
@@ -735,6 +747,7 @@ describe('self-service customers create their workspace by principal', () => {
         .fn()
         .mockResolvedValue('prn_01M39HRB7JRXZ2PHW5VVB695YZ'),
       resolveZitadelCustomer,
+      claimSignupAdmission: admission ?? undefined,
       workflowBaseUrl,
     } as unknown as RouterOptions;
     const app = express();
@@ -782,7 +795,7 @@ describe('self-service customers create their workspace by principal', () => {
     submitWorkflow.mockReset().mockResolvedValue('create-tenant-abc');
     upsert.mockClear();
     addMember.mockClear();
-    createCustomerTenant.mockReset().mockResolvedValue(undefined);
+    createCustomerTenant.mockReset().mockImplementation(async (_tenant, _owner, admit?: () => Promise<void>) => { if (admit) await admit(); });
     deleteTenant.mockClear();
     isTenantDeleting.mockReset().mockResolvedValue(false);
     for (const k of Object.keys(memberTenant)) delete memberTenant[k];
@@ -849,6 +862,7 @@ describe('self-service customers create their workspace by principal', () => {
         principalId: BOB,
         login: 'alice',
       }),
+      expect.any(Function),
     );
     expect(createCustomerTenant.mock.invocationCallOrder[0]).toBeLessThan(
       submitWorkflow.mock.invocationCallOrder[0],
@@ -913,13 +927,33 @@ describe('self-service customers create their workspace by principal', () => {
     expect(submitWorkflow).not.toHaveBeenCalled();
   });
 
-  it("releases the customer's reservation when the workflow cannot be submitted", async () => {
-    submitWorkflow.mockRejectedValue(new Error('argo down'));
-    const base = await startApp(jest.fn().mockResolvedValue(bob));
-    expect(
-      (await create(base, { creatorIdToken: 'site-id-token' })).status,
-    ).toBe(500);
+  it('retries an uncertain submission with the same central claim after releasing the local row', async () => {
+    submitWorkflow.mockRejectedValueOnce(new Error('submission transport failed'));
+    const admission = jest.fn().mockResolvedValue(undefined);
+    const base = await startApp(jest.fn().mockResolvedValue(bob), undefined, undefined, admission);
+    expect((await create(base, { creatorIdToken: 'site-id-token' })).status).toBe(500);
     expect(deleteTenant).toHaveBeenCalledWith('bobs');
+    expect((await create(base, { creatorIdToken: 'site-id-token' })).status).toBe(202);
+    expect(admission).toHaveBeenCalledTimes(2);
+    expect(admission.mock.calls[0]).toEqual(admission.mock.calls[1]);
+  });
+
+  it('a definite DB conflict may lose to another in-flight request sharing the claim', async () => {
+    const admission = jest.fn().mockResolvedValue(undefined);
+    const base = await startApp(jest.fn().mockResolvedValue(bob), undefined, undefined, admission);
+    let completeWorkflow!: (name: string) => void;
+    let signalSubmission!: () => void;
+    const submitted = new Promise<void>(resolve => { signalSubmission = resolve; });
+    submitWorkflow.mockImplementationOnce(() => { signalSubmission(); return new Promise<string>(resolve => { completeWorkflow = resolve; }); });
+    const winner = create(base, { creatorIdToken: 'site-id-token' });
+    await submitted;
+    createCustomerTenant.mockRejectedValueOnce(new TenantExistsError('Concurrent request owns the row'));
+    const loser = await create(base, { creatorIdToken: 'site-id-token' });
+    expect(loser.status).toBe(409);
+    completeWorkflow('create-tenant-winner');
+    expect((await winner).status).toBe(202);
+    expect(admission).toHaveBeenCalledTimes(1);
+    expect(deleteTenant).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -1083,6 +1117,32 @@ describe('self-service customers create their workspace by principal', () => {
       expect(resolve).not.toHaveBeenCalled();
     });
   });
+  it('does not reserve central capacity for a customer already owning another tenant', async () => {
+    const admission = jest.fn().mockResolvedValue(undefined);
+    const base = await startApp(async () => bob, undefined, undefined, admission);
+    createCustomerTenant.mockRejectedValueOnce(new CustomerHasTenantError('A different workspace exists'));
+    expect((await create(base, { creatorIdToken: 'site-id-token' })).status).toBe(409);
+    expect(admission).not.toHaveBeenCalled();
+    expect(submitWorkflow).not.toHaveBeenCalled();
+  });
+  it('refuses customer provisioning when admission is not configured', async () => {
+    const base = await startApp(async () => bob, undefined, undefined, null);
+    const response = await create(base, { creatorIdToken: 'customer-token' });
+    expect(response.status).toBe(503);
+    expect(createCustomerTenant).not.toHaveBeenCalled();
+    expect(submitWorkflow).not.toHaveBeenCalled();
+  });
+  it('refuses customer provisioning when the central reservation fails', async () => {
+    const admission = jest.fn().mockRejectedValue(new Error('capacity exhausted'));
+    const base = await startApp(async () => bob, undefined, undefined, admission);
+    const response = await fetch(`${base}/tenants`, { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ tenantName: 'new-team', displayName: 'New Team', creatorIdToken: 'customer-token', contactEmail: 'test@example.com' }) });
+    expect(response.status).toBe(503);
+    expect(admission).toHaveBeenCalledWith(expect.objectContaining({ principal_id: BOB, tenant: 'new-team' }));
+    expect(createCustomerTenant).toHaveBeenCalledTimes(1);
+    expect(upsert).not.toHaveBeenCalled();
+    expect(submitWorkflow).not.toHaveBeenCalled();
+  });
+
 });
 
 

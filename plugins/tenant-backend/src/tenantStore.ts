@@ -122,7 +122,7 @@ export class TenantStore {
    * tenant behind. A taken name fails with TenantExistsError instead of
    * overwriting the tenant that holds it.
    */
-  async createCustomerTenant(tenant: Tenant, owner: TenantMember): Promise<void> {
+  async createCustomerTenant(tenant: Tenant, owner: TenantMember, admit?: () => Promise<void>): Promise<void> {
     const knex = await this.db.getClient();
     await knex.transaction(async trx => {
       if (isPostgresClient(knex)) await trx.raw("SELECT pg_advisory_xact_lock(hashtext(?))", [`tenant-lifecycle|${tenant.name}`]);
@@ -150,6 +150,10 @@ export class TenantStore {
         if (isUniqueViolation(err)) throw new CustomerHasTenantError('This account already has a workspace');
         throw err;
       }
+      // Both uniqueness checks have succeeded, but no tenant/member is visible
+      // until admission succeeds and the transaction commits. A known conflict
+      // therefore never claims central capacity. The caller bounds the HTTP call.
+      if (admit) await admit();
     });
   }
 
