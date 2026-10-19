@@ -686,7 +686,7 @@ describe('self-service customers create their workspace by principal', () => {
     ) => Promise<unknown>,
     caller?: string,
     workflowBaseUrl?: string,
-    admission: RouterOptions['claimSignupAdmission'] = jest.fn().mockResolvedValue(undefined),
+    admission: RouterOptions['claimSignupAdmission'] | null = jest.fn().mockResolvedValue(undefined),
   ): Promise<string> {
     const options = {
       logger,
@@ -736,7 +736,7 @@ describe('self-service customers create their workspace by principal', () => {
         .fn()
         .mockResolvedValue('prn_01M39HRB7JRXZ2PHW5VVB695YZ'),
       resolveZitadelCustomer,
-      claimSignupAdmission: admission,
+      claimSignupAdmission: admission ?? undefined,
       workflowBaseUrl,
     } as unknown as RouterOptions;
     const app = express();
@@ -1084,6 +1084,13 @@ describe('self-service customers create their workspace by principal', () => {
       ).toBe(403);
       expect(resolve).not.toHaveBeenCalled();
     });
+  });
+  it('refuses customer provisioning when admission is not configured', async () => {
+    const base = await startApp(async () => bob, undefined, undefined, null);
+    const response = await create(base, { creatorIdToken: 'customer-token' });
+    expect(response.status).toBe(503);
+    expect(createCustomerTenant).not.toHaveBeenCalled();
+    expect(submitWorkflow).not.toHaveBeenCalled();
   });
   it('refuses customer provisioning when the central reservation fails', async () => {
     const admission = jest.fn().mockRejectedValue(new Error('capacity exhausted'));
