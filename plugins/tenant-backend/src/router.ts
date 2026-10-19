@@ -856,7 +856,7 @@ export function createRouter(opts: RouterOptions): Router {
 
       const workspaceProfile = needsAdmission ? 'starter' : 'standard';
       const quotas = needsAdmission
-        ? { cpuReq: '250m', cpuLim: '1', memReq: '512Mi', memLim: '1Gi', pods: '5', pvcs: '1', services: '5' }
+        ? { cpuReq: '500m', cpuLim: '2', memReq: '512Mi', memLim: '1Gi', pods: '5', pvcs: '1', services: '5' }
         : { cpuReq: body.quotaCpuReq ?? dq.cpuReq, cpuLim: body.quotaCpuLim ?? dq.cpuLim,
             memReq: body.quotaMemoryReq ?? dq.memReq, memLim: body.quotaMemoryLim ?? dq.memLim,
             pods: body.quotaPods ?? dq.pods, pvcs: dq.pvcs, services: dq.services };
