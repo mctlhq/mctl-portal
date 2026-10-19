@@ -854,13 +854,20 @@ export function createRouter(opts: RouterOptions): Router {
         return;
       }
 
+      const workspaceProfile = needsAdmission ? 'starter' : 'standard';
+      const quotas = needsAdmission
+        ? { cpuReq: '250m', cpuLim: '1', memReq: '512Mi', memLim: '1Gi', pods: '5', pvcs: '1', services: '5' }
+        : { cpuReq: body.quotaCpuReq ?? dq.cpuReq, cpuLim: body.quotaCpuLim ?? dq.cpuLim,
+            memReq: body.quotaMemoryReq ?? dq.memReq, memLim: body.quotaMemoryLim ?? dq.memLim,
+            pods: body.quotaPods ?? dq.pods, pvcs: dq.pvcs, services: dq.services };
+
       const admit = async () => {
         if (!creator || !opts.claimSignupAdmission) throw new SignupAdmissionError('Workspace admission unavailable');
         try {
-          await opts.claimSignupAdmission({ principal_id: creator.principalId, tenant: body.tenantName,
-            memory: body.quotaMemoryReq ?? dq.memReq, cpu: body.quotaCpuReq ?? dq.cpuReq,
-            memory_limit: body.quotaMemoryLim ?? dq.memLim, cpu_limit: body.quotaCpuLim ?? dq.cpuLim,
-            pods: body.quotaPods ?? dq.pods, pvcs: dq.pvcs, services: dq.services });
+          await opts.claimSignupAdmission({ workspace_profile: 'starter', principal_id: creator.principalId, tenant: body.tenantName,
+            memory: quotas.memReq, cpu: quotas.cpuReq,
+            memory_limit: quotas.memLim, cpu_limit: quotas.cpuLim,
+            pods: quotas.pods, pvcs: quotas.pvcs, services: quotas.services });
         } catch { throw new SignupAdmissionError('Workspace admission unavailable'); }
       };
 
@@ -876,13 +883,14 @@ export function createRouter(opts: RouterOptions): Router {
         description: body.description ?? '',
         contactEmail: body.contactEmail ?? '',
         quotas: {
-          'requests.cpu': body.quotaCpuReq ?? dq.cpuReq,
-          'requests.memory': body.quotaMemoryReq ?? dq.memReq,
-          'limits.cpu': body.quotaCpuLim ?? dq.cpuLim,
-          'limits.memory': body.quotaMemoryLim ?? dq.memLim,
-          pods: body.quotaPods ?? dq.pods,
-          persistentvolumeclaims: dq.pvcs,
-          services: dq.services,
+          ...(needsAdmission ? { 'requests.storage': '10Gi' } : {}),
+          'requests.cpu': quotas.cpuReq,
+          'requests.memory': quotas.memReq,
+          'limits.cpu': quotas.cpuLim,
+          'limits.memory': quotas.memLim,
+          pods: quotas.pods,
+          persistentvolumeclaims: quotas.pvcs,
+          services: quotas.services,
         },
         networking: {
           allowIntraNamespace: true,
@@ -948,15 +956,16 @@ export function createRouter(opts: RouterOptions): Router {
           namespace: argoNamespace,
           parameters: [
             `tenant_name=${body.tenantName}`,
+            `workspace_profile=${workspaceProfile}`,
             `display_name=${body.displayName}`,
             `description=${body.description ?? ''}`,
             // Preserve the workflow parameter contract without private data.
             'contact_email=',
-            `quota_cpu_req=${body.quotaCpuReq ?? dq.cpuReq}`,
-            `quota_cpu_lim=${body.quotaCpuLim ?? dq.cpuLim}`,
-            `quota_memory_req=${body.quotaMemoryReq ?? dq.memReq}`,
-            `quota_memory_lim=${body.quotaMemoryLim ?? dq.memLim}`,
-            `quota_pods=${body.quotaPods ?? dq.pods}`,
+            `quota_cpu_req=${quotas.cpuReq}`,
+            `quota_cpu_lim=${quotas.cpuLim}`,
+            `quota_memory_req=${quotas.memReq}`,
+            `quota_memory_lim=${quotas.memLim}`,
+            `quota_pods=${quotas.pods}`,
             `allow_internet_egress=${
               body.allowInternetEgress ? 'true' : 'false'
             }`,
