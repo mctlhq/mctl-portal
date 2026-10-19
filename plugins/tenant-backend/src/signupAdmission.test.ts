@@ -3,7 +3,7 @@ import { createSignupAdmission } from './signupAdmission';
 describe('signup admission', () => {
  const originalFetch = global.fetch;
  afterEach(() => { global.fetch = originalFetch; });
- const claim = { principal_id: 'prn_test', tenant: 'new-team', memory: '2Gi', cpu: '1', memory_limit: '3Gi', cpu_limit: '2', pods: '10', pvcs: '5', services: '10' };
+ const claim = { workspace_profile: 'starter' as const, principal_id: 'prn_test', tenant: 'new-team', memory: '2Gi', cpu: '1', memory_limit: '3Gi', cpu_limit: '2', pods: '10', pvcs: '5', services: '10' };
  it('sends the fixed claim to the authenticated central gate', async () => {
    const provider = jest.fn().mockResolvedValue(new Response(JSON.stringify({ admitted: true }), { status: 200 }));
    global.fetch = provider;

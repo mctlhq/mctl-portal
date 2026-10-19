@@ -330,6 +330,15 @@ describe('POST /tenants resolves the creator principal', () => {
     expect(submitWorkflow).not.toHaveBeenCalled();
   });
 
+  it('fixes the legacy landing workspace envelope despite oversized input', async () => {
+    const admission = jest.fn().mockResolvedValue(undefined);
+    const base = await startApp(async () => PID, admission);
+    expect((await create(base, { creatorUserId: 'alice', quotaMemoryReq: '8Gi', quotaCpuReq: '8', quotaMemoryLim: '16Gi' })).status).toBe(202);
+    expect(admission).toHaveBeenCalledWith(expect.objectContaining({ workspace_profile: 'starter', memory: '512Mi', cpu: '250m', memory_limit: '1Gi', pvcs: '1' }));
+    expect(params()).toEqual(expect.arrayContaining(['workspace_profile=starter', 'quota_memory_req=512Mi', 'quota_memory_lim=1Gi']));
+    expect(upsert).toHaveBeenCalledWith(expect.objectContaining({ quotas: expect.objectContaining({ 'requests.storage': '10Gi', 'requests.memory': '512Mi' }) }));
+  });
+
   it('passes the creator principal to create-tenant', async () => {
     const resolve = jest.fn().mockResolvedValue(PID);
     const base = await startApp(resolve);
@@ -832,6 +841,15 @@ describe('self-service customers create their workspace by principal', () => {
     expect((await response.json()).workflowUrl).toBe(
       'https://workflows.example.test/workflows/argo-workflows/create-tenant-abc',
     );
+  });
+
+  it('fixes the customer workspace envelope before admission and persistence', async () => {
+    const admission = jest.fn().mockResolvedValue(undefined);
+    const base = await startApp(jest.fn().mockResolvedValue(bob), undefined, undefined, admission);
+    expect((await create(base, { creatorIdToken: 'site-id-token', quotaMemoryReq: '8Gi', quotaCpuLim: '16' })).status).toBe(202);
+    expect(admission).toHaveBeenCalledWith(expect.objectContaining({ workspace_profile: 'starter', memory: '512Mi', cpu_limit: '1', pvcs: '1' }));
+    expect(params()).toEqual(expect.arrayContaining(['workspace_profile=starter', 'quota_memory_req=512Mi', 'quota_cpu_lim=1']));
+    expect(createCustomerTenant).toHaveBeenCalledWith(expect.objectContaining({ quotas: expect.objectContaining({ 'requests.storage': '10Gi', 'persistentvolumeclaims': '1' }) }), expect.anything(), expect.any(Function));
   });
 
   it('keys the owner by principal and passes the login only for display', async () => {

@@ -1,6 +1,7 @@
 export class SignupAdmissionError extends Error {}
 /** Central admission must succeed before any customer provisioning side effect. */
 export interface SignupClaim {
+  workspace_profile: 'starter';
   principal_id: string;
   tenant: string;
   memory: string;
