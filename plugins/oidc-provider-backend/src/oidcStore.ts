@@ -44,6 +44,18 @@ export interface PendingAuth {
  * Tables live in the oidc-provider schema (Postgres) or are
  * prefixed with `oidc_` (SQLite).
  */
+/** What an authorization code binds together until it is redeemed. */
+export interface AuthCodeData {
+  userId: string;
+  clientId: string;
+  redirectUri: string;
+  expiresAt: number;
+  nonce?: string;
+  /** PKCE challenge the client sent to /authorize; /token must prove the verifier. */
+  codeChallenge?: string;
+  codeChallengeMethod?: string;
+}
+
 export class OidcStore {
   constructor(
     private readonly db: Knex,
@@ -85,6 +97,17 @@ export class OidcStore {
         t.string('redirect_uri', 2048).notNullable();
         t.bigInteger('expires_at').notNullable();
         t.string('nonce', 256).nullable();
+        t.string('code_challenge', 128).nullable();
+        t.string('code_challenge_method', 16).nullable();
+      });
+    }
+
+    // PKCE (RFC 7636) for downstream clients. Codes issued before these
+    // columns existed carry no challenge and are redeemed as before.
+    if (!(await hasColumn('oidc_codes', 'code_challenge'))) {
+      await alterTable('oidc_codes', t => {
+        t.string('code_challenge', 128).nullable();
+        t.string('code_challenge_method', 16).nullable();
       });
     }
 
@@ -183,10 +206,7 @@ export class OidcStore {
 
   // ── Authorization Codes ────────────────────────────────────────────
 
-  async saveCode(
-    code: string,
-    data: { userId: string; clientId: string; redirectUri: string; expiresAt: number; nonce?: string },
-  ): Promise<void> {
+  async saveCode(code: string, data: AuthCodeData): Promise<void> {
     await this.table('oidc_codes').insert({
       code,
       user_id: data.userId,
@@ -194,26 +214,40 @@ export class OidcStore {
       redirect_uri: data.redirectUri,
       expires_at: data.expiresAt,
       nonce: data.nonce ?? null,
+      code_challenge: data.codeChallenge ?? null,
+      code_challenge_method: data.codeChallengeMethod ?? null,
     });
   }
 
-  async consumeCode(code: string): Promise<{
-    userId: string;
-    clientId: string;
-    redirectUri: string;
-    expiresAt: number;
-    nonce?: string;
-  } | undefined> {
-    const row = await this.table('oidc_codes').where({ code }).first();
+  /**
+   * Returns the code's data and deletes it in the same statement, so two
+   * concurrent redemptions of one code can never both succeed.
+   */
+  async consumeCode(code: string): Promise<AuthCodeData | undefined> {
+    let row: any;
+    if (this.isPostgres) {
+      // DELETE ... RETURNING is atomic on its own.
+      const rows = await this.table('oidc_codes').where({ code }).delete().returning('*');
+      row = rows[0];
+    } else {
+      // SQLite: the read and the delete share one write transaction, which
+      // SQLite serialises, so the second redeemer sees no row.
+      row = await this.db.transaction(async trx => {
+        const found = await trx('oidc_codes').where({ code }).first();
+        if (!found) return undefined;
+        const deleted = await trx('oidc_codes').where({ code }).delete();
+        return deleted === 1 ? found : undefined;
+      });
+    }
     if (!row) return undefined;
-    // Single-use: delete immediately
-    await this.table('oidc_codes').where({ code }).delete();
     return {
       userId: row.user_id,
       clientId: row.client_id,
       redirectUri: row.redirect_uri,
       expiresAt: Number(row.expires_at),
       nonce: row.nonce ?? undefined,
+      codeChallenge: row.code_challenge ?? undefined,
+      codeChallengeMethod: row.code_challenge_method ?? undefined,
     };
   }
 

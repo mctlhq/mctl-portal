@@ -71,6 +71,7 @@ beforeEach(async () => {
       userExists: async () => true,
       getUserRole: async (userId, tenant) => ROLES[`${userId}/${tenant}`] ?? null,
       tenantExists: async tenant => TENANTS.has(tenant),
+      getUserTenantRoles: async () => ({}),
     },
     keyStore: {} as KeyStore,
     issuer: ISSUER,

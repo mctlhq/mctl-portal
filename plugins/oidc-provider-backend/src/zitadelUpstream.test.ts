@@ -143,6 +143,8 @@ function routerOptions(upstream: UpstreamMode | undefined): RouterOptions {
       },
       getUserRole: async userId => (members.has(userId) ? 'owner' : null),
       tenantExists: async () => true,
+      getUserTenantRoles: async (userId): Promise<Record<string, string>> =>
+        members.has(userId) ? { admins: 'owner' } : {},
     },
     keyStore: {} as KeyStore,
     issuer: ISSUER,

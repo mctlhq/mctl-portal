@@ -2,6 +2,7 @@ import { Request, Response, Router } from 'express';
 import express from 'express';
 import Router_ from 'express-promise-router';
 import { v4 as uuid } from 'uuid';
+import { createHash, timingSafeEqual } from 'crypto';
 import { LoggerService } from '@backstage/backend-plugin-api';
 import { KeyStore } from './keyStore';
 import { OidcStore } from './oidcStore';
@@ -56,6 +57,26 @@ export interface MembershipLookup {
   userExists(userId: string): Promise<boolean>;
   getUserRole(userId: string, tenantName: string): Promise<string | null>;
   tenantExists(tenantName: string): Promise<boolean>;
+  /** Every tenant the user belongs to, with the role held there (tenant → role). */
+  getUserTenantRoles(userId: string): Promise<Record<string, string>>;
+}
+
+// PKCE (RFC 7636 §4.1): verifier and challenge are 43–128 unreserved
+// characters; an S256 challenge is the base64url SHA-256 of the verifier.
+const PKCE_VALUE = /^[A-Za-z0-9._~-]{43,128}$/;
+
+function s256Challenge(codeVerifier: string): string {
+  return createHash('sha256').update(codeVerifier).digest('base64url');
+}
+
+/** Whether `codeVerifier` proves the stored S256 `codeChallenge`. */
+export function verifyPkce(codeChallenge: string, codeVerifier: unknown): boolean {
+  if (typeof codeVerifier !== 'string' || !PKCE_VALUE.test(codeVerifier)) {
+    return false;
+  }
+  const expected = Buffer.from(codeChallenge);
+  const actual = Buffer.from(s256Challenge(codeVerifier));
+  return expected.length === actual.length && timingSafeEqual(expected, actual);
 }
 
 /**
@@ -339,11 +360,13 @@ export function createRouter(options: RouterOptions): Router {
       token_endpoint: `${issuer}/token`,
       userinfo_endpoint: `${issuer}/userinfo`,
       jwks_uri: `${issuer}/.well-known/jwks.json`,
-      scopes_supported: ['openid', 'profile', 'email', 'groups'],
+      scopes_supported: ['openid', 'profile', 'email', 'groups', 'tenant_roles'],
       response_types_supported: ['code'],
       grant_types_supported: ['authorization_code'],
       subject_types_supported: ['public'],
       id_token_signing_alg_values_supported: ['RS256'],
+      token_endpoint_auth_methods_supported: ['client_secret_post'],
+      code_challenge_methods_supported: ['S256'],
       claims_supported: [
         'sub',
         'name',
@@ -351,6 +374,7 @@ export function createRouter(options: RouterOptions): Router {
         'email_verified',
         'preferred_username',
         'groups',
+        'tenant_roles',
         'iss',
         'aud',
         'exp',
@@ -377,20 +401,39 @@ export function createRouter(options: RouterOptions): Router {
       scope: _scope,
       state,
       nonce,
-    } = req.query as Record<string, string>;
+      code_challenge,
+      code_challenge_method,
+    } = req.query as Record<string, string | undefined>;
 
     if (response_type !== 'code') {
       res.status(400).json({ error: 'unsupported_response_type' });
       return;
     }
 
-    const client = findClient(client_id);
+    // PKCE is optional (Dex does not send it), but a client that starts it
+    // must do so with S256 and a well-formed challenge, or the code it gets
+    // could be redeemed without the verifier.
+    if (code_challenge !== undefined || code_challenge_method !== undefined) {
+      if (code_challenge_method !== 'S256') {
+        res.status(400).json({
+          error: 'invalid_request',
+          error_description: 'Only the S256 code_challenge_method is supported',
+        });
+        return;
+      }
+      if (typeof code_challenge !== 'string' || !PKCE_VALUE.test(code_challenge)) {
+        res.status(400).json({ error: 'invalid_request', error_description: 'Malformed code_challenge' });
+        return;
+      }
+    }
+
+    const client = client_id ? findClient(client_id) : undefined;
     if (!client) {
       res.status(400).json({ error: 'invalid_client', error_description: `Unknown client_id: ${client_id}` });
       return;
     }
 
-    if (!client.redirectUris.includes(redirect_uri)) {
+    if (!redirect_uri || !client.redirectUris.includes(redirect_uri)) {
       res.status(400).json({
         error: 'invalid_redirect_uri',
         error_description: `Redirect URI not registered: ${redirect_uri}`,
@@ -411,10 +454,12 @@ export function createRouter(options: RouterOptions): Router {
       const code = uuid();
       await store.saveCode(code, {
         userId: session.userId,
-        clientId: client_id,
+        clientId: client.clientId,
         redirectUri: redirect_uri,
         expiresAt: Date.now() + 5 * 60 * 1000,
         nonce,
+        codeChallenge: code_challenge,
+        codeChallengeMethod: code_challenge_method,
       });
       const url = new URL(redirect_uri);
       url.searchParams.set('code', code);
@@ -773,8 +818,8 @@ export function createRouter(options: RouterOptions): Router {
   // POST /token  (application/x-www-form-urlencoded)
   // grant_type=authorization_code&code=X&redirect_uri=Y&client_id=Z&client_secret=S
   router.post('/token', async (req: Request, res: Response) => {
-    const { grant_type, code, redirect_uri, client_id, client_secret } =
-      req.body;
+    const { grant_type, code, redirect_uri, client_id, client_secret, code_verifier } =
+      (req.body ?? {}) as Record<string, unknown>;
 
     if (grant_type !== 'authorization_code') {
       res.status(400).json({ error: 'unsupported_grant_type' });
@@ -782,20 +827,20 @@ export function createRouter(options: RouterOptions): Router {
     }
 
     // Authenticate client
-    const client = findClient(client_id);
+    const client = typeof client_id === 'string' ? findClient(client_id) : undefined;
     if (!client || client.clientSecret !== client_secret) {
       res.status(401).json({ error: 'invalid_client' });
       return;
     }
 
     // Validate code (consumeCode is single-use: returns and deletes)
-    const codeData = await store.consumeCode(code);
+    const codeData = typeof code === 'string' ? await store.consumeCode(code) : undefined;
     if (!codeData) {
       res.status(400).json({ error: 'invalid_grant', error_description: 'Code not found or expired' });
       return;
     }
 
-    if (codeData.clientId !== client_id || codeData.redirectUri !== redirect_uri) {
+    if (codeData.clientId !== client.clientId || codeData.redirectUri !== redirect_uri) {
       res.status(400).json({ error: 'invalid_grant', error_description: 'client_id or redirect_uri mismatch' });
       return;
     }
@@ -805,8 +850,24 @@ export function createRouter(options: RouterOptions): Router {
       return;
     }
 
-    // Look up user groups
-    const groups = await membership.getUserGroups(codeData.userId);
+    // A code minted with a PKCE challenge is only redeemable with its
+    // verifier, and a verifier is only accepted for such a code (RFC 9700
+    // §2.1.1: otherwise a code minted without a challenge could be injected
+    // into a PKCE client's flow). The code already left the store above,
+    // so a failed proof burns it.
+    const pkceOk = codeData.codeChallenge
+      ? verifyPkce(codeData.codeChallenge, code_verifier)
+      : code_verifier === undefined;
+    if (!pkceOk) {
+      res.status(400).json({ error: 'invalid_grant', error_description: 'PKCE verification failed' });
+      return;
+    }
+
+    // Look up user groups and per-tenant roles
+    const [groups, tenantRoles] = await Promise.all([
+      membership.getUserGroups(codeData.userId),
+      membership.getUserTenantRoles(codeData.userId),
+    ]);
 
     // Build claims
     const claims: Record<string, unknown> = {
@@ -816,6 +877,7 @@ export function createRouter(options: RouterOptions): Router {
       email: `${codeData.userId}@mctl.me`,
       email_verified: true,
       groups,
+      tenant_roles: tenantRoles,
     };
     if (codeData.nonce) {
       claims.nonce = codeData.nonce;
@@ -823,7 +885,7 @@ export function createRouter(options: RouterOptions): Router {
 
     // Sign ID token
     const idToken = await keyStore.sign(
-      { ...claims, iss: issuer, aud: client_id },
+      { ...claims, iss: issuer, aud: client.clientId },
       '8h',
     );
 
@@ -836,11 +898,11 @@ export function createRouter(options: RouterOptions): Router {
       token_type: 'Bearer',
       expires_in: 28800,
       id_token: idToken,
-      scope: 'openid profile email groups',
+      scope: 'openid profile email groups tenant_roles',
     });
 
     logger.info(
-      `[OIDC] Issued token for ${codeData.userId} → client ${client_id}, groups: [${groups.join(', ')}]`,
+      `[OIDC] Issued token for ${codeData.userId} → client ${client.clientId}, groups: [${groups.join(', ')}]`,
     );
   });
 
@@ -858,7 +920,10 @@ export function createRouter(options: RouterOptions): Router {
       return;
     }
 
-    const groups = await membership.getUserGroups(data.userId);
+    const [groups, tenantRoles] = await Promise.all([
+      membership.getUserGroups(data.userId),
+      membership.getUserTenantRoles(data.userId),
+    ]);
 
     res.json({
       sub: data.userId,
@@ -867,6 +932,7 @@ export function createRouter(options: RouterOptions): Router {
       email: `${data.userId}@mctl.me`,
       email_verified: true,
       groups,
+      tenant_roles: tenantRoles,
     });
   });
 
