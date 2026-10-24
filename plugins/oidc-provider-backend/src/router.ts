@@ -851,9 +851,14 @@ export function createRouter(options: RouterOptions): Router {
     }
 
     // A code minted with a PKCE challenge is only redeemable with its
-    // verifier (the code already left the store above, so a failed proof
-    // burns it).
-    if (codeData.codeChallenge && !verifyPkce(codeData.codeChallenge, code_verifier)) {
+    // verifier, and a verifier is only accepted for such a code (RFC 9700
+    // §2.1.1: otherwise a code minted without a challenge could be injected
+    // into a PKCE client's flow). The code already left the store above,
+    // so a failed proof burns it.
+    const pkceOk = codeData.codeChallenge
+      ? verifyPkce(codeData.codeChallenge, code_verifier)
+      : code_verifier === undefined;
+    if (!pkceOk) {
       res.status(400).json({ error: 'invalid_grant', error_description: 'PKCE verification failed' });
       return;
     }

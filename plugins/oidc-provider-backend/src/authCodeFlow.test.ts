@@ -326,7 +326,10 @@ describe('authorization code with PKCE S256 (mctl-rules)', () => {
     expect(await store.consumeCode(code)).toBeUndefined();
   });
 
-  it('ignores a stray verifier on a code minted without a challenge', async () => {
+  // RFC 9700 §2.1.1: a verifier is only accepted when the authorization
+  // request carried a challenge, so a code minted without one cannot be
+  // injected into a PKCE client's flow.
+  it('refuses a verifier on a code minted without a challenge and burns it', async () => {
     const code = codeOf(await authorize(RULES), RULES_CALLBACK);
     const res = await token({
       grant_type: 'authorization_code',
@@ -336,7 +339,9 @@ describe('authorization code with PKCE S256 (mctl-rules)', () => {
       client_secret: 'rules-secret',
       code_verifier: pkcePair().verifier,
     });
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(400);
+    expect(res.json()).toEqual({ error: 'invalid_grant', error_description: 'PKCE verification failed' });
+    expect(await store.consumeCode(code)).toBeUndefined();
   });
 
   it('rejects the plain method', async () => {
