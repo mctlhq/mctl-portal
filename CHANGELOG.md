@@ -1,5 +1,18 @@
 # Changelog
 
+## [4.28.0](https://github.com/mctlhq/mctl-portal/compare/4.27.1...4.28.0) (2026-10-24)
+
+
+### Features
+
+* **oidc-provider:** tenant_roles claim and PKCE S256 for downstream clients ([5e96c4b](https://github.com/mctlhq/mctl-portal/commit/5e96c4bbbc99f618b4e7b52abd1c20a4ecf93285))
+* **oidc-provider:** tenant_roles claim and PKCE S256 for downstream clients ([d135896](https://github.com/mctlhq/mctl-portal/commit/d13589697c20798606c4d02a967def31db83fc3f))
+
+
+### Bug Fixes
+
+* **oidc-provider:** refuse a code_verifier on a code minted without a challenge ([c93dee7](https://github.com/mctlhq/mctl-portal/commit/c93dee7c80a67833da066049151781eb27efc154))
+
 ## [4.27.1](https://github.com/mctlhq/mctl-portal/compare/4.27.0...4.27.1) (2026-10-19)
 
 
