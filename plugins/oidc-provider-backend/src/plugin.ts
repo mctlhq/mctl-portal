@@ -98,6 +98,22 @@ export const oidcProviderPlugin = createBackendPlugin({
                   .first();
             return !!row;
           },
+          async getUserTenantRoles(userId: string): Promise<Record<string, string>> {
+            const id = userId.toLowerCase();
+            const rows = isPostgres
+              ? await dbClient('tenant_members')
+                  .withSchema(tmSchema)
+                  .select('tenant_name', 'role')
+                  .whereRaw('LOWER(user_id) = ?', [id])
+              : await dbClient('tenant_members')
+                  .select('tenant_name', 'role')
+                  .whereRaw('LOWER(user_id) = ?', [id]);
+            const roles: Record<string, string> = {};
+            for (const r of rows as Array<{ tenant_name: string; role: string | null }>) {
+              if (r.tenant_name && r.role) roles[String(r.tenant_name)] = String(r.role);
+            }
+            return roles;
+          },
         };
 
         // ── OIDC persistent store ────────────────────────────────────

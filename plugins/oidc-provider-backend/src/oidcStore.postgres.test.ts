@@ -67,4 +67,21 @@ describePg('OidcStore on Postgres', () => {
     const results = await Promise.all(Array.from({ length: 8 }, () => store.consumeForwardAuthCode('c1')));
     expect(results.filter(Boolean)).toHaveLength(1);
   });
+
+  it('lets exactly one of many concurrent consumers redeem an authorization code', async () => {
+    const store = new OidcStore(knex, logger, true);
+    await store.init();
+    await store.saveCode('c1', {
+      userId: 'u',
+      clientId: 'mctl-rules',
+      redirectUri: 'https://labs-mctl-rules.mctl.ai/api/auth/callback',
+      expiresAt: Date.now() + 60_000,
+      codeChallenge: 'E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM',
+      codeChallengeMethod: 'S256',
+    });
+    const results = await Promise.all(Array.from({ length: 8 }, () => store.consumeCode('c1')));
+    const redeemed = results.filter(Boolean);
+    expect(redeemed).toHaveLength(1);
+    expect(redeemed[0]).toMatchObject({ codeChallenge: 'E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM' });
+  });
 });
