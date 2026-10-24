@@ -174,6 +174,56 @@ describe('OidcStore authorization codes', () => {
     expect(await store.consumeCode('missing')).toBeUndefined();
   });
 
+  it('round-trips the PKCE challenge of a code', async () => {
+    const { store, knex } = await freshStore();
+    currentKnex = knex;
+    await store.saveCode('c4', {
+      userId: 'u',
+      clientId: 'mctl-rules',
+      redirectUri: 'https://labs-mctl-rules.mctl.ai/api/auth/callback',
+      expiresAt: Date.now() + 60_000,
+      codeChallenge: 'E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM',
+      codeChallengeMethod: 'S256',
+    });
+    expect(await store.consumeCode('c4')).toMatchObject({
+      codeChallenge: 'E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM',
+      codeChallengeMethod: 'S256',
+    });
+    await store.saveCode('c5', { userId: 'u', clientId: 'dex', redirectUri: 'https://x', expiresAt: 1 });
+    const plain = await store.consumeCode('c5');
+    expect(plain?.codeChallenge).toBeUndefined();
+    expect(plain?.codeChallengeMethod).toBeUndefined();
+  });
+
+  it('hands a code to exactly one of several concurrent redeemers', async () => {
+    const { store, knex } = await freshStore();
+    currentKnex = knex;
+    await store.saveCode('race', { userId: 'u', clientId: 'dex', redirectUri: 'https://x', expiresAt: 1 });
+    const results = await Promise.all(Array.from({ length: 8 }, () => store.consumeCode('race')));
+    expect(results.filter(Boolean)).toHaveLength(1);
+  });
+
+  it('adds the PKCE columns to a pre-existing oidc_codes table', async () => {
+    const fresh = knexLib({ client: 'better-sqlite3', connection: ':memory:', useNullAsDefault: true });
+    currentKnex = fresh;
+    {
+      await fresh.schema.createTable('oidc_codes', t => {
+        t.string('code', 128).primary().notNullable();
+        t.string('user_id', 128).notNullable();
+        t.string('client_id', 256).notNullable();
+        t.string('redirect_uri', 2048).notNullable();
+        t.bigInteger('expires_at').notNullable();
+        t.string('nonce', 256).nullable();
+      });
+      const old = makeStore(fresh);
+      await old.init();
+      expect(await fresh.schema.hasColumn('oidc_codes', 'code_challenge')).toBe(true);
+      expect(await fresh.schema.hasColumn('oidc_codes', 'code_challenge_method')).toBe(true);
+      // init is idempotent on the migrated table
+      await old.init();
+    }
+  });
+
   it('normalizes a missing nonce to undefined', async () => {
     const { store, knex } = await freshStore();
     currentKnex = knex;
