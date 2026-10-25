@@ -23,6 +23,8 @@ export interface WarmupDeps {
   listEntities: () => Promise<Entity[]>;
   build: (entity: Entity) => Promise<WarmupOutcome>;
   logger: Pick<LoggerService, 'info' | 'error'>;
+  /** The scheduler's abort signal; the run stops between entities when it fires. */
+  signal?: AbortSignal;
 }
 
 const errorMessage = (e: unknown): string =>
@@ -35,7 +37,7 @@ const errorMessage = (e: unknown): string =>
 export async function runTechdocsWarmup(
   deps: WarmupDeps,
 ): Promise<WarmupResult> {
-  const { listEntities, build, logger } = deps;
+  const { listEntities, build, logger, signal } = deps;
   const result: WarmupResult = {
     updated: 0,
     cached: 0,
@@ -47,7 +49,9 @@ export async function runTechdocsWarmup(
   try {
     entities = await listEntities();
   } catch (e) {
-    logger.error(`techdocs warm-up: listing catalog failed: ${errorMessage(e)}`);
+    logger.error(
+      `techdocs warm-up: listing catalog failed: ${errorMessage(e)}`,
+    );
     return { ...result, listFailed: true };
   }
 
@@ -56,6 +60,14 @@ export async function runTechdocsWarmup(
   );
 
   for (const entity of annotated) {
+    if (signal?.aborted) {
+      logger.error(
+        `techdocs warm-up aborted by the scheduler after ${
+          result.updated + result.cached + result.failed
+        } of ${annotated.length} entities`,
+      );
+      break;
+    }
     const ref = stringifyEntityRef(entity);
     try {
       const outcome = await build(entity);
@@ -164,7 +176,9 @@ export const techdocsWarmupModule = createBackendModule({
           logger.info('techdocs warm-up disabled by configuration');
           return;
         }
-        if ((config.getOptionalString('techdocs.builder') ?? 'local') !== 'local') {
+        if (
+          (config.getOptionalString('techdocs.builder') ?? 'local') !== 'local'
+        ) {
           logger.info('techdocs warm-up skipped: builder is not local');
           return;
         }
@@ -190,10 +204,11 @@ export const techdocsWarmupModule = createBackendModule({
           frequency: { minutes: frequencyMinutes },
           initialDelay: { seconds: initialDelaySeconds },
           timeout: { minutes: 60 },
-          fn: async () => {
+          fn: async signal => {
             await runTechdocsWarmup({
               logger,
               build,
+              signal,
               listEntities: async () => {
                 // Annotation filtering is done in runTechdocsWarmup; fields
                 // keep the payload small.

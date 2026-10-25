@@ -73,6 +73,23 @@ describe('runTechdocsWarmup', () => {
     expect(build).toHaveBeenCalledTimes(2);
   });
 
+  it('stops between entities once the scheduler aborts', async () => {
+    const log = logger();
+    const ctrl = new AbortController();
+    const build = jest.fn().mockImplementation(async () => {
+      ctrl.abort();
+      return 'updated';
+    });
+    await runTechdocsWarmup({
+      logger: log,
+      build,
+      signal: ctrl.signal,
+      listEntities: async () => [ent('a'), ent('b'), ent('c')],
+    });
+    expect(build).toHaveBeenCalledTimes(1);
+    expect(log.error).toHaveBeenCalledWith(expect.stringContaining('aborted'));
+  });
+
   it('resolves when listing fails', async () => {
     const log = logger();
     const build = jest.fn();
@@ -216,15 +233,13 @@ describe('techdocsWarmupModule', () => {
 
   it('runs the scheduled fn end to end: lists the catalog, syncs annotated entities', async () => {
     // The builder captures fetch at init, so the spy must exist first.
-    const fetchSpy = jest
-      .spyOn(global, 'fetch')
-      .mockImplementation(
-        async () =>
-          new Response('event: finish\ndata: {"updated":true}\n\n', {
-            status: 200,
-            headers: { 'content-type': 'text/event-stream' },
-          }),
-      );
+    const fetchSpy = jest.spyOn(global, 'fetch').mockImplementation(
+      async () =>
+        new Response('event: finish\ndata: {"updated":true}\n\n', {
+          status: 200,
+          headers: { 'content-type': 'text/event-stream' },
+        }),
+    );
     try {
       const scheduleTask = await start({ techdocs: { builder: 'local' } }, [
         ent('a'),
