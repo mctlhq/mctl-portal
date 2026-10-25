@@ -1,5 +1,15 @@
 # Changelog
 
+## [4.30.1](https://github.com/mctlhq/mctl-portal/compare/4.30.0...4.30.1) (2026-10-25)
+
+
+### Bug Fixes
+
+* **catalog:** count a network failure as one file's failure ([4dad157](https://github.com/mctlhq/mctl-portal/commit/4dad157c589dbc056b71e87cdde4342467b0cbbb))
+* **catalog:** drop the duplicate GitHub entity provider ([ac4f6d7](https://github.com/mctlhq/mctl-portal/commit/ac4f6d788ac5e740b74d51f6485d9221ca2a2638))
+* **catalog:** drop the duplicate GitHub entity provider ([f90af46](https://github.com/mctlhq/mctl-portal/commit/f90af46c1194447d888fdf727ebb79c64fed449e))
+* **catalog:** keep a broken file's entities instead of freezing refresh ([9cfe323](https://github.com/mctlhq/mctl-portal/commit/9cfe323bd8d7381a994876f33efd2007001eac17))
+
 ## [4.30.0](https://github.com/mctlhq/mctl-portal/compare/4.29.0...4.30.0) (2026-10-25)
 
 
