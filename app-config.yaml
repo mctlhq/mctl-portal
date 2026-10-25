@@ -69,6 +69,12 @@ techdocs:
     runIn: 'local' # Alternatives - 'docker'
   publisher:
     type: 'local' # Alternatives - 'googleGcs' or 'awsS3'. Read documentation for using alternatives.
+  # Optional warm-up of the local publish dir (defaults shown):
+  # warmup:
+  #   enabled: true
+  #   initialDelaySeconds: 60
+  #   frequencyMinutes: 30
+  #   entityTimeoutSeconds: 300
 
 auth:
   # see https://backstage.io/docs/auth/ to learn about auth providers
