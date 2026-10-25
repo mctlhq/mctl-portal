@@ -200,7 +200,7 @@ describe('techdocsWarmupModule', () => {
       env.registerInit({ deps: {}, async init() {} });
     },
   });
-  const start = async (config: object) => {
+  const start = async (config: object, entities: Entity[] = []) => {
     const scheduleTask = jest.fn().mockResolvedValue(undefined);
     await startTestBackend({
       features: [
@@ -208,11 +208,41 @@ describe('techdocsWarmupModule', () => {
         techdocsWarmupModule,
         mockServices.rootConfig.factory({ data: config }),
         mockServices.scheduler.mock({ scheduleTask }).factory,
-        catalogServiceMock.factory(),
+        catalogServiceMock.factory({ entities }),
       ],
     });
     return scheduleTask;
   };
+
+  it('runs the scheduled fn end to end: lists the catalog, syncs annotated entities', async () => {
+    // The builder captures fetch at init, so the spy must exist first.
+    const fetchSpy = jest
+      .spyOn(global, 'fetch')
+      .mockImplementation(
+        async () =>
+          new Response('event: finish\ndata: {"updated":true}\n\n', {
+            status: 200,
+            headers: { 'content-type': 'text/event-stream' },
+          }),
+      );
+    try {
+      const scheduleTask = await start({ techdocs: { builder: 'local' } }, [
+        ent('a'),
+        ent('plain', false),
+      ]);
+      await scheduleTask.mock.calls[0][0].fn(new AbortController().signal);
+      const urls = fetchSpy.mock.calls.map(c => String(c[0]));
+      expect(urls).toHaveLength(1);
+      expect(urls[0]).toMatch(/\/api\/techdocs\/sync\/default\/Template\/a$/);
+      const headers = fetchSpy.mock.calls[0][1]?.headers as Record<
+        string,
+        string
+      >;
+      expect(headers.Authorization).toMatch(/^Bearer \S+/);
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
 
   it('schedules techdocs-warmup on every replica (scope local)', async () => {
     const scheduleTask = await start({ techdocs: { builder: 'local' } });
