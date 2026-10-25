@@ -1,5 +1,13 @@
 # Changelog
 
+## [4.29.0](https://github.com/mctlhq/mctl-portal/compare/4.28.0...4.29.0) (2026-10-25)
+
+
+### Features
+
+* **agents:** issue-205-github-app-connect-service-principal-rou ([23d0586](https://github.com/mctlhq/mctl-portal/commit/23d05862032c2a71e760c65b7ef2d0588db889f1))
+* **agents:** issue-205-github-app-connect-service-principal-rou ([dccd56e](https://github.com/mctlhq/mctl-portal/commit/dccd56e0201c6e5b678b834a6544167cdc5eccb9))
+
 ## [4.28.0](https://github.com/mctlhq/mctl-portal/compare/4.27.1...4.28.0) (2026-10-24)
 
 
