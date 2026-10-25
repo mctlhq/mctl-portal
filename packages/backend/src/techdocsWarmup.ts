@@ -120,7 +120,7 @@ export function createSyncBuilder(options: {
     if (res.status === 304) {
       return 'cached';
     }
-    if (res.status !== 200) {
+    if (!res.ok) {
       const body = (await res.text().catch(() => '')).slice(0, 200);
       throw new Error(`sync returned status ${res.status}: ${body}`);
     }
@@ -130,10 +130,11 @@ export function createSyncBuilder(options: {
       return 'updated';
     }
     const text = await res.text();
-    const events = text.split(/\n\n+/);
+    // createEventStream writes LF frames; CRLF is accepted as well.
+    const events = text.split(/\r?\n\r?\n/);
     for (const block of events) {
-      const event = /^event:\s*(.+)$/m.exec(block)?.[1]?.trim();
-      const data = /^data:\s*(.*)$/m.exec(block)?.[1] ?? '';
+      const event = /^event:[ \t]*(.*?)\r?$/m.exec(block)?.[1]?.trim();
+      const data = /^data:[ \t]*(.*?)\r?$/m.exec(block)?.[1] ?? '';
       if (event === 'error') {
         throw new Error(`sync failed: ${data.slice(0, 200)}`);
       }

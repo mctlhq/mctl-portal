@@ -177,6 +177,14 @@ describe('createSyncBuilder against the 2.2.0 event stream', () => {
     );
   });
 
+  it('parses CRLF-framed events too', async () => {
+    const body = (ev('log', 'x') + ev('finish', { updated: true })).replace(
+      /\n/g,
+      '\r\n',
+    );
+    await expect(streamBuilder(body)(ent('a'))).resolves.toBe('updated');
+  });
+
   it('throws when the stream ends without finish or error', async () => {
     await expect(streamBuilder(ev('log', 'x'))(ent('a'))).rejects.toThrow(
       'without a finish event',
