@@ -1170,3 +1170,129 @@ describe('GET /repo-binding', () => {
     expect(bound).not.toHaveBeenCalled();
   });
 });
+
+describe('/service/* routes (mctl-api#584)', () => {
+  const opts = { bindingCheckSubject: 'mctl-api-repo-binding' };
+  const routes: Array<[string, string]> = [
+    ['GET', '/service/repos?team=labs'],
+    ['GET', '/service/install-url?team=labs&service=api&repo=acme/api&user=carol'],
+    ['POST', '/service/repos/sync?team=labs&user=carol'],
+  ];
+
+  beforeEach(() => {
+    fetchMock.mockImplementation(async () => ({ ok: false, status: 404, json: async () => ({}) }));
+  });
+
+  it.each(routes)('%s %s answers both forms of the configured principal', async (method, path) => {
+    for (const subject of ['mctl-api-repo-binding', 'external:mctl-api-repo-binding']) {
+      const { router } = buildRouter({}, {}, opts);
+      const { status } = await dispatch(router, method, path, { 'x-test-service': subject });
+      expect(status).toBe(200);
+    }
+  });
+
+  it.each(routes)('%s %s refuses other callers before validating params', async (method, path) => {
+    const { router, store } = buildRouter({ 'admins:root': { role: 'owner' } }, {}, opts);
+    const bad = path.split('?')[0];
+    expect((await dispatch(router, method, path, {})).status).toBe(401);
+    expect((await dispatch(router, method, bad, {})).status).toBe(401);
+    expect((await dispatch(router, method, path, { 'x-test-user': 'root' })).status).toBe(401);
+    for (const subject of ['plugin:catalog', 'external:mctl-api', 'mctl-api']) {
+      expect((await dispatch(router, method, path, { 'x-test-service': subject })).status).toBe(403);
+    }
+    expect((store.findVerifiedByTeam as jest.Mock)).not.toHaveBeenCalled();
+  });
+
+  it.each(routes)('%s %s refuses everyone when no subject is configured', async (method, path) => {
+    for (const subject of ['external:', 'external:undefined', 'undefined', 'mctl-api-repo-binding']) {
+      const { router } = buildRouter({});
+      expect((await dispatch(router, method, path, { 'x-test-service': subject })).status).toBe(403);
+    }
+  });
+
+  it('lists sorted unique repos for one team and never reads all teams', async () => {
+    const findVerifiedByTeam = jest.fn().mockResolvedValue([
+      { repo_full_name: 'b/x' },
+      { repo_full_name: 'a/y' },
+      { repo_full_name: 'b/x' },
+    ]);
+    const findAllVerified = jest.fn();
+    const { router } = buildRouter({}, { findVerifiedByTeam, findAllVerified }, opts);
+    const h = { 'x-test-service': 'mctl-api-repo-binding' };
+    const { status, body } = await dispatch(router, 'GET', '/service/repos?team=labs', h);
+    expect(status).toBe(200);
+    expect(body).toEqual({ repos: ['a/y', 'b/x'] });
+    expect(findVerifiedByTeam).toHaveBeenCalledWith('labs');
+    for (const q of ['', '?team=../x', '?team=a/b']) {
+      expect((await dispatch(router, 'GET', `/service/repos${q}`, h)).status).toBe(400);
+    }
+    expect(findAllVerified).not.toHaveBeenCalled();
+  });
+
+  it('answers 500 with an empty list when the store throws', async () => {
+    const findVerifiedByTeam = jest.fn().mockRejectedValue(new Error('db down'));
+    const { router } = buildRouter({}, { findVerifiedByTeam }, opts);
+    const { status, body } = await dispatch(router, 'GET', '/service/repos?team=labs', {
+      'x-test-service': 'mctl-api-repo-binding',
+    });
+    expect(status).toBe(500);
+    expect(body).toEqual({ repos: [] });
+  });
+
+  it.each([
+    'team=labs&service=api&repo=acme/api',
+    'team=labs&service=api&repo=acme/api&user=../orgs/x',
+    'team=labs&service=api&repo=acme/api&user=-bad',
+    'team=labs&service=api&repo=acme&user=carol',
+    'team=labs&service=a/b&repo=acme/api&user=carol',
+    'service=api&repo=acme/api&user=carol',
+  ])('rejects malformed install-url %s', async q => {
+    const { router } = buildRouter({}, {}, opts);
+    const { status } = await dispatch(router, 'GET', `/service/install-url?${q}`, {
+      'x-test-service': 'mctl-api-repo-binding',
+    });
+    expect(status).toBe(400);
+  });
+
+  it('carries the asserted user in the install-url state', async () => {
+    const { router } = buildRouter({}, {}, opts);
+    const { body } = await dispatch(
+      router,
+      'GET',
+      '/service/install-url?team=labs&service=api&repo=acme/api&user=carol',
+      { 'x-test-service': 'mctl-api-repo-binding' },
+    );
+    expect(body.url).toContain(encodeURIComponent(body.state));
+    expect(typeof body.state).toBe('string');
+  });
+
+  it.each(['team=../x&user=carol', 'team=labs', 'team=labs&user=-bad'])(
+    'rejects malformed sync %s',
+    async q => {
+      const { router } = buildRouter({}, {}, opts);
+      const { status } = await dispatch(router, 'POST', `/service/repos/sync?${q}`, {
+        'x-test-service': 'mctl-api-repo-binding',
+      });
+      expect(status).toBe(400);
+    },
+  );
+
+  it('does not widen the user routes to the service principal', async () => {
+    const { router } = buildRouter({}, {}, opts);
+    const h = { 'x-test-service': 'mctl-api-repo-binding' };
+    expect((await dispatch(router, 'GET', '/repos?team=labs', h)).status).toBe(401);
+    expect((await dispatch(router, 'GET', '/install-url?team=labs&service=api&repo=acme/api', h)).status).toBe(401);
+    expect((await dispatch(router, 'POST', '/repos/sync?team=labs&user=carol', h)).status).toBe(401);
+  });
+
+  it('logs an audit line for accepted calls only', async () => {
+    const { router, logger } = buildRouter({}, {}, opts);
+    await dispatch(router, 'GET', '/service/repos?team=labs', { 'x-test-service': 'plugin:catalog' });
+    expect(logger.info).not.toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ audit: 'service_principal' }));
+    await dispatch(router, 'GET', '/service/repos?team=labs', { 'x-test-service': 'mctl-api-repo-binding' });
+    expect(logger.info).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ audit: 'service_principal', route: '/service/repos', subject: 'mctl-api-repo-binding', team: 'labs' }),
+    );
+  });
+});

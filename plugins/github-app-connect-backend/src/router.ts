@@ -448,6 +448,31 @@ export function createRouter(options: RouterOptions): Router {
     return { id: data.id, account_type: (data.account?.type ?? 'unknown').toLowerCase() };
   }
 
+  type BindingPrincipal =
+    | { ok: true; subject: string }
+    | { ok: false; status: 401 | 403; error: string };
+
+  async function requireBindingPrincipal(req: Request): Promise<BindingPrincipal> {
+    let subject: string | undefined;
+    try {
+      const credentials = await httpAuth.credentials(req, { allow: ['service'] });
+      subject = (credentials.principal as { subject?: string }).subject;
+    } catch {
+      return { ok: false, status: 401, error: 'Authentication required' };
+    }
+    // A static external-access token carries the configured subject as it is;
+    // a jwks one carries `external:<sub>`. Both are the configured principal;
+    // a plugin-to-plugin credential (`plugin:<id>`) is neither.
+    if (
+      !bindingCheckSubject ||
+      !subject ||
+      (subject !== bindingCheckSubject && subject !== `external:${bindingCheckSubject}`)
+    ) {
+      return { ok: false, status: 403, error: 'Not allowed' };
+    }
+    return { ok: true, subject };
+  }
+
   // GET /install-url — returns GitHub App install URL with encrypted state
   router.get('/install-url', async (req: Request, res: Response) => {
     const { team, service, repo } = req.query;
@@ -480,22 +505,9 @@ export function createRouter(options: RouterOptions): Router {
   // gate: is the repository connected to the team by a verified binding?
   // Only the configured external-access principal may ask.
   router.get('/repo-binding', async (req: Request, res: Response) => {
-    let subject: string | undefined;
-    try {
-      const credentials = await httpAuth.credentials(req, { allow: ['service'] });
-      subject = (credentials.principal as { subject?: string }).subject;
-    } catch {
-      res.status(401).json({ error: 'Authentication required' });
-      return;
-    }
-    // A static external-access token carries the configured subject as it is;
-    // a jwks one carries `external:<sub>`. Both are the configured principal;
-    // a plugin-to-plugin credential (`plugin:<id>`) is neither.
-    if (
-      !bindingCheckSubject ||
-      (subject !== bindingCheckSubject && subject !== `external:${bindingCheckSubject}`)
-    ) {
-      res.status(403).json({ error: 'Not allowed' });
+    const principal = await requireBindingPrincipal(req);
+    if (!principal.ok) {
+      res.status(principal.status).json({ error: principal.error });
       return;
     }
     const team = req.query.team;
@@ -510,6 +522,94 @@ export function createRouter(options: RouterOptions): Router {
     }
     const bound = await isRepoBoundToTeam(db, isPostgres, team, repo);
     res.json({ team, repo, bound });
+  });
+
+  // /service/* routes: called by mctl-api (principal `bindingCheckSubject`)
+  // on behalf of a user it has ALREADY authorized (mctl-api#584). Trust model
+  // as /repo-binding: no tenant membership or admin check here, mctl-api is
+  // the authority. Authentication is checked before any parameter validation.
+  function auditServiceCall(route: string, subject: string, fields: Record<string, string>) {
+    logger.info('github-app-connect service call', {
+      audit: 'service_principal',
+      route,
+      subject,
+      ...fields,
+    });
+  }
+
+  // GET /service/repos?team=<team>
+  router.get('/service/repos', async (req: Request, res: Response) => {
+    const principal = await requireBindingPrincipal(req);
+    if (!principal.ok) {
+      res.status(principal.status).json({ error: principal.error });
+      return;
+    }
+    const team = req.query.team;
+    if (typeof team !== 'string' || !TEAM_OR_SERVICE_RE.test(team)) {
+      res.status(400).json({ error: 'Missing or invalid param: team' });
+      return;
+    }
+    auditServiceCall('/service/repos', principal.subject, { team });
+    try {
+      const rows = await store.findVerifiedByTeam(team);
+      res.json({ repos: [...new Set(rows.map(r => r.repo_full_name))].sort() });
+    } catch (err) {
+      logger.error(`Failed to list repos for team=${team}: ${err}`);
+      res.status(500).json({ repos: [] });
+    }
+  });
+
+  // GET /service/install-url?team&service&repo&user
+  router.get('/service/install-url', async (req: Request, res: Response) => {
+    const principal = await requireBindingPrincipal(req);
+    if (!principal.ok) {
+      res.status(principal.status).json({ error: principal.error });
+      return;
+    }
+    const { team, service, repo, user } = req.query;
+    if (typeof team !== 'string' || !TEAM_OR_SERVICE_RE.test(team)) {
+      res.status(400).json({ error: 'Missing or invalid param: team' });
+      return;
+    }
+    if (typeof service !== 'string' || !TEAM_OR_SERVICE_RE.test(service)) {
+      res.status(400).json({ error: 'Missing or invalid param: service' });
+      return;
+    }
+    if (typeof repo !== 'string' || !REPO_FULL_NAME_RE.test(repo)) {
+      res.status(400).json({ error: 'Missing or invalid param: repo (owner/name)' });
+      return;
+    }
+    if (typeof user !== 'string' || !GITHUB_LOGIN_RE.test(user)) {
+      res.status(400).json({ error: 'Missing or invalid param: user' });
+      return;
+    }
+    auditServiceCall('/service/install-url', principal.subject, { team, service, repo, user });
+    const state = encryptState(
+      { team, service, repo, user, nonce: crypto.randomBytes(8).toString('hex') },
+      stateSecret,
+    );
+    const installUrl = `https://github.com/apps/${appSlug}/installations/new?state=${encodeURIComponent(state)}`;
+    res.json({ url: installUrl, state });
+  });
+
+  // POST /service/repos/sync?team&user
+  router.post('/service/repos/sync', async (req: Request, res: Response) => {
+    const principal = await requireBindingPrincipal(req);
+    if (!principal.ok) {
+      res.status(principal.status).json({ error: principal.error });
+      return;
+    }
+    const { team, user } = req.query;
+    if (typeof team !== 'string' || !TEAM_OR_SERVICE_RE.test(team)) {
+      res.status(400).json({ error: 'Missing or invalid param: team' });
+      return;
+    }
+    if (typeof user !== 'string' || !GITHUB_LOGIN_RE.test(user)) {
+      res.status(400).json({ error: 'Missing or invalid param: user' });
+      return;
+    }
+    auditServiceCall('/service/repos/sync', principal.subject, { team, user });
+    await syncTeamRepos(team, user, user, res);
   });
 
   // GET /popup-state?team=<team> — state for the repo picker's install popup.
@@ -885,6 +985,16 @@ export function createRouter(options: RouterOptions): Router {
       return;
     }
     auditAdminBypass(logger, '/repos/sync', team, auth);
+    await syncTeamRepos(team, user, auth.userId, res);
+  });
+
+  // Shared by /repos/sync (user routes) and /service/repos/sync.
+  async function syncTeamRepos(
+    team: string,
+    user: string,
+    createdByLogin: string,
+    res: Response,
+  ): Promise<void> {
     try {
       const installMap = new Map<number, { account_type: string; login: string }>();
 
@@ -956,7 +1066,7 @@ export function createRouter(options: RouterOptions): Router {
           repo_full_name: entry.repo,
           installation_id: entry.instId,
           account_type: entry.account_type,
-          created_by: `sync:${auth.userId.toLowerCase()}`,
+          created_by: `sync:${createdByLogin.toLowerCase()}`,
         })),
       );
       const allRepos = [...new Set([...allRepoEntries.map(e => e.repo), ...carried.map(r => r.repo_full_name)])].sort();
@@ -967,7 +1077,7 @@ export function createRouter(options: RouterOptions): Router {
       logger.error(`Failed to sync repos for team=${team}: ${err}`);
       res.status(500).json({ repos: [] });
     }
-  });
+  }
 
   // GET /repo-tags?team=<team>&repo=owner/name
   // Returns tags of a repository connected to the team (or of a public
