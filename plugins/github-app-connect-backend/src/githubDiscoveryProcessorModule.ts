@@ -20,14 +20,26 @@ import { minimatch } from 'minimatch';
  * Discovers catalog-info.yaml files inside a single GitHub repository by
  * walking the git tree.  Uses only contents:read — no statuses:read needed.
  *
- * It is the only provider for these paths, and every refresh applies a full
- * mutation, which deletes whatever it leaves out. So a read that is not
- * complete (a truncated tree, a file that could not be fetched, a file that
- * does not parse) applies nothing and keeps the last good state: "could not
- * read" must never look like "the file is gone".
+ * It is the only provider for these paths, and a full mutation deletes
+ * whatever it leaves out, so "could not read" must never look like "the file
+ * is gone":
+ *   - a ref or tree that cannot be read (failed, truncated, malformed)
+ *     applies nothing and keeps the last good state;
+ *   - a single file that cannot be fetched or does not parse keeps its own
+ *     last good entities, and the rest of the refresh applies. One broken
+ *     file must not freeze discovery and deletion for every other one. A
+ *     file that was not in the last good state (new since then) is left out:
+ *     there is nothing of it to delete;
+ *   - with no last good state yet (the first refresh since start), a failed
+ *     file's previous entities are unknown, so only the files that were read
+ *     are upserted (a delta with no removals) and deletions wait for a
+ *     complete read.
  */
 export class GithubFileEntityProvider implements EntityProvider {
   private connection: EntityProviderConnection | undefined;
+  // Entities per file path from the last complete (full) mutation, updated
+  // on every full mutation. Undefined until the first one since start.
+  private lastGood: Map<string, any[]> | undefined;
 
   constructor(
     private readonly name: string,
@@ -110,36 +122,75 @@ export class GithubFileEntityProvider implements EntityProvider {
 
     this.logger.info(`${this.getProviderName()}: found ${matchingPaths.length} matching files for glob ${pathGlob}`);
 
-    const entities: any[] = [];
+    const read = new Map<string, any[]>();
+    const failed: string[] = [];
     for (const filePath of matchingPaths) {
-      const contentResp = await fetch(
-        `${apiBase}/repos/${owner}/${repo}/contents/${filePath}?ref=${sha}`,
-        { headers: { ...headers, Accept: 'application/vnd.github.v3.raw' } },
-      );
-      if (!contentResp.ok) {
-        this.logger.error(`${this.getProviderName()}: failed to read ${filePath}: ${contentResp.status}; keeping the last good state`);
-        return;
-      }
-      const yaml = await contentResp.text();
-      const fileUrl = `https://github.com/${owner}/${repo}/blob/${branch}/${filePath}`;
-      const locationRef = `url:${fileUrl}`;
-      for (const result of Array.from(parseEntityYaml(yaml, { type: 'url', target: fileUrl }))) {
-        if (result.type === 'entity') {
-          const entity = result.entity;
-          entity.metadata = entity.metadata ?? {};
-          entity.metadata.annotations = entity.metadata.annotations ?? {};
-          entity.metadata.annotations['backstage.io/managed-by-location'] = locationRef;
-          entity.metadata.annotations['backstage.io/managed-by-origin-location'] = locationRef;
-          entities.push({ locationKey: this.getProviderName(), entity });
-        } else if (result.type === 'error') {
-          this.logger.error(`${this.getProviderName()}: ${filePath} does not parse: ${result.error.message}; keeping the last good state`);
-          return;
-        }
+      const fileEntities = await this.readFile(apiBase, headers, sha, filePath);
+      if (fileEntities) {
+        read.set(filePath, fileEntities);
+      } else {
+        failed.push(filePath);
       }
     }
 
+    if (failed.length > 0 && !this.lastGood) {
+      const added = Array.from(read.values()).flat();
+      this.logger.error(`${this.getProviderName()}: ${failed.length} file(s) unreadable and no last good state since start (${failed.join(', ')}); upserting ${added.length} entities from the files that were read, deletions wait for a complete read`);
+      await this.connection.applyMutation({ type: 'delta', added, removed: [] });
+      return;
+    }
+
+    const next = new Map(read);
+    for (const filePath of failed) {
+      const previous = this.lastGood!.get(filePath);
+      if (previous) {
+        next.set(filePath, previous);
+      }
+    }
+    if (failed.length > 0) {
+      this.logger.error(`${this.getProviderName()}: ${failed.length} file(s) unreadable (${failed.join(', ')}); keeping their last good entities, applying the rest`);
+    }
+    const entities = Array.from(next.values()).flat();
     this.logger.info(`${this.getProviderName()}: applying mutation with ${entities.length} entities`);
     await this.connection.applyMutation({ type: 'full', entities });
+    this.lastGood = next;
+  }
+
+  // The entities of one file, or undefined when it cannot be fetched or any
+  // document in it does not parse (a file is taken whole or not at all).
+  private async readFile(
+    apiBase: string | undefined,
+    headers: Record<string, string>,
+    sha: string,
+    filePath: string,
+  ): Promise<any[] | undefined> {
+    const { owner, repo, branch } = this.providerConfig;
+    const contentResp = await fetch(
+      `${apiBase}/repos/${owner}/${repo}/contents/${filePath}?ref=${sha}`,
+      { headers: { ...headers, Accept: 'application/vnd.github.v3.raw' } },
+    );
+    if (!contentResp.ok) {
+      this.logger.error(`${this.getProviderName()}: failed to read ${filePath}: ${contentResp.status}`);
+      return undefined;
+    }
+    const yaml = await contentResp.text();
+    const fileUrl = `https://github.com/${owner}/${repo}/blob/${branch}/${filePath}`;
+    const locationRef = `url:${fileUrl}`;
+    const entities: any[] = [];
+    for (const result of Array.from(parseEntityYaml(yaml, { type: 'url', target: fileUrl }))) {
+      if (result.type === 'entity') {
+        const entity = result.entity;
+        entity.metadata = entity.metadata ?? {};
+        entity.metadata.annotations = entity.metadata.annotations ?? {};
+        entity.metadata.annotations['backstage.io/managed-by-location'] = locationRef;
+        entity.metadata.annotations['backstage.io/managed-by-origin-location'] = locationRef;
+        entities.push({ locationKey: this.getProviderName(), entity });
+      } else if (result.type === 'error') {
+        this.logger.error(`${this.getProviderName()}: ${filePath} does not parse: ${result.error.message}`);
+        return undefined;
+      }
+    }
+    return entities;
   }
 }
 

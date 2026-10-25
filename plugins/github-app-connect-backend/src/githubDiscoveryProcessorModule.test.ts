@@ -10,6 +10,7 @@ const API = 'https://api.github.com';
 const GLOB = 'platform-gitops/services/*/*/catalog-info.yaml';
 const A = 'platform-gitops/services/labs/a/catalog-info.yaml';
 const B = 'platform-gitops/services/labs/b/catalog-info.yaml';
+const C = 'platform-gitops/services/labs/c/catalog-info.yaml';
 
 const component = (name: string) =>
   `apiVersion: backstage.io/v1alpha1\nkind: Component\nmetadata:\n  name: ${name}\nspec:\n  type: service\n  lifecycle: production\n  owner: labs\n`;
@@ -71,6 +72,9 @@ const tree = {
   ],
 };
 
+const names = (entities: any[]) =>
+  entities.map((e: any) => e.entity.metadata.name).sort();
+
 describe('GithubFileEntityProvider.refresh', () => {
   afterEach(() => jest.restoreAllMocks());
 
@@ -92,7 +96,7 @@ describe('GithubFileEntityProvider.refresh', () => {
     expect(m.entities[0].locationKey).toBe('GithubFileEntityProvider:services');
   });
 
-  it('applies nothing when a file cannot be read', async () => {
+  it('only upserts the files it read when one fails before any full mutation', async () => {
     const { provider, applyMutation, logger } = setup(
       base(tree, {
         [A]: { body: component('a') },
@@ -100,12 +104,99 @@ describe('GithubFileEntityProvider.refresh', () => {
       }),
     );
     await provider.refresh();
-    expect(applyMutation).not.toHaveBeenCalled();
+    expect(applyMutation).toHaveBeenCalledTimes(1);
+    const m = applyMutation.mock.calls[0][0];
+    expect(m.type).toBe('delta');
+    expect(m.removed).toEqual([]);
+    expect(names(m.added)).toEqual(['a']);
     expect(logger.error).toHaveBeenCalledWith(
       expect.stringContaining(
         'failed to read platform-gitops/services/labs/b/catalog-info.yaml: 502',
       ),
     );
+  });
+
+  it('keeps a broken file at its last good entities and applies the rest', async () => {
+    const routes = base(tree, {
+      [A]: { body: component('a') },
+      [B]: { body: component('b') },
+    });
+    const { provider, applyMutation } = setup(routes);
+    await provider.refresh();
+
+    // B breaks for good, A leaves the tree and C is new: C is discovered and
+    // A deleted while B stays as it was.
+    routes['/repos/mctlhq/mctl-gitops/git/trees/abc'] = {
+      body: {
+        tree: [
+          { path: B, type: 'blob' },
+          { path: C, type: 'blob' },
+        ],
+      },
+    };
+    routes[`/repos/mctlhq/mctl-gitops/contents/${B}`] = {
+      body: 'kind: [unclosed',
+    };
+    routes[`/repos/mctlhq/mctl-gitops/contents/${C}`] = {
+      body: component('c'),
+    };
+    await provider.refresh();
+    expect(applyMutation).toHaveBeenCalledTimes(2);
+    const m = applyMutation.mock.calls[1][0];
+    expect(m.type).toBe('full');
+    expect(names(m.entities)).toEqual(['b', 'c']);
+
+    // Still broken on the next refresh: B is still carried, not dropped.
+    await provider.refresh();
+    expect(names(applyMutation.mock.calls[2][0].entities)).toEqual(['b', 'c']);
+
+    // Fixed: B's new content replaces the carried entities.
+    routes[`/repos/mctlhq/mctl-gitops/contents/${B}`] = {
+      body: component('b2'),
+    };
+    await provider.refresh();
+    expect(names(applyMutation.mock.calls[3][0].entities)).toEqual(['b2', 'c']);
+  });
+
+  it('leaves out a new file that fails, since none of it was applied', async () => {
+    const routes = base(tree, {
+      [A]: { body: component('a') },
+      [B]: { body: component('b') },
+    });
+    const { provider, applyMutation } = setup(routes);
+    await provider.refresh();
+
+    routes['/repos/mctlhq/mctl-gitops/git/trees/abc'] = {
+      body: { tree: [...tree.tree, { path: C, type: 'blob' }] },
+    };
+    routes[`/repos/mctlhq/mctl-gitops/contents/${C}`] = {
+      status: 502,
+      body: 'bad gateway',
+    };
+    await provider.refresh();
+    const m = applyMutation.mock.calls[1][0];
+    expect(m.type).toBe('full');
+    expect(names(m.entities)).toEqual(['a', 'b']);
+  });
+
+  it('does not take a baseline from a delta: a later failure still upserts only', async () => {
+    const routes = base(tree, {
+      [A]: { body: component('a') },
+      [B]: { status: 502, body: 'bad gateway' },
+    });
+    const { provider, applyMutation } = setup(routes);
+    await provider.refresh();
+    routes[`/repos/mctlhq/mctl-gitops/contents/${A}`] = {
+      status: 502,
+      body: 'bad gateway',
+    };
+    routes[`/repos/mctlhq/mctl-gitops/contents/${B}`] = {
+      body: component('b'),
+    };
+    await provider.refresh();
+    const m = applyMutation.mock.calls[1][0];
+    expect(m.type).toBe('delta');
+    expect(names(m.added)).toEqual(['b']);
   });
 
   it('applies nothing when the tree is truncated', async () => {
@@ -122,7 +213,7 @@ describe('GithubFileEntityProvider.refresh', () => {
     );
   });
 
-  it('applies nothing when a file does not parse', async () => {
+  it('only upserts the files it read when one does not parse before any full mutation', async () => {
     const { provider, applyMutation, logger } = setup(
       base(tree, {
         [A]: { body: component('a') },
@@ -130,7 +221,9 @@ describe('GithubFileEntityProvider.refresh', () => {
       }),
     );
     await provider.refresh();
-    expect(applyMutation).not.toHaveBeenCalled();
+    const m = applyMutation.mock.calls[0][0];
+    expect(m.type).toBe('delta');
+    expect(names(m.added)).toEqual(['a']);
     expect(logger.error).toHaveBeenCalledWith(
       expect.stringContaining('does not parse'),
     );
