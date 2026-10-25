@@ -19,8 +19,14 @@ import { minimatch } from 'minimatch';
 /**
  * Discovers catalog-info.yaml files inside a single GitHub repository by
  * walking the git tree.  Uses only contents:read — no statuses:read needed.
+ *
+ * It is the only provider for these paths, and every refresh applies a full
+ * mutation, which deletes whatever it leaves out. So a read that is not
+ * complete (a truncated tree, a file that could not be fetched, a file that
+ * does not parse) applies nothing and keeps the last good state: "could not
+ * read" must never look like "the file is gone".
  */
-class GithubFileEntityProvider implements EntityProvider {
+export class GithubFileEntityProvider implements EntityProvider {
   private connection: EntityProviderConnection | undefined;
 
   constructor(
@@ -75,7 +81,10 @@ class GithubFileEntityProvider implements EntityProvider {
       | { object: { sha: string } }
       | Array<{ object: { sha: string } }>;
     const sha = Array.isArray(refRaw) ? refRaw[0]?.object?.sha : (refRaw as any).object?.sha;
-    if (!sha) return;
+    if (!sha) {
+      this.logger.error(`${this.getProviderName()}: HEAD ref for ${branch} carries no sha; keeping the last good state`);
+      return;
+    }
 
     // Full recursive tree — only needs contents:read
     const treeResp = await fetch(
@@ -87,8 +96,13 @@ class GithubFileEntityProvider implements EntityProvider {
       return;
     }
     const treeData = await treeResp.json() as {
-      tree: Array<{ path: string; type: string }>;
+      tree?: Array<{ path: string; type: string }>;
+      truncated?: boolean;
     };
+    if (treeData.truncated || !Array.isArray(treeData.tree)) {
+      this.logger.error(`${this.getProviderName()}: tree for ${sha} is truncated or malformed; keeping the last good state`);
+      return;
+    }
 
     const matchingPaths = treeData.tree
       .filter(f => f.type === 'blob' && minimatch(f.path, pathGlob))
@@ -103,8 +117,8 @@ class GithubFileEntityProvider implements EntityProvider {
         { headers: { ...headers, Accept: 'application/vnd.github.v3.raw' } },
       );
       if (!contentResp.ok) {
-        this.logger.warn(`${this.getProviderName()}: failed to read ${filePath}: ${contentResp.status}`);
-        continue;
+        this.logger.error(`${this.getProviderName()}: failed to read ${filePath}: ${contentResp.status}; keeping the last good state`);
+        return;
       }
       const yaml = await contentResp.text();
       const fileUrl = `https://github.com/${owner}/${repo}/blob/${branch}/${filePath}`;
@@ -117,6 +131,9 @@ class GithubFileEntityProvider implements EntityProvider {
           entity.metadata.annotations['backstage.io/managed-by-location'] = locationRef;
           entity.metadata.annotations['backstage.io/managed-by-origin-location'] = locationRef;
           entities.push({ locationKey: this.getProviderName(), entity });
+        } else if (result.type === 'error') {
+          this.logger.error(`${this.getProviderName()}: ${filePath} does not parse: ${result.error.message}; keeping the last good state`);
+          return;
         }
       }
     }

@@ -75,9 +75,6 @@ backend.add(
   import('@backstage/plugin-catalog-backend-module-scaffolder-entity-model'),
 );
 
-// github entity provider — auto-discovers catalog-info.yaml files in repos
-backend.add(import('@backstage/plugin-catalog-backend-module-github'));
-
 // See https://backstage.io/docs/features/software-catalog/configuration#subscribing-to-catalog-errors
 backend.add(import('@backstage/plugin-catalog-backend-module-logs'));
 
@@ -115,8 +112,12 @@ backend.add(import('@internal/plugin-github-app-connect-backend'));
 backend.add(authModuleGithubInstallRedirect);
 // custom Nunjucks template filters (repoName: "owner/repo" → "repo")
 backend.add(scaffolderFiltersModule);
-// GithubDiscoveryProcessor: expands GitHub glob location URLs into individual
-// entity locations so that services/workers catalog-info.yaml files are found
+// GithubFileEntityProvider: the only reader of catalog.providers.github. It
+// walks the git tree, so every catalog-info.yaml matching the glob is found.
+// Do not also add @backstage/plugin-catalog-backend-module-github: it reads
+// the same config, finds only the files GitHub code search has indexed, and
+// claims those entities first, so this provider's updates to them are
+// refused as "conflicting entityRef".
 backend.add(githubDiscoveryProcessorModule);
 
 // vault secrets — serve DB credentials to authorized team members
