@@ -83,10 +83,15 @@ export async function runTechdocsWarmup(
  * credentials, so the build goes through the same preparer/generator/publisher
  * chain and per-entity lock as a browser visit.
  *
- * The route answers with text/event-stream (events `log`, `finish`, `error`)
- * when the client accepts it, and with JSON 200/304 otherwise. We send no
- * event-stream Accept header and handle both shapes defensively: a
- * text/event-stream body is read until its `finish` (success) or `error` event.
+ * Response contract, read from the installed @backstage/plugin-techdocs-backend
+ * 2.2.0 (dist/service/router.cjs.js, createEventStream): once the entity is
+ * found the route ALWAYS answers 200 text/event-stream, whatever the Accept
+ * header, with `log` events, then one `finish` event whose data is
+ * `{"updated":true|false}` or one `error` event whose data is the message,
+ * and then ends the response. An unknown entity or a refused caller is a
+ * plain non-200 error before the stream starts. The 304 and non-stream 200
+ * branches below are kept only so a future techdocs-backend that restores a
+ * plain HTTP mode is still handled; 2.2.0 never takes them.
  */
 export function createSyncBuilder(options: {
   discovery: DiscoveryService;

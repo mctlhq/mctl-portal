@@ -1,5 +1,12 @@
 import { Entity } from '@backstage/catalog-model';
-import { createSyncBuilder, runTechdocsWarmup } from './techdocsWarmup';
+import { createBackendPlugin } from '@backstage/backend-plugin-api';
+import { mockServices, startTestBackend } from '@backstage/backend-test-utils';
+import { catalogServiceMock } from '@backstage/plugin-catalog-node/testUtils';
+import {
+  createSyncBuilder,
+  runTechdocsWarmup,
+  techdocsWarmupModule,
+} from './techdocsWarmup';
 
 const ent = (name: string, annotated = true): Entity => ({
   apiVersion: 'backstage.io/v1alpha1',
@@ -127,5 +134,98 @@ describe('createSyncBuilder', () => {
 
   it('throws on 500 with the status', async () => {
     await expect(make(500).build(ent('a'))).rejects.toThrow('500');
+  });
+});
+
+// techdocs-backend 2.2.0 always answers the sync route with an event stream
+// (dist/service/router.cjs.js, createEventStream), so this is the path that
+// runs in production.
+describe('createSyncBuilder against the 2.2.0 event stream', () => {
+  const streamBuilder = (body: string) =>
+    createSyncBuilder({
+      discovery: { getBaseUrl: async () => 'http://x/api/techdocs' } as any,
+      auth: {
+        getOwnServiceCredentials: async () => ({}),
+        getPluginRequestToken: async () => ({ token: 'tok' }),
+      } as any,
+      fetch: jest.fn().mockResolvedValue(
+        new Response(body, {
+          status: 200,
+          headers: { 'content-type': 'text/event-stream' },
+        }),
+      ) as any,
+      timeoutMs: 1000,
+    });
+  const ev = (type: string, data: unknown) =>
+    `event: ${type}\ndata: ${JSON.stringify(data)}\n\n`;
+
+  it('reads finish {updated:true} as updated, after log events', async () => {
+    const body = ev('log', 'INFO building') + ev('finish', { updated: true });
+    await expect(streamBuilder(body)(ent('a'))).resolves.toBe('updated');
+  });
+
+  it('reads finish {updated:false} as up to date', async () => {
+    await expect(
+      streamBuilder(ev('finish', { updated: false }))(ent('a')),
+    ).resolves.toBe('cached');
+  });
+
+  it('throws on an error event with its message', async () => {
+    const body = ev('log', 'x') + ev('error', 'mkdocs exploded');
+    await expect(streamBuilder(body)(ent('a'))).rejects.toThrow(
+      'mkdocs exploded',
+    );
+  });
+
+  it('throws when the stream ends without finish or error', async () => {
+    await expect(streamBuilder(ev('log', 'x'))(ent('a'))).rejects.toThrow(
+      'without a finish event',
+    );
+  });
+});
+
+describe('techdocsWarmupModule', () => {
+  // The module extends the techdocs plugin; a stub stands in for it.
+  const techdocsStub = createBackendPlugin({
+    pluginId: 'techdocs',
+    register(env) {
+      env.registerInit({ deps: {}, async init() {} });
+    },
+  });
+  const start = async (config: object) => {
+    const scheduleTask = jest.fn().mockResolvedValue(undefined);
+    await startTestBackend({
+      features: [
+        techdocsStub,
+        techdocsWarmupModule,
+        mockServices.rootConfig.factory({ data: config }),
+        mockServices.scheduler.mock({ scheduleTask }).factory,
+        catalogServiceMock.factory(),
+      ],
+    });
+    return scheduleTask;
+  };
+
+  it('schedules techdocs-warmup on every replica (scope local)', async () => {
+    const scheduleTask = await start({ techdocs: { builder: 'local' } });
+    expect(scheduleTask).toHaveBeenCalledTimes(1);
+    expect(scheduleTask.mock.calls[0][0]).toMatchObject({
+      id: 'techdocs-warmup',
+      scope: 'local',
+      frequency: { minutes: 30 },
+      initialDelay: { seconds: 60 },
+    });
+  });
+
+  it('schedules nothing when disabled', async () => {
+    const scheduleTask = await start({
+      techdocs: { builder: 'local', warmup: { enabled: false } },
+    });
+    expect(scheduleTask).not.toHaveBeenCalled();
+  });
+
+  it('schedules nothing when the builder is external', async () => {
+    const scheduleTask = await start({ techdocs: { builder: 'external' } });
+    expect(scheduleTask).not.toHaveBeenCalled();
   });
 });
