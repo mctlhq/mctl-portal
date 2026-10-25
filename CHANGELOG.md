@@ -1,5 +1,19 @@
 # Changelog
 
+## [4.30.0](https://github.com/mctlhq/mctl-portal/compare/4.29.0...4.30.0) (2026-10-25)
+
+
+### Features
+
+* **agents:** issue-208-techdocs-first-view-after-every-portal-r ([2ad467e](https://github.com/mctlhq/mctl-portal/commit/2ad467e1a856b8d93695a51ee86704df244924e3))
+
+
+### Bug Fixes
+
+* **agents:** issue-208-techdocs-first-view-after-every-portal-r ([7b9b414](https://github.com/mctlhq/mctl-portal/commit/7b9b414f61230877356a3258870a2abe5d18286d))
+* **backend:** stop the techdocs warm-up when the scheduler aborts ([a103999](https://github.com/mctlhq/mctl-portal/commit/a103999a91e74bb43233fde45faa29f46a9c2550))
+* **techdocs:** accept CRLF event frames and any 2xx sync answer ([0dab3e1](https://github.com/mctlhq/mctl-portal/commit/0dab3e15c0c25ab74dfa5700f2e232475cfb90e3))
+
 ## [4.29.0](https://github.com/mctlhq/mctl-portal/compare/4.28.0...4.29.0) (2026-10-25)
 
 
