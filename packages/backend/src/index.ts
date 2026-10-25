@@ -12,6 +12,7 @@ import { DatabaseManager } from '@backstage/backend-defaults/database';
 import { githubAuthModule } from './githubAuthModule';
 import { kubernetesEntityScopeModule } from './kubernetesEntityScope';
 import { zitadelAuthModule } from './zitadelAuthModule';
+import { techdocsWarmupModule } from './techdocsWarmup';
 import {
   authModuleGithubInstallRedirect,
   scaffolderFiltersModule,
@@ -57,6 +58,7 @@ backend.add(import('@roadiehq/scaffolder-backend-module-http-request'));
 
 // techdocs plugin
 backend.add(import('@backstage/plugin-techdocs-backend'));
+backend.add(techdocsWarmupModule);
 
 // auth plugin
 backend.add(import('@backstage/plugin-auth-backend'));
