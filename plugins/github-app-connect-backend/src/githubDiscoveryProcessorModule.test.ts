@@ -158,6 +158,28 @@ describe('GithubFileEntityProvider.refresh', () => {
     expect(names(applyMutation.mock.calls[3][0].entities)).toEqual(['b2', 'c']);
   });
 
+  it('treats a network failure on one file as that file failing', async () => {
+    const routes = base(tree, {
+      [A]: { body: component('a') },
+      [B]: { body: component('b') },
+    });
+    const { provider, applyMutation } = setup(routes);
+    await provider.refresh();
+
+    const fetchMock = global.fetch as jest.Mock;
+    const ok = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation(async (input: any, init?: any) => {
+      if (String(input).includes(`/contents/${B}`)) {
+        throw new TypeError('fetch failed');
+      }
+      return ok(input, init);
+    });
+    await provider.refresh();
+    const m = applyMutation.mock.calls[1][0];
+    expect(m.type).toBe('full');
+    expect(names(m.entities)).toEqual(['a', 'b']);
+  });
+
   it('leaves out a new file that fails, since none of it was applied', async () => {
     const routes = base(tree, {
       [A]: { body: component('a') },

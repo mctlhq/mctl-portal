@@ -160,20 +160,28 @@ export class GithubFileEntityProvider implements EntityProvider {
   // document in it does not parse (a file is taken whole or not at all).
   private async readFile(
     apiBase: string | undefined,
-    headers: Record<string, string>,
+    headers: Record<string, string> | undefined,
     sha: string,
     filePath: string,
   ): Promise<any[] | undefined> {
     const { owner, repo, branch } = this.providerConfig;
-    const contentResp = await fetch(
-      `${apiBase}/repos/${owner}/${repo}/contents/${filePath}?ref=${sha}`,
-      { headers: { ...headers, Accept: 'application/vnd.github.v3.raw' } },
-    );
-    if (!contentResp.ok) {
-      this.logger.error(`${this.getProviderName()}: failed to read ${filePath}: ${contentResp.status}`);
+    let yaml: string;
+    try {
+      const contentResp = await fetch(
+        `${apiBase}/repos/${owner}/${repo}/contents/${filePath}?ref=${sha}`,
+        { headers: { ...headers, Accept: 'application/vnd.github.v3.raw' } },
+      );
+      if (!contentResp.ok) {
+        this.logger.error(`${this.getProviderName()}: failed to read ${filePath}: ${contentResp.status}`);
+        return undefined;
+      }
+      yaml = await contentResp.text();
+    } catch (e) {
+      // A network failure or an aborted body is this file's failure, not
+      // the whole refresh's.
+      this.logger.error(`${this.getProviderName()}: failed to read ${filePath}: ${e}`);
       return undefined;
     }
-    const yaml = await contentResp.text();
     const fileUrl = `https://github.com/${owner}/${repo}/blob/${branch}/${filePath}`;
     const locationRef = `url:${fileUrl}`;
     const entities: any[] = [];
