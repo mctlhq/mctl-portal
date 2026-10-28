@@ -1,5 +1,13 @@
 # Changelog
 
+## [4.31.0](https://github.com/mctlhq/mctl-portal/compare/4.30.1...4.31.0) (2026-10-28)
+
+
+### Features
+
+* add spike issue form with intake labels ([f49d7a9](https://github.com/mctlhq/mctl-portal/commit/f49d7a9b1c0acacf5df0518d7159a6afa66a9135))
+* add spike issue form with intake labels ([6ed05fb](https://github.com/mctlhq/mctl-portal/commit/6ed05fb4fd45bb03b7051544dd516eeb09cfcf62))
+
 ## [4.30.1](https://github.com/mctlhq/mctl-portal/compare/4.30.0...4.30.1) (2026-10-25)
 
 
