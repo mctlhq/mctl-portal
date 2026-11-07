@@ -95,7 +95,9 @@ jobs:
             -f values_path=platform-gitops/bootstrap/templates/mctl-platform/mctl-portal.yaml
 
   # Separate job so the Telegram secrets are not in the environment-bound
-  # dispatch job and the notice still fires if either upstream job fails.
+  # dispatch job. It reports a failed dispatch or a failed release step after a
+  # release was created (the same condition the old in-job step had); a failure
+  # before any release exists is not a deploy failure and is not reported here.
   notify:
     needs: [release-please, dispatch]
     if: ${{ failure() && needs.release-please.outputs.release_created == 'true' }}
