@@ -133,8 +133,12 @@ function verifyLandingJwt(
       Buffer.from(parts[1], 'base64url').toString('utf-8'),
     );
 
-    // Check expiration
-    if (payload.exp && payload.exp < Math.floor(Date.now() / 1000)) {
+    // A token without a numeric expiry would be valid forever; refuse it.
+    if (
+      typeof payload?.exp !== 'number' ||
+      !Number.isFinite(payload.exp) ||
+      payload.exp < Math.floor(Date.now() / 1000)
+    ) {
       return undefined;
     }
 
@@ -836,6 +840,14 @@ export function createRouter(opts: RouterOptions): Router {
       }
       const { creator } = resolved;
 
+      // The landing page always names who is signing up; a landing call
+      // without a creator would skip admission and take its quotas from the
+      // request body.
+      if (auth.isLanding && !creator) {
+        res.status(400).json({ error: 'A landing request must name its creator' });
+        return;
+      }
+
       if (
         creator?.catalogKey === 'principal' &&
         (typeof body.contactEmail !== 'string' ||
@@ -1403,6 +1415,21 @@ export function createRouter(opts: RouterOptions): Router {
             .status(400)
             .json({ error: 'role must be owner, developer, or viewer' });
           return;
+        }
+        // A tenant must keep an owner, whoever asks: demoting the last one
+        // leaves nobody able to manage members (DELETE has the same rule).
+        if (role !== 'owner') {
+          const members = await store.listMembers(name);
+          const target = members.find(
+            m => m.userId.toLowerCase() === userId.toLowerCase(),
+          );
+          const owners = members.filter(m => m.role === 'owner');
+          if (target?.role === 'owner' && owners.length <= 1) {
+            res
+              .status(400)
+              .json({ error: 'Cannot demote the only owner of a tenant' });
+            return;
+          }
         }
         await store.updateMemberRole(name, userId, role);
         logger.info(

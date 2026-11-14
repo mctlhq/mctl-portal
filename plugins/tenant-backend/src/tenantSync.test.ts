@@ -1,4 +1,4 @@
-import { TenantSync } from './tenantSync';
+import { STALE_GRACE_MS, TenantSync } from './tenantSync';
 
 // Deleting a tenant also deletes its repository connections, so a tenant may
 // only be removed when it is absent from a complete listing of the tenants
@@ -8,6 +8,8 @@ import { TenantSync } from './tenantSync';
 function logger() {
   return { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() } as any;
 }
+
+const OLD = new Date(Date.now() - 2 * STALE_GRACE_MS).toISOString();
 
 function valuesYaml(name: string) {
   return {
@@ -21,7 +23,11 @@ function valuesYaml(name: string) {
   };
 }
 
-function setup(listing: string[] | { status: number }, files: Record<string, 'ok' | number>) {
+function setup(
+  listing: string[] | { status: number },
+  files: Record<string, 'ok' | number | string>,
+  syncedAt: Record<string, string> = {},
+) {
   const fetchMock = jest.fn(async (url: string) => {
     if (/\/contents\/tenants$/.test(url)) {
       if (!Array.isArray(listing)) return { ok: false, status: listing.status, text: async () => '' };
@@ -30,6 +36,7 @@ function setup(listing: string[] | { status: number }, files: Record<string, 'ok
     const m = url.match(/\/tenants\/([^/]+)\/values\.yaml$/);
     const answer = m ? files[m[1]] : undefined;
     if (answer === 'ok') return valuesYaml(m![1]);
+    if (typeof answer === 'string') return valuesYaml(answer);
     return { ok: false, status: answer ?? 404, text: async () => '' };
   });
   (global as any).fetch = fetchMock;
@@ -37,6 +44,7 @@ function setup(listing: string[] | { status: number }, files: Record<string, 'ok
     upsert: jest.fn().mockResolvedValue(undefined),
     seedMember: jest.fn().mockResolvedValue(undefined),
     listNames: jest.fn().mockResolvedValue(['alpha', 'beta', 'gone']),
+    findByName: jest.fn(async (name: string) => ({ name, syncedAt: syncedAt[name] ?? OLD })),
     delete: jest.fn().mockResolvedValue(undefined),
   } as any;
   const sync = new TenantSync(store, logger(), {
@@ -73,6 +81,28 @@ describe('TenantSync stale removal', () => {
     const { sync, store } = setup(['alpha', 'beta', 'gone'], { alpha: 'ok', beta: 502, gone: 429 });
     await sync.sync();
     expect(store.delete).not.toHaveBeenCalled();
+  });
+
+  it('keeps a tenant written moments ago whose directory the workflow has not committed yet', async () => {
+    const { sync, store } = setup(['alpha', 'beta'], { alpha: 'ok', beta: 'ok' }, { gone: new Date().toISOString() });
+    await sync.sync();
+    expect(store.delete).not.toHaveBeenCalled();
+  });
+
+  it('keeps a tenant whose row cannot be read or dated', async () => {
+    const { sync, store } = setup(['alpha', 'beta'], { alpha: 'ok', beta: 'ok' }, { gone: 'not-a-date' });
+    await sync.sync();
+    store.findByName.mockRejectedValueOnce(new Error('db down'));
+    await sync.sync();
+    expect(store.delete).not.toHaveBeenCalled();
+  });
+
+  it('refuses a directory whose values.yaml names another tenant (old code wrote it and deleted it every cycle)', async () => {
+    const { sync, store } = setup(['alpha', 'beta', 'gone', 'foo'], { alpha: 'ok', beta: 'ok', gone: 'ok', foo: 'bar' });
+    store.listNames.mockResolvedValue(['alpha', 'bar', 'beta', 'gone']);
+    await sync.sync();
+    expect(store.upsert.mock.calls.map((c: any[]) => c[0].name)).toEqual(['alpha', 'beta', 'gone']);
+    expect(store.seedMember.mock.calls.map((c: any[]) => c[0])).not.toContain('bar');
   });
 
   it('removes nothing when the listing cannot be read', async () => {

@@ -218,8 +218,10 @@ describe('landing-page token is not platform admin', () => {
       },
       body: JSON.stringify({ tenantName: 'acme', displayName: 'Acme' }),
     });
-    expect(created.status).toBe(202);
-    expect(submitWorkflow).toHaveBeenCalled();
+    // A landing call that names no creator is refused (it would skip
+    // admission); the name check below stays open to the landing page.
+    expect(created.status).toBe(400);
+    expect(submitWorkflow).not.toHaveBeenCalled();
 
     const check = await fetch(`${base}/tenants/labs`, {
       headers: { authorization: `Bearer ${token}` },
@@ -350,12 +352,16 @@ describe('POST /tenants resolves the creator principal', () => {
     expect(params()).toContain(`creator_principal_id=${PID}`);
   });
 
-  it('sends no principal when no creator is named', async () => {
+  it('refuses a landing call that names no creator (old code skipped admission and took quotas from the body)', async () => {
     const resolve = jest.fn();
-    const base = await startApp(resolve);
-    expect((await create(base, {})).status).toBe(202);
+    const admission = jest.fn().mockResolvedValue(undefined);
+    const base = await startApp(resolve, admission);
+    const res = await create(base, { quotaCpuLim: '64', quotaPods: '500' });
+    expect(res.status).toBe(400);
     expect(resolve).not.toHaveBeenCalled();
-    expect(params()).toContain('creator_principal_id=');
+    expect(admission).not.toHaveBeenCalled();
+    expect(upsert).not.toHaveBeenCalled();
+    expect(submitWorkflow).not.toHaveBeenCalled();
   });
 
   it('refuses a creator that is not a GitHub login', async () => {
@@ -1250,4 +1256,113 @@ describe('customer lifecycle private route', () => {
   freeze.mockRejectedValueOnce(new Error('database unavailable'));
   expect((await post()).status).toBe(503);
  });
+});
+
+// A landing JWT is accepted only while it carries a numeric, unexpired exp.
+describe('landing JWT expiry', () => {
+  const secret = 'landing-secret-token';
+  let server: Server | undefined;
+  afterEach(done => {
+    if (server) {
+      server.close(() => done());
+      server = undefined;
+    } else done();
+  });
+  const sign = (payload: object) => {
+    const { createHmac } = require('crypto');
+    const h = Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'JWT' })).toString('base64url');
+    const p = Buffer.from(JSON.stringify(payload)).toString('base64url');
+    const sig = createHmac('sha256', secret).update(`${h}.${p}`).digest('base64url');
+    return `${h}.${p}.${sig}`;
+  };
+  function startApp(): Promise<string> {
+    const options = {
+      logger: { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn(), child: jest.fn() },
+      httpAuth: { credentials: jest.fn().mockRejectedValue(new Error('no creds')) },
+      userInfo: { getUserInfo: jest.fn() },
+      store: { findByName: jest.fn().mockResolvedValue(undefined) },
+      argoClient: {},
+      argoNamespace: 'argo-workflows',
+      getGithubToken: jest.fn(),
+      landingPageToken: secret,
+    } as unknown as RouterOptions;
+    const app = express();
+    app.use(createRouter(options));
+    return new Promise(resolve => {
+      server = app.listen(0, () => resolve(`http://127.0.0.1:${(server!.address() as AddressInfo).port}`));
+    });
+  }
+  const check = (base: string, jwt: string) =>
+    fetch(`${base}/tenants/acme`, { headers: { authorization: `Bearer ${jwt}` } });
+  const now = () => Math.floor(Date.now() / 1000);
+
+  it('accepts a JWT that expires in the future', async () => {
+    const base = await startApp();
+    expect((await check(base, sign({ iss: 'mctl-landing', iat: now(), exp: now() + 60 }))).status).toBe(404);
+  });
+
+  it.each([
+    ['no exp (old code accepted it forever)', { iss: 'mctl-landing', iat: 1 }],
+    ['a string exp', { iss: 'mctl-landing', exp: '9999999999' }],
+    ['an expired exp', { iss: 'mctl-landing', exp: 1 }],
+  ])('refuses a JWT with %s', async (_label, payload) => {
+    const base = await startApp();
+    expect((await check(base, sign(payload))).status).toBe(401);
+  });
+});
+
+// PUT /members/:userId/role must not leave a tenant without an owner.
+describe('role change keeps an owner', () => {
+  let server: Server | undefined;
+  const updateMemberRole = jest.fn().mockResolvedValue(undefined);
+  afterEach(done => {
+    updateMemberRole.mockClear();
+    if (server) {
+      server.close(() => done());
+      server = undefined;
+    } else done();
+  });
+  function startApp(members: Array<{ userId: string; role: string }>): Promise<string> {
+    const options = {
+      logger: { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn(), child: jest.fn() },
+      httpAuth: { credentials: jest.fn().mockResolvedValue({ principal: { type: 'user' } }) },
+      userInfo: { getUserInfo: jest.fn().mockResolvedValue({ ownershipEntityRefs: ['user:default/alice'] }) },
+      store: {
+        getMemberByTenant: jest.fn(async (tenant: string, user: string) =>
+          tenant === 'admins' ? undefined : members.find(m => m.userId === user),
+        ),
+        listMembers: jest.fn().mockResolvedValue(members),
+        updateMemberRole,
+      },
+      argoClient: {},
+      argoNamespace: 'argo-workflows',
+      getGithubToken: jest.fn(),
+    } as unknown as RouterOptions;
+    const app = express();
+    app.use(express.json());
+    app.use(createRouter(options));
+    return new Promise(resolve => {
+      server = app.listen(0, () => resolve(`http://127.0.0.1:${(server!.address() as AddressInfo).port}`));
+    });
+  }
+  const put = (base: string, user: string, role: string) =>
+    fetch(`${base}/tenants/labs/members/${user}/role`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ role }),
+    });
+
+  it('refuses to demote the only owner (old code answered 200 and left 0 owners)', async () => {
+    const base = await startApp([{ userId: 'alice', role: 'owner' }, { userId: 'bob', role: 'developer' }]);
+    expect((await put(base, 'alice', 'viewer')).status).toBe(400);
+    expect((await put(base, 'Alice', 'developer')).status).toBe(400);
+    expect(updateMemberRole).not.toHaveBeenCalled();
+  });
+
+  it('allows demoting an owner when another owner remains, and changing non-owners', async () => {
+    const base = await startApp([{ userId: 'alice', role: 'owner' }, { userId: 'carol', role: 'owner' }, { userId: 'bob', role: 'developer' }]);
+    expect((await put(base, 'alice', 'viewer')).status).toBe(200);
+    expect((await put(base, 'bob', 'viewer')).status).toBe(200);
+    expect(updateMemberRole).toHaveBeenCalledTimes(2);
+  });
 });
