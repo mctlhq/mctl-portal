@@ -247,6 +247,29 @@ describe('WorkItemDetailView', () => {
     expect(a.requestExecution).toHaveBeenCalledWith('wi_1', expect.objectContaining({ kind: 'start', expectedStateVersion: 3 }));
   });
 
+  it('keeps the dialog and its idempotency key after a failure, so a retry is a replay (old code dropped both)', async () => {
+    const a = api({
+      requestExecution: jest
+        .fn()
+        .mockRejectedValueOnce(new WorkItemsApiError(0, 'network down'))
+        .mockResolvedValueOnce(undefined),
+    });
+    const onReload = jest.fn();
+    const { rerender } = render(<WorkItemDetailView item={item({ actionsEnabled: true })} api={a} onReload={onReload} />);
+    fireEvent.click(screen.getByText('Request resume'));
+    fireEvent.click(screen.getByText('Confirm'));
+    await waitFor(() => expect(screen.getByTestId('dialog-action-error').textContent).toContain('network down'));
+    // The re-fetch after the failure moved the item on; the replay still
+    // sends the request exactly as first confirmed.
+    rerender(<WorkItemDetailView item={item({ actionsEnabled: true, stateVersion: 4 })} api={a} onReload={onReload} />);
+    fireEvent.click(screen.getByText('Confirm'));
+    await waitFor(() => expect(a.requestExecution).toHaveBeenCalledTimes(2));
+    const [first, second] = (a.requestExecution as jest.Mock).mock.calls.map(c => c[1]);
+    expect(second).toEqual(first);
+    expect(second.expectedStateVersion).toBe(3);
+    await waitFor(() => expect(screen.queryByText('Confirm')).toBeNull());
+  });
+
   it('shows a progress indicator while loading', () => {
     render(<WorkItemDetailView loading api={api()} onReload={jest.fn()} />);
     expect(screen.getByTestId('progress')).toBeTruthy();
