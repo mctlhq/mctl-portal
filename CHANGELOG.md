@@ -1,5 +1,14 @@
 # Changelog
 
+## [4.31.2](https://github.com/mctlhq/mctl-portal/compare/4.31.1...4.31.2) (2026-11-14)
+
+
+### Bug Fixes
+
+* **app:** scaffolder and work-item frontend correctness ([a314649](https://github.com/mctlhq/mctl-portal/commit/a314649272f17ba3bbec29c7806faefec49108e8))
+* **github-app-connect:** exact branch lookup in catalog discovery ([cc56429](https://github.com/mctlhq/mctl-portal/commit/cc56429ed7ff71d60f5f24a0477dcaea1fcf3ba3))
+* **oidc-provider:** bind Codex callback target, consume state once ([cff1754](https://github.com/mctlhq/mctl-portal/commit/cff175407bca0d87907e420ca9b756ec75368a8c))
+
 ## [4.31.1](https://github.com/mctlhq/mctl-portal/compare/4.31.0...4.31.1) (2026-11-14)
 
 
