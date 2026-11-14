@@ -83,8 +83,14 @@ export interface RouterOptions {
   workflowBaseUrl?: string;
 }
 
-/** A tenant name: the Kubernetes namespace it becomes. */
-const TENANT_NAME = /^[a-z0-9][a-z0-9-]{1,62}$/;
+/**
+ * A new tenant's name: the Kubernetes namespace it becomes. Capped at 31
+ * characters because the Vault secrets routes (SLUG_RE) and mctl-api's
+ * deploy operations accept no more; a longer tenant could be created but
+ * could neither deploy nor hold secrets. Routes that act on an existing
+ * tenant (lifecycle, cleanup) still accept the namespace limit of 63.
+ */
+const TENANT_NAME = /^[a-z0-9][a-z0-9-]{1,30}$/;
 
 type AuthResult =
   | {

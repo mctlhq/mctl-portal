@@ -1060,6 +1060,32 @@ describe('self-service customers create their workspace by principal', () => {
     );
   });
 
+  describe('new tenant names are at most 31 characters', () => {
+    const name31 = `a${'b'.repeat(30)}`;
+    const name32 = `a${'b'.repeat(31)}`;
+
+    it('creates a 31-character tenant and refuses a 32-character one', async () => {
+      expect(name31).toHaveLength(31);
+      expect(name32).toHaveLength(32);
+      const base = await startApp(jest.fn().mockResolvedValue(bob));
+      const refused = await create(base, { tenantName: name32, creatorIdToken: 'site-id-token' });
+      expect(refused.status).toBe(400);
+      expect(createCustomerTenant).not.toHaveBeenCalled();
+      expect(submitWorkflow).not.toHaveBeenCalled();
+      const accepted = await create(base, { tenantName: name31, creatorIdToken: 'site-id-token' });
+      expect(accepted.status).toBe(202);
+      expect(createCustomerTenant).toHaveBeenCalledTimes(1);
+    });
+
+    it('reports a 31-character name available and refuses a 32-character one', async () => {
+      const base = await startApp(jest.fn().mockResolvedValue(bob));
+      const ok = await post(base, '/tenants/availability', { name: name31, creatorIdToken: 't' });
+      expect(ok.status).toBe(200);
+      expect(await ok.json()).toEqual({ name: name31, available: true });
+      expect((await post(base, '/tenants/availability', { name: name32, creatorIdToken: 't' })).status).toBe(400);
+    });
+  });
+
   describe('POST /tenants/availability', () => {
     it('answers for a resolvable customer and a free name', async () => {
       const resolve = jest.fn().mockResolvedValue(bob);
