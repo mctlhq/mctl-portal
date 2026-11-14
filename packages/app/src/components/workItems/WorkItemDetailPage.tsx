@@ -31,7 +31,7 @@ type NextAction = {
 };
 
 /** A confirmed action carries one idempotency key, so a retry is a replay. */
-type PendingAction = NextAction & { idempotencyKey: string };
+type PendingAction = NextAction & { idempotencyKey: string; expectedStateVersion: number };
 
 function newIdempotencyKey(): string {
   const c = globalThis.crypto as Crypto | undefined;
@@ -137,10 +137,17 @@ export const WorkItemDetailView = (props: {
       setActionError(undefined);
       await api.requestExecution(item.id, {
         kind: a.kind,
-        expectedStateVersion: item.stateVersion,
+        // The version seen when the action was confirmed: a replay after
+        // the re-fetch below must send the same request as the first try.
+        expectedStateVersion: a.expectedStateVersion,
         resumedFromExecutionId: a.resumedFromExecutionId,
         idempotencyKey: a.idempotencyKey,
       });
+      // Close only on success. After a failure the dialog keeps this action
+      // and its key, so Confirm again is a replay of the same request (the
+      // first may have reached mctl-api before the connection dropped), not
+      // a new one.
+      setConfirm(undefined);
     } catch (e) {
       // Shown as returned by mctl-api (e.g. state_version_conflict).
       const err = e as WorkItemsApiError;
@@ -148,7 +155,6 @@ export const WorkItemDetailView = (props: {
     } finally {
       inFlight.current = false;
       setSubmitting(false);
-      setConfirm(undefined);
       onReload(); // always re-fetch; never update optimistically
     }
   };
@@ -183,11 +189,16 @@ export const WorkItemDetailView = (props: {
             </Typography>
           ))}
           {action && (
-            <Button variant="contained" color="primary" onClick={() => setConfirm({ ...action, idempotencyKey: newIdempotencyKey() })}>
+            <Button variant="contained" color="primary" onClick={() => {
+                // A new action starts clean; an earlier error belongs to the
+                // action it came from.
+                setActionError(undefined);
+                setConfirm({ ...action, idempotencyKey: newIdempotencyKey(), expectedStateVersion: item.stateVersion });
+              }}>
               {action.label}
             </Button>
           )}
-          {actionError && <Typography color="error">{actionError}</Typography>}
+          {actionError && !confirm && <Typography color="error">{actionError}</Typography>}
         </Paper>
       </Grid>
       <Grid item xs={12} md={6} data-testid="execution-requests-panel">
@@ -332,6 +343,11 @@ export const WorkItemDetailView = (props: {
             This asks the execution platform to {confirm?.kind} this work item. The platform
             decides whether it runs.
           </DialogContentText>
+          {actionError && (
+            <Typography color="error" data-testid="dialog-action-error">
+              {actionError}
+            </Typography>
+          )}
         </DialogContent>
         <DialogActions>
           <Button disabled={submitting} onClick={() => setConfirm(undefined)}>

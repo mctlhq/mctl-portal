@@ -60,6 +60,27 @@ interface GithubUserPreview {
 
 // ─── Guard ────────────────────────────────────────────────────────────────────
 
+/**
+ * Invite is enabled only once the lookup for the typed login has answered:
+ * the user exists, or the lookup could not reach GitHub (exists null). While
+ * the 400 ms debounce runs there is no answer yet (preview null), so a login
+ * that does not exist cannot be invited in that window.
+ */
+export function inviteAllowed(s: {
+  inviting: boolean;
+  username: string;
+  lookingUp: boolean;
+  userPreview: GithubUserPreview | null;
+}): boolean {
+  return (
+    !s.inviting &&
+    s.username.trim().length > 0 &&
+    !s.lookingUp &&
+    s.userPreview !== null &&
+    (s.userPreview.exists === true || s.userPreview.exists === null)
+  );
+}
+
 export const isTenantResource = (entity: any): boolean =>
   entity?.kind === 'Resource' &&
   Boolean(entity?.metadata?.annotations?.['mctl.me/tenant-name']);
@@ -252,10 +273,7 @@ export const TeamManagementCard = () => {
 
   const canManage = currentRole === 'owner' || isAdmin;
 
-  // Invite button is enabled when: username entered AND (user confirmed exists OR API unavailable)
-  const canInvite = !inviting && inviteUsername.trim().length > 0 &&
-    !lookingUp &&
-    (userPreview === null || userPreview.exists === true || userPreview.exists === null);
+  const canInvite = inviteAllowed({ inviting, username: inviteUsername, lookingUp, userPreview });
 
   const handleInvite = async () => {
     const username = inviteUsername.trim().toLowerCase();

@@ -102,8 +102,12 @@ function extractKeys(text: string | undefined): string[] {
     });
 }
 
-/** Mask values in KEY=VALUE text, showing only keys */
-function maskSecrets(text: string): string[] {
+/**
+ * Mask values in KEY=VALUE text, showing only keys. A line that is not
+ * KEY=VALUE (`API_KEY: sk-live-123`, `=topsecret`) may still be a secret,
+ * so it is masked whole rather than shown.
+ */
+export function maskSecrets(text: string): string[] {
   if (!text) return [];
   return text
     .split('\n')
@@ -113,7 +117,7 @@ function maskSecrets(text: string): string[] {
       if (eqIndex > 0) {
         return `${line.substring(0, eqIndex)}=****`;
       }
-      return line;
+      return '****';
     });
 }
 
