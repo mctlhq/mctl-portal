@@ -550,10 +550,17 @@ export function createRouter(options: RouterOptions): Router {
   // ── OpenAI Codex OAuth Callback ───────────────────────────────────
   // GET /openai-codex/callback?code=<code>&state=<state>
   //
-  // OpenAI redirects here after the tenant dashboard starts the OAuth flow.
+  // OpenAI redirects here after a tenant dashboard starts the OAuth flow.
   // We keep this callback on the control-plane host so the OAuth client only
   // needs one registered redirect URI, then bounce the browser back to the
   // originating tenant dashboard with the same state/code payload.
+  //
+  // The state is written by whoever builds the authorize link, so it is not
+  // trusted to pick where the code goes. The browser must hold a portal
+  // session, the envelope must name a tenant and service, the return target
+  // must be exactly that service's https host, and the signed-in user must
+  // belong to that tenant. A crafted link can therefore only send a user's
+  // code to a dashboard of a tenant that user is in.
   router.get('/openai-codex/callback', async (req: Request, res: Response) => {
     const state = typeof req.query.state === 'string' ? req.query.state.trim() : '';
     const code = typeof req.query.code === 'string' ? req.query.code.trim() : '';
@@ -565,18 +572,45 @@ export function createRouter(options: RouterOptions): Router {
       res.status(400).send('Missing state');
       return;
     }
-    const returnTo = decodeOpenAICodexReturnTo(state);
-    if (!returnTo) {
+    const target = decodeOpenAICodexState(state);
+    if (!target) {
       logger.warn('[OIDC] OpenAI Codex callback invalid state envelope');
       res.status(400).send('Invalid OpenAI Codex callback state');
       return;
     }
+    const expectedHost = buildTenantServiceHost(target.tenant, target.service);
+    if (!expectedHost || target.url.protocol !== 'https:' || target.url.host !== expectedHost) {
+      logger.warn(
+        `[OIDC] OpenAI Codex callback refused returnToHost=${target.url.host} for ${target.tenant}/${target.service}`,
+      );
+      res.status(400).send('Invalid OpenAI Codex callback state');
+      return;
+    }
+    const session = await readSessionCookie(req);
+    if (!session || session.expiresAt <= Date.now()) {
+      logger.warn('[OIDC] OpenAI Codex callback without a portal session');
+      res.status(401).send('Sign in to MCTL, then start the OpenAI connection again');
+      return;
+    }
+    let role: string | null;
+    try {
+      role = await membership.getUserRole(session.userId, target.tenant);
+    } catch (err) {
+      logger.error(`[OIDC] OpenAI Codex callback membership lookup failed: ${err}`);
+      res.status(503).send('Could not verify access; try again');
+      return;
+    }
+    if (!role) {
+      logger.warn(`[OIDC] OpenAI Codex callback: user is not a member of ${target.tenant}`);
+      res.status(403).send('Access denied');
+      return;
+    }
     logger.info(
-      `[OIDC] OpenAI Codex callback received returnToHost=${summarizeUrlHost(returnTo)} code=${
+      `[OIDC] OpenAI Codex callback received returnToHost=${target.url.host} code=${
         code ? 'present' : 'missing'
       } error=${error || 'none'}`,
     );
-    const url = new URL(returnTo);
+    const url = new URL(target.url.toString());
     if (code) {
       url.searchParams.set('code', code);
     }
@@ -1342,24 +1376,24 @@ export function sanitizeReturnPath(path: string): string {
   return path;
 }
 
-function decodeOpenAICodexReturnTo(state: string): string | null {
+/**
+ * Reads the OpenAI Codex state envelope: base64url JSON with returnTo,
+ * tenant and service. Only the shape is checked here; the router decides
+ * whether the target is allowed. Exported for unit testing.
+ */
+export function decodeOpenAICodexState(
+  state: string,
+): { url: URL; tenant: string; service: string } | null {
   try {
     const json = Buffer.from(state, 'base64url').toString('utf8');
-    const parsed = JSON.parse(json) as { returnTo?: unknown };
+    const parsed = JSON.parse(json) as { returnTo?: unknown; tenant?: unknown; service?: unknown };
     const returnTo = typeof parsed.returnTo === 'string' ? parsed.returnTo.trim() : '';
-    if (!returnTo) {
+    const tenant = typeof parsed.tenant === 'string' ? parsed.tenant.trim().toLowerCase() : '';
+    const service = typeof parsed.service === 'string' ? parsed.service.trim().toLowerCase() : '';
+    if (!returnTo || !tenant || !service) {
       return null;
     }
-    const url = new URL(returnTo);
-    const host = url.hostname.toLowerCase();
-    // .mctl.me removed from this trust list together with the /login
-    // allowlist above: the domain is retired (mctl-gitops#934), and a
-    // retired domain kept as a trusted redirect target is exactly the
-    // open-redirect-by-reregistration hazard this PR closes.
-    if (host === 'localhost' || host.endsWith('.mctl.ai')) {
-      return url.toString();
-    }
-    return null;
+    return { url: new URL(returnTo), tenant, service };
   } catch {
     return null;
   }
