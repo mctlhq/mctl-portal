@@ -8,7 +8,8 @@ import CheckCircleOutlineIcon from '@material-ui/icons/CheckCircleOutline';
 import type { FieldExtensionComponentProps } from '@backstage/plugin-scaffolder-react';
 import { useApi, discoveryApiRef, fetchApiRef } from '@backstage/core-plugin-api';
 
-const TENANT_NAME_RE = /^[a-z0-9][a-z0-9-]{1,62}$/;
+// Matches the backend's creation rule: 2-31 characters.
+const TENANT_NAME_RE = /^[a-z0-9][a-z0-9-]{1,30}$/;
 
 export type Availability = 'taken' | 'free' | 'unknown';
 
@@ -73,7 +74,7 @@ export const TenantNameFieldComponent = (
   );
 
   const formatError = value && !TENANT_NAME_RE.test(value)
-    ? 'Must start with a letter/digit, only lowercase a-z, 0-9, hyphens, 2-63 chars'
+    ? 'Must start with a letter/digit, only lowercase a-z, 0-9, hyphens, 2-31 chars'
     : availability === 'taken'
       ? `Tenant "${value}" already exists`
       : undefined;

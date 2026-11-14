@@ -17,7 +17,7 @@ describe('TenantNameField', () => {
     (global as any).fetch = realFetch;
   });
 
-  function renderField(status: number) {
+  function renderField(status: number, formData = 'labs') {
     const authFetch = jest.fn().mockResolvedValue({ status, ok: status >= 200 && status < 300 });
     // A bare fetch carries no Backstage token; the backend answers 401.
     const bareFetch = jest.fn().mockResolvedValue({ status: 401, ok: false });
@@ -27,7 +27,7 @@ describe('TenantNameField', () => {
       rawErrors: [],
       required: true,
       schema: { title: 'Tenant Name', description: 'desc' },
-      formData: 'labs',
+      formData,
     } as any;
     render(
       <TestApiProvider
@@ -53,6 +53,20 @@ describe('TenantNameField', () => {
     renderField(401);
     await waitFor(() => expect(screen.getByText('Could not check whether "labs" is available')).toBeTruthy());
     expect(screen.queryByText('Tenant "labs" already exists')).toBeNull();
+  });
+
+  it('checks a 31-character name with no format error', async () => {
+    const name31 = `a${'b'.repeat(30)}`;
+    const { authFetch } = renderField(404, name31);
+    await waitFor(() => expect(authFetch).toHaveBeenCalledWith(`http://backend/api/tenant-management/tenants/${name31}`));
+    expect(screen.queryByText(/2-31 chars/)).toBeNull();
+  });
+
+  it('shows the format error for a 32-character name and never checks it', async () => {
+    const { authFetch } = renderField(404, `a${'b'.repeat(31)}`);
+    expect(screen.getByText(/2-31 chars/)).toBeTruthy();
+    await new Promise(r => setTimeout(r, 500));
+    expect(authFetch).not.toHaveBeenCalled();
   });
 
   it('shows the name as free on 404', async () => {
