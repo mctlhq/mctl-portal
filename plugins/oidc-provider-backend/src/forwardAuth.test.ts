@@ -901,3 +901,72 @@ describe('forward-auth binding and lifetime', () => {
     expect((await forwardAuth('ovk', 'webapp', 'ovk-webapp.mctl.ai', { cookie: sessionCookie })).status).toBe(302);
   });
 });
+
+// The OpenAI Codex callback forwards an OpenAI authorization code to the
+// target named in a state anyone can write. It may only forward to an https
+// tenant-service host of a tenant the signed-in user belongs to.
+describe('OpenAI Codex callback', () => {
+  const envelope = (o: Record<string, unknown>) => Buffer.from(JSON.stringify(o)).toString('base64url');
+  const callback = (state: string, cookie?: string) =>
+    get(`/openai-codex/callback?code=oa-code&state=${encodeURIComponent(state)}`, cookie ? { Cookie: cookie } : {});
+  const good = { nonce: 'n', returnTo: 'https://ovk-webapp.mctl.ai/codex/done', tenant: 'ovk', service: 'webapp' };
+
+  it('forwards the code to a dashboard of a tenant the signed-in user belongs to', async () => {
+    const sid = await portalSession();
+    const res = await callback(envelope(good), `${OIDC_SESSION_COOKIE}=${sid}`);
+    expect(res.status).toBe(302);
+    const loc = new URL(res.headers.get('location')!);
+    expect(loc.host).toBe('ovk-webapp.mctl.ai');
+    expect(loc.searchParams.get('code')).toBe('oa-code');
+  });
+
+  it.each([
+    ['an http target (old code forwarded it)', { ...good, returnTo: 'http://ovk-webapp.mctl.ai/codex/done' }],
+    ['another *.mctl.ai host (old code forwarded it)', { ...good, returnTo: 'https://evil.mctl.ai/' }],
+    ['a target that is not the named service', { ...good, service: 'other' }],
+    ['no tenant in the envelope', { nonce: 'n', returnTo: good.returnTo }],
+    ['localhost', { ...good, returnTo: 'http://localhost:1455/auth/callback' }],
+  ])('refuses %s', async (_label, env) => {
+    const sid = await portalSession();
+    const res = await callback(envelope(env), `${OIDC_SESSION_COOKIE}=${sid}`);
+    expect(res.status).toBe(400);
+    expect(res.headers.get('location')).toBeNull();
+  });
+
+  it('refuses a browser without a portal session (old code forwarded for anyone)', async () => {
+    const res = await callback(envelope(good));
+    expect(res.status).toBe(401);
+    expect(res.headers.get('location')).toBeNull();
+  });
+
+  it('refuses a host another existing tenant owns under the same name (acme/dash-x vs acme-dash/x)', async () => {
+    TENANTS.add('acme');
+    TENANTS.add('acme-dash');
+    ROLES['mashkovd/acme'] = 'owner';
+    const sid = await portalSession();
+    const res = await callback(
+      envelope({ nonce: 'n', returnTo: 'https://acme-dash-x.mctl.ai/', tenant: 'acme', service: 'dash-x' }),
+      `${OIDC_SESSION_COOKIE}=${sid}`,
+    );
+    expect(res.status).toBe(400);
+    expect(res.headers.get('location')).toBeNull();
+  });
+
+  it('answers 503 and does not redirect when the tenant lookup fails', async () => {
+    const sid = await portalSession();
+    TENANTS = { has: () => { throw new Error('db down'); } } as unknown as Set<string>;
+    const res = await callback(
+      envelope({ nonce: 'n', returnTo: 'https://ovk-web-app.mctl.ai/', tenant: 'ovk', service: 'web-app' }),
+      `${OIDC_SESSION_COOKIE}=${sid}`,
+    );
+    expect(res.status).toBe(503);
+    expect(res.headers.get('location')).toBeNull();
+  });
+
+  it('refuses a user who is not a member of the named tenant', async () => {
+    const sid = await portalSession('outsider');
+    const res = await callback(envelope(good), `${OIDC_SESSION_COOKIE}=${sid}`);
+    expect(res.status).toBe(403);
+    expect(res.headers.get('location')).toBeNull();
+  });
+});

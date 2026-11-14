@@ -292,7 +292,10 @@ export class OidcStore {
   async consumePendingAuth(state: string): Promise<PendingAuth | undefined> {
     const row = await this.table('oidc_pending_auths').where({ state }).first();
     if (!row) return undefined;
-    await this.table('oidc_pending_auths').where({ state }).delete();
+    // One-time: only the caller whose delete removed the row gets it. Two
+    // concurrent callbacks can both read it, but only one deletes it.
+    const deleted = await this.table('oidc_pending_auths').where({ state }).delete();
+    if (deleted !== 1) return undefined;
     return {
       returnTo: row.return_to,
       expiresAt: Number(row.expires_at),

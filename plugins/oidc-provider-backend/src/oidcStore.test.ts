@@ -264,6 +264,13 @@ describe('OidcStore pending auths', () => {
     });
     expect(await store.consumePendingAuth('state-1')).toBeUndefined();
   });
+  it('hands a state to only one of two concurrent consumers (old code read-then-deleted, both won)', async () => {
+    const { store, knex } = await freshStore();
+    currentKnex = knex;
+    await store.savePendingAuth('state-2', '/return/here', 555);
+    const results = await Promise.all([store.consumePendingAuth('state-2'), store.consumePendingAuth('state-2')]);
+    expect(results.filter(Boolean)).toHaveLength(1);
+  });
 });
 
 describe('OidcStore access tokens', () => {
