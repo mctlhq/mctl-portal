@@ -2,17 +2,11 @@ import { createBackendModule } from '@backstage/backend-plugin-api';
 import { scaffolderTemplatingExtensionPoint } from '@backstage/plugin-scaffolder-node/alpha';
 
 /**
- * Registers custom Nunjucks template filters for use in scaffolder templates.
- *
- * Filters:
- *   repoName — extracts the repo name from an "owner/repo" string.
- *   Usage: ${{ parameters.dockerfileRepo | repoName }}
- *   Example: "mctlhq/my-app" → "my-app"
- */
-/**
  * Converts a repo name to a K8s-safe service name (a DNS-1123 label).
  * The 63-character cut comes before the edge-hyphen trim, so a cut that
  * lands after a hyphen cannot leave the name ending in one.
+ * Usage: ${{ parameters.dockerfileRepo | serviceName }}
+ * Example: "mashkoffdmitry/tsvilt.ru" → "tsvilt-ru"
  */
 export function serviceName(value: unknown): string | undefined {
   if (typeof value !== 'string') return undefined;
@@ -25,6 +19,15 @@ export function serviceName(value: unknown): string | undefined {
     .replace(/^-+|-+$/g, '');
 }
 
+/**
+ * Registers custom Nunjucks template filters for use in scaffolder templates.
+ *
+ * Filters:
+ *   repoName — extracts the repo name from an "owner/repo" string.
+ *   Usage: ${{ parameters.dockerfileRepo | repoName }}
+ *   Example: "mctlhq/my-app" → "my-app"
+ *   serviceName — see serviceName() above.
+ */
 export const scaffolderFiltersModule = createBackendModule({
   pluginId: 'scaffolder',
   moduleId: 'custom-filters',
