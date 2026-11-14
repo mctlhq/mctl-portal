@@ -80,9 +80,13 @@ export class GithubFileEntityProvider implements EntityProvider {
 
     this.logger.info(`${this.getProviderName()}: refreshing ${owner}/${repo} branch=${branch} glob=${pathGlob}`);
 
-    // HEAD SHA via git refs — only needs contents:read
+    // HEAD SHA via the exact-match ref endpoint (only needs contents:read).
+    // The legacy git/refs/heads/{branch} answers a missing branch with an
+    // array of every branch it prefixes (main -> main-legacy), and a full
+    // mutation from another branch's tree would replace the catalog.
+    // git/ref/heads/{branch} is the branch itself or 404.
     const refResp = await fetch(
-      `${apiBase}/repos/${owner}/${repo}/git/refs/heads/${branch}`,
+      `${apiBase}/repos/${owner}/${repo}/git/ref/heads/${branch}`,
       { headers },
     );
     if (!refResp.ok) {
@@ -92,7 +96,8 @@ export class GithubFileEntityProvider implements EntityProvider {
     const refRaw = await refResp.json() as
       | { object: { sha: string } }
       | Array<{ object: { sha: string } }>;
-    const sha = Array.isArray(refRaw) ? refRaw[0]?.object?.sha : (refRaw as any).object?.sha;
+    // An array is never an exact match; it names other branches.
+    const sha = Array.isArray(refRaw) ? undefined : refRaw?.object?.sha;
     if (!sha) {
       this.logger.error(`${this.getProviderName()}: HEAD ref for ${branch} carries no sha; keeping the last good state`);
       return;
