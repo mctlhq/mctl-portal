@@ -1,5 +1,13 @@
 # Changelog
 
+## [4.31.1](https://github.com/mctlhq/mctl-portal/compare/4.31.0...4.31.1) (2026-11-14)
+
+
+### Bug Fixes
+
+* **tenant-backend:** guard tenant sync and creation paths ([dde393b](https://github.com/mctlhq/mctl-portal/commit/dde393b057c20ba74ce18b5b54ec69d4cc9809fb))
+* **tenant-backend:** guard tenant sync and creation paths ([48dbfaa](https://github.com/mctlhq/mctl-portal/commit/48dbfaa0dcbb8860eeba4700c63e2d737f3a4cb5))
+
 ## [4.31.0](https://github.com/mctlhq/mctl-portal/compare/4.30.1...4.31.0) (2026-10-28)
 
 
