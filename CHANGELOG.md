@@ -1,5 +1,13 @@
 # Changelog
 
+## [4.31.3](https://github.com/mctlhq/mctl-portal/compare/4.31.2...4.31.3) (2026-11-14)
+
+
+### Bug Fixes
+
+* **tenant:** cap new tenant names at 31 characters ([cb898f2](https://github.com/mctlhq/mctl-portal/commit/cb898f2dc194c2e88be002d0f94f0bd7769ee0be))
+* **tenant:** cap new tenant names at 31 characters ([e220ef0](https://github.com/mctlhq/mctl-portal/commit/e220ef01f2bb17a5e6ba26658793e42536acd984))
+
 ## [4.31.2](https://github.com/mctlhq/mctl-portal/compare/4.31.1...4.31.2) (2026-11-14)
 
 
