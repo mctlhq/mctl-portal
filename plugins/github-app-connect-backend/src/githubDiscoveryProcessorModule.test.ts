@@ -52,7 +52,7 @@ const base = (
   tree: unknown,
   files: Record<string, Reply>,
 ): Record<string, Reply> => ({
-  '/repos/mctlhq/mctl-gitops/git/refs/heads/main': {
+  '/repos/mctlhq/mctl-gitops/git/ref/heads/main': {
     body: { object: { sha: 'abc' } },
   },
   '/repos/mctlhq/mctl-gitops/git/trees/abc': { body: tree },
@@ -219,6 +219,32 @@ describe('GithubFileEntityProvider.refresh', () => {
     const m = applyMutation.mock.calls[1][0];
     expect(m.type).toBe('delta');
     expect(names(m.added)).toEqual(['b']);
+  });
+
+  it('applies nothing when the branch is gone and only a prefix match exists (old code applied main-legacy)', async () => {
+    const legacy = {
+      // The legacy plural endpoint answers a missing main with its prefix matches.
+      '/repos/mctlhq/mctl-gitops/git/refs/heads/main': {
+        body: [{ ref: 'refs/heads/main-legacy', object: { sha: 'old' } }],
+      },
+      '/repos/mctlhq/mctl-gitops/git/trees/old': { body: tree },
+      [`/repos/mctlhq/mctl-gitops/contents/${A}`]: { body: component('a') },
+      [`/repos/mctlhq/mctl-gitops/contents/${B}`]: { body: component('b') },
+    };
+    const { provider, applyMutation } = setup(legacy);
+    await provider.refresh();
+    expect(applyMutation).not.toHaveBeenCalled();
+  });
+
+  it('applies nothing when the ref endpoint answers with an array', async () => {
+    const { provider, applyMutation } = setup({
+      ...base(tree, { [A]: { body: component('a') }, [B]: { body: component('b') } }),
+      '/repos/mctlhq/mctl-gitops/git/ref/heads/main': {
+        body: [{ ref: 'refs/heads/main-legacy', object: { sha: 'abc' } }],
+      },
+    });
+    await provider.refresh();
+    expect(applyMutation).not.toHaveBeenCalled();
   });
 
   it('applies nothing when the tree is truncated', async () => {
