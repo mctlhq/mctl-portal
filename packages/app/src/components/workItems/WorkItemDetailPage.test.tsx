@@ -270,6 +270,17 @@ describe('WorkItemDetailView', () => {
     await waitFor(() => expect(screen.queryByText('Confirm')).toBeNull());
   });
 
+  it('opens a new action without the error of a cancelled one', async () => {
+    const a = api({ requestExecution: jest.fn().mockRejectedValue(new WorkItemsApiError(0, 'network down')) });
+    render(<WorkItemDetailView item={item({ actionsEnabled: true })} api={a} onReload={jest.fn()} />);
+    fireEvent.click(screen.getByText('Request resume'));
+    fireEvent.click(screen.getByText('Confirm'));
+    await waitFor(() => expect(screen.getByTestId('dialog-action-error')).toBeTruthy());
+    fireEvent.click(screen.getByText('Cancel'));
+    fireEvent.click(screen.getByText('Request resume'));
+    expect(screen.queryByTestId('dialog-action-error')).toBeNull();
+  });
+
   it('shows a progress indicator while loading', () => {
     render(<WorkItemDetailView loading api={api()} onReload={jest.fn()} />);
     expect(screen.getByTestId('progress')).toBeTruthy();

@@ -189,9 +189,12 @@ export const WorkItemDetailView = (props: {
             </Typography>
           ))}
           {action && (
-            <Button variant="contained" color="primary" onClick={() =>
-                setConfirm({ ...action, idempotencyKey: newIdempotencyKey(), expectedStateVersion: item.stateVersion })
-              }>
+            <Button variant="contained" color="primary" onClick={() => {
+                // A new action starts clean; an earlier error belongs to the
+                // action it came from.
+                setActionError(undefined);
+                setConfirm({ ...action, idempotencyKey: newIdempotencyKey(), expectedStateVersion: item.stateVersion });
+              }}>
               {action.label}
             </Button>
           )}
