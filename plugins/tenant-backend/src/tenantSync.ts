@@ -7,6 +7,12 @@ import { SeedMember, seedMemberOf } from './memberKeys';
 // The GitHub contents API lists at most this many entries of a directory.
 const CONTENTS_LISTING_LIMIT = 1000;
 
+// POST /tenants writes the tenant row before the create-tenant workflow has
+// committed its directory. A tenant written (or last synced) more recently
+// than this is not removed for lacking a directory, so a sync that runs in
+// that window cannot delete a tenant that is still being created.
+export const STALE_GRACE_MS = 60 * 60 * 1000;
+
 export interface TenantSyncOptions {
   /** GitHub org name (e.g. mctlhq) */
   githubOrg: string;
@@ -141,8 +147,29 @@ export class TenantSync {
       );
     } else {
       const existingNames = await this.store.listNames();
+      const cutoff = Date.now() - STALE_GRACE_MS;
       for (const name of existingNames) {
         if (!directories.includes(name)) {
+          // Only a row whose last write is known to be older than the grace
+          // window counts as gone. One that cannot be read, or whose time
+          // cannot be parsed, is kept: unknown is not absent.
+          let lastWrite: number;
+          try {
+            const row = await this.store.findByName(name);
+            if (!row) continue;
+            lastWrite = Date.parse(row.syncedAt);
+          } catch (err) {
+            this.logger.warn(`[TenantSync] Could not read tenant '${name}'; not removing it: ${err}`);
+            continue;
+          }
+          if (Number.isNaN(lastWrite)) {
+            this.logger.warn(`[TenantSync] Tenant '${name}' has no readable synced_at; not removing it`);
+            continue;
+          }
+          if (lastWrite > cutoff) {
+            this.logger.info(`[TenantSync] Tenant '${name}' has no directory yet but was written recently; keeping it`);
+            continue;
+          }
           this.logger.info(`[TenantSync] Removing stale tenant '${name}' from DB`);
           try { await this.store.delete(name); }
           catch (err) { this.logger.warn(`[TenantSync] Stale tenant '${name}' cleanup incomplete: ${err}`); }
@@ -185,6 +212,18 @@ export class TenantSync {
 
     if (!parsed?.tenant?.name) {
       this.logger.warn(`[TenantSync] tenant.name missing in ${dirName}/values.yaml, skipping`);
+      return null;
+    }
+
+    // The directory name is the tenant's identity: stale removal, the
+    // namespace and every route key on it. A values.yaml naming another
+    // tenant is refused rather than synced, or the row it writes would be
+    // removed again as stale on every cycle, members and repository
+    // connections with it.
+    if (parsed.tenant.name !== dirName) {
+      this.logger.error(
+        `[TenantSync] ${dirName}/values.yaml names tenant '${parsed.tenant.name}', not '${dirName}'; skipping`,
+      );
       return null;
     }
 
