@@ -939,6 +939,30 @@ describe('OpenAI Codex callback', () => {
     expect(res.headers.get('location')).toBeNull();
   });
 
+  it('refuses a host another existing tenant owns under the same name (acme/dash-x vs acme-dash/x)', async () => {
+    TENANTS.add('acme');
+    TENANTS.add('acme-dash');
+    ROLES['mashkovd/acme'] = 'owner';
+    const sid = await portalSession();
+    const res = await callback(
+      envelope({ nonce: 'n', returnTo: 'https://acme-dash-x.mctl.ai/', tenant: 'acme', service: 'dash-x' }),
+      `${OIDC_SESSION_COOKIE}=${sid}`,
+    );
+    expect(res.status).toBe(400);
+    expect(res.headers.get('location')).toBeNull();
+  });
+
+  it('answers 503 and does not redirect when the tenant lookup fails', async () => {
+    const sid = await portalSession();
+    TENANTS = { has: () => { throw new Error('db down'); } } as unknown as Set<string>;
+    const res = await callback(
+      envelope({ nonce: 'n', returnTo: 'https://ovk-web-app.mctl.ai/', tenant: 'ovk', service: 'web-app' }),
+      `${OIDC_SESSION_COOKIE}=${sid}`,
+    );
+    expect(res.status).toBe(503);
+    expect(res.headers.get('location')).toBeNull();
+  });
+
   it('refuses a user who is not a member of the named tenant', async () => {
     const sid = await portalSession('outsider');
     const res = await callback(envelope(good), `${OIDC_SESSION_COOKIE}=${sid}`);

@@ -605,6 +605,25 @@ export function createRouter(options: RouterOptions): Router {
       res.status(403).send('Access denied');
       return;
     }
+    // <tenant>-<service> is ambiguous when tenant and service names contain
+    // hyphens: acme/dash-x and acme-dash/x are both acme-dash-x. Refuse a
+    // host another existing tenant could own, as forward-auth does, so an
+    // acme member's code cannot reach acme-dash's service.
+    let ambiguous: boolean;
+    try {
+      ambiguous = await isAmbiguousCanonicalHost(target.tenant, target.service, expectedHost);
+    } catch (err) {
+      logger.error(`[OIDC] OpenAI Codex callback tenant lookup failed: ${err}`);
+      res.status(503).send('Could not verify access; try again');
+      return;
+    }
+    if (ambiguous) {
+      logger.warn(
+        `[OIDC] OpenAI Codex callback refused ambiguous returnToHost=${expectedHost} for ${target.tenant}/${target.service}`,
+      );
+      res.status(400).send('Invalid OpenAI Codex callback state');
+      return;
+    }
     logger.info(
       `[OIDC] OpenAI Codex callback received returnToHost=${target.url.host} code=${
         code ? 'present' : 'missing'
