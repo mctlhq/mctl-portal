@@ -1,5 +1,18 @@
 # Changelog
 
+## [4.32.0](https://github.com/mctlhq/mctl-portal/compare/4.31.3...4.32.0) (2026-11-16)
+
+
+### Features
+
+* offer Google sign-in to customers next to GitHub ([798fb19](https://github.com/mctlhq/mctl-portal/commit/798fb19e141bbf99636f19ff327f07a2d6b79e04))
+* offer Google sign-in to customers next to GitHub ([34cc49c](https://github.com/mctlhq/mctl-portal/commit/34cc49cfd1eba2d5d6181d814ea15caa541f756d))
+
+
+### Bug Fixes
+
+* refuse an empty login for a customer that has one ([d7d943c](https://github.com/mctlhq/mctl-portal/commit/d7d943c967dd06dcefba6aa81d20f6a0c9e57c07))
+
 ## [4.31.3](https://github.com/mctlhq/mctl-portal/compare/4.31.2...4.31.3) (2026-11-14)
 
 
