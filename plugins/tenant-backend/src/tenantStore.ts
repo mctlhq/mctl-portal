@@ -230,6 +230,12 @@ export class TenantStore {
           members[0].catalog_key !== 'principal' || members[0].principal_id !== principalId) {
         throw new CustomerDeletionConflictError('Exclusive customer ownership is not observed in the portal');
       }
+      // An empty login is valid only for a customer that has none. A member
+      // row with a login is a GitHub customer, whose login-keyed rows in
+      // other tenants matching by principal alone would miss.
+      if (!login && members[0].login) {
+        throw new CustomerDeletionConflictError('The customer has a login but none was given');
+      }
       const all = await tx('tenant_members').where({ tenant_name: name });
       if (all.length !== 1) throw new CustomerDeletionConflictError('Workspace has other members');
       await tx('customer_deletions').insert({ tenant_name: name, principal_id: principalId, status: 'active' });

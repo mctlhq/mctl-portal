@@ -302,7 +302,9 @@ export function createRouter(opts: RouterOptions): Router {
     const { name, stage } = req.params;
     const { principal_id: pid, login } = req.body ?? {};
     // An empty login is a customer without one (a Google customer,
-    // mctl-api#1079): it is matched by principal alone.
+    // mctl-api#1079): it is matched by principal alone. The freeze refuses
+    // it for a customer whose member row has a login, and cleanup runs
+    // only after that freeze.
     if (!/^[a-z0-9][a-z0-9-]{1,62}$/.test(name) || name === 'admins' ||
         typeof pid !== 'string' || !/^prn_[0-9A-HJKMNP-TV-Z]{26}$/.test(pid) ||
         stage !== 'cancel' && (typeof login !== 'string' || login !== '' && !/^[a-zA-Z0-9][a-zA-Z0-9-]{0,38}$/.test(login)) ||

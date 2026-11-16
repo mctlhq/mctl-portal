@@ -662,6 +662,14 @@ it('freezes a customer without a login by principal alone', async () => {
   expect(await store.isTenantDeleting('others')).toBe(false);
 });
 
+it('refuses an empty login for a customer that has one', async () => {
+  const {store,knex}=await freshStore();currentKnex=knex;
+  const pid='prn_01M45DR1GWC87109EH88VBJX25';
+  await store.createCustomerTenant(makeTenant('bobs'),{ tenantName:'bobs',userId:pid.toLowerCase(),principalId:pid,login:'alice',catalogKey:'principal',role:'owner',invitedAt:new Date().toISOString(),invitedBy:'test' });
+  await expect(store.freezeCustomerDeletion('bobs',pid,'')).rejects.toThrow('has a login');
+  expect(await store.isTenantDeleting('bobs')).toBe(false);
+});
+
 it('does not treat a completed marker without a private cleanup receipt as clean', async () => {
  const {store,knex}=await freshStore();currentKnex=knex;
  const pid='prn_01M45DR1GWC87109EH88VBJX25';
