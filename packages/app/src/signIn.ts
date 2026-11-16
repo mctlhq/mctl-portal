@@ -39,6 +39,23 @@ export const zitadelCustomerAuthApiRef: ApiRef<
   OpenIdConnectApi & ProfileInfoApi & BackstageIdentityApi & SessionApi
 > = createApiRef({ id: 'auth.zitadel-customer' });
 
+/**
+ * The backend auth provider id of the Google customer entry, "Sign in with
+ * Google" (mctl-api#1079), which is also its route
+ * (/api/auth/zitadel-customer-google). It must equal
+ * ZITADEL_CUSTOMER_GOOGLE_AUTH_PROVIDER_ID in
+ * packages/backend/src/zitadelAuthModule.ts; both tests pin it.
+ */
+export const ZITADEL_CUSTOMER_GOOGLE_AUTH_PROVIDER_ID = 'zitadel-customer-google';
+
+/**
+ * The customer sign-in through ZITADEL's Google IdP: auth provider
+ * `zitadel-customer-google`.
+ */
+export const zitadelCustomerGoogleAuthApiRef: ApiRef<
+  OpenIdConnectApi & ProfileInfoApi & BackstageIdentityApi & SessionApi
+> = createApiRef({ id: 'auth.zitadel-customer-google' });
+
 // A ZITADEL resource id is digits, as the backend requires.
 const ZITADEL_ID = /^\d+$/;
 
@@ -67,6 +84,28 @@ export function customerEntryEnabled(
     typeof githubIdpId === 'string' &&
     ZITADEL_ID.test(organizationId) &&
     ZITADEL_ID.test(githubIdpId)
+  );
+}
+
+/**
+ * Whether the sign-in page offers the Google customer entry: only next to
+ * the GitHub one (customerEntryEnabled) and with a Google IdP id that is a
+ * ZITADEL id other than the GitHub IdP's, the same condition under which
+ * the backend registers `zitadel-customer-google` (customerGoogleScopes in
+ * zitadelAuthModule.ts). It also needs
+ * `auth.providers.zitadel-customer-google`, which the backend checks at
+ * startup (checkCustomerEntryRoute).
+ */
+export function googleEntryEnabled(
+  organizationId: unknown,
+  githubIdpId: unknown,
+  googleIdpId: unknown,
+): boolean {
+  return (
+    customerEntryEnabled(organizationId, githubIdpId) &&
+    typeof googleIdpId === 'string' &&
+    ZITADEL_ID.test(googleIdpId) &&
+    googleIdpId !== githubIdpId
   );
 }
 
@@ -104,6 +143,13 @@ const ZITADEL_CUSTOMER_PROVIDER: SignInProvider = {
   apiRef: zitadelCustomerAuthApiRef,
 };
 
+const ZITADEL_CUSTOMER_GOOGLE_PROVIDER: SignInProvider = {
+  id: 'zitadel-customer-google-auth-provider',
+  title: 'Sign in with Google',
+  message: 'Customers: sign in with your Google account',
+  apiRef: zitadelCustomerGoogleAuthApiRef,
+};
+
 const GITHUB_PROVIDER: SignInProvider = {
   id: 'github-auth-provider',
   title: 'GitHub',
@@ -131,14 +177,20 @@ const LEGACY_STAFF_GITHUB_PROVIDER: SignInProvider = {
  * refuses any other value at startup, so a typo never reaches this point.
  * With `customerEntry` (customerEntryEnabled), the modes that offer ZITADEL
  * put the customer entry before the staff one, as mctl-api's OAuth chooser
- * does; `github` never offers it.
+ * does; `github` never offers it. With `googleEntry` (googleEntryEnabled)
+ * as well, "Sign in with Google" follows "Sign in with GitHub"; without the
+ * customer entry it is never offered.
  */
 export function signInProviders(
   mode: string | undefined,
   customerEntry = false,
+  googleEntry = false,
 ): SignInProvider[] {
+  const customer = googleEntry
+    ? [ZITADEL_CUSTOMER_PROVIDER, ZITADEL_CUSTOMER_GOOGLE_PROVIDER]
+    : [ZITADEL_CUSTOMER_PROVIDER];
   const zitadel = customerEntry
-    ? [ZITADEL_CUSTOMER_PROVIDER, ZITADEL_STAFF_PROVIDER]
+    ? [...customer, ZITADEL_STAFF_PROVIDER]
     : [ZITADEL_PROVIDER];
   switch (mode ?? 'github') {
     case 'zitadel':

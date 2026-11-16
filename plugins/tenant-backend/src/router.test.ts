@@ -703,7 +703,9 @@ describe('self-service customers create their workspace by principal', () => {
   };
   // Bob registered the login `alice` after Alice, a login-keyed member of
   // labs, gave it up.
-  const bob = { principalId: BOB, githubId: '77', githubLogin: 'alice' };
+  const bob = { principalId: BOB, provider: 'github', githubId: '77', githubLogin: 'alice' };
+  // A Google customer (mctl-api#1079): no GitHub login to create with.
+  const gail = { principalId: BOB, provider: 'google', googleSub: '108234567890123456789' };
 
   function startApp(
     resolveZitadelCustomer?: (
@@ -912,6 +914,19 @@ describe('self-service customers create their workspace by principal', () => {
     const r = await create(base, { creatorIdToken: 'site-id-token' });
     expect(r.status).toBe(409);
     expect((await r.json()).code).toBe('creator_has_tenant');
+    expect(upsert).not.toHaveBeenCalled();
+    expect(submitWorkflow).not.toHaveBeenCalled();
+  });
+
+  it('refuses a Google customer a workspace, at availability and creation, before any state', async () => {
+    const base = await startApp(jest.fn().mockResolvedValue(gail));
+    const availability = await post(base, '/tenants/availability', { name: 'gails', creatorIdToken: 'site-id-token' });
+    expect(availability.status).toBe(403);
+    expect((await availability.json()).code).toBe('google_customer_not_admitted');
+    const created = await create(base, { creatorIdToken: 'site-id-token' });
+    expect(created.status).toBe(403);
+    expect((await created.json()).code).toBe('google_customer_not_admitted');
+    expect(createCustomerTenant).not.toHaveBeenCalled();
     expect(upsert).not.toHaveBeenCalled();
     expect(submitWorkflow).not.toHaveBeenCalled();
   });
@@ -1239,7 +1254,18 @@ describe('POST /internal/tenants/:name/cleanup', () => {
     expect((await post('external:mctl-api', 'admins')).status).toBe(400);
     expect((await post('external:mctl-api', 'acme', { principal_id: 'not-a-principal', login: 'alice' })).status).toBe(400);
     expect((await post('external:mctl-api', 'acme', { login: 'alice' })).status).toBe(400);
+    expect((await post('external:mctl-api', 'acme', { principal_id: 'prn_01M45DR1GWC87109EH88VBJX25', login: 'not a login' })).status).toBe(400);
+    expect((await post('external:mctl-api', 'acme', { principal_id: 'prn_01M45DR1GWC87109EH88VBJX25' })).status).toBe(400);
+    expect((await post('external:mctl-api', 'acme', { login: '' })).status).toBe(400);
     expect(cleanup).not.toHaveBeenCalled();
+  });
+  // mctl-api#1079: a Google customer has a principal and no login.
+  it('cleans up a customer without a login by principal', async () => {
+    const pid = 'prn_01M45DR1GWC87109EH88VBJX25';
+    const res = await post('external:mctl-api', 'acme', { principal_id: pid, login: '' });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ tenant: 'acme', cleaned: true, scope: 'customer' });
+    expect(cleanup).toHaveBeenCalledWith('acme', pid, '');
   });
 });
 
@@ -1275,6 +1301,14 @@ describe('customer lifecycle private route', () => {
   expect((await post('cancel','external:mctl-api',{principal_id:pid,login:''})).status).toBe(200); expect(cancel).toHaveBeenCalledWith('acme',pid);
   expect((await post('bogus')).status).toBe(400);
   expect((await post('prepare','external:mctl-api',{ principal_id: 'invalid', login: 'alice' })).status).toBe(400);
+ });
+ // mctl-api#1079: a Google customer has no login; its stages name the principal alone.
+ it('prepares and releases a customer without a login', async () => {
+  expect((await post('prepare','external:mctl-api',{principal_id:pid,login:''})).status).toBe(200); expect(freeze).toHaveBeenCalledWith('acme',pid,'');
+  expect((await post('release','external:mctl-api',{principal_id:pid,login:''})).status).toBe(200); expect(release).toHaveBeenCalledWith('acme',pid);
+  expect((await post('prepare','external:mctl-api',{principal_id:pid,login:'not a login'})).status).toBe(400);
+  expect((await post('prepare','external:mctl-api',{principal_id:pid} as any)).status).toBe(400);
+  expect(freeze).toHaveBeenCalledTimes(1);
  });
  it('distinguishes invariant conflicts from unavailable storage', async () => {
   freeze.mockRejectedValueOnce(new CustomerDeletionConflictError('ownership conflict'));

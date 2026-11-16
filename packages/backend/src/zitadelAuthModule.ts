@@ -112,6 +112,14 @@ export interface CustomerSignInOptions {
    * `zitadel-customer` (mctl-web#158); unset, there is none.
    */
   githubIdpId?: string;
+  /**
+   * ZITADEL id of the customers organization's Google IdP (mctl-api#1079).
+   * With organizationId it turns on a second customer entry, auth provider
+   * `zitadel-customer-google`; unset (the default), there is none. Who the
+   * person signs in as is still decided by mctl-api from the verified token,
+   * which keys a Google customer on its Google subject.
+   */
+  googleIdpId?: string;
   /** mctl-api surface-principals/zitadel; unset refuses every customer. */
   resolve?: ZitadelCustomerResolver;
 }
@@ -131,6 +139,9 @@ const SESSION_EXPIRED = 'Your session has expired. Sign in again.';
 const WRONG_ENTRY: Record<string, string> = {
   customer_conflict:
     'This GitHub account is linked to an MCTL account. Use Sign in with MCTL account.',
+  // The same refusal for a token of the Google entry (mctl:idp=google).
+  'google:customer_conflict':
+    'This Google account is linked to an MCTL account. Use Sign in with MCTL account.',
   not_a_customer:
     'This is not an MCTL customer account. ' +
     'If you have an MCTL staff or partner account, use Sign in with MCTL account.',
@@ -228,8 +239,9 @@ async function customerEntityName(
   } catch (e) {
     if (e instanceof ZitadelCustomerError && e.kind === 'refused') {
       logger.warn(`ZITADEL customer sign-in refused for sub=${sub}: ${e.code ?? 'refused'}`);
+      const google = identityClaims(profile)?.['mctl:idp'] === 'google';
       throw new NotAllowedError(
-        (e.code && WRONG_ENTRY[e.code]) ??
+        (e.code && ((google && WRONG_ENTRY[`google:${e.code}`]) || WRONG_ENTRY[e.code])) ??
           'This MCTL account cannot sign in to the portal. ' +
             'Contact MCTL support if you think this is a mistake.',
       );
@@ -254,6 +266,17 @@ export const ZITADEL_AUTH_PROVIDER_ID = 'oidc';
  * tests pin it.
  */
 export const ZITADEL_CUSTOMER_AUTH_PROVIDER_ID = 'zitadel-customer';
+
+/**
+ * The auth provider id of the Google customer entry, "Sign in with Google"
+ * (mctl-api#1079), and its route (/api/auth/zitadel-customer-google). It
+ * must equal ZITADEL_CUSTOMER_GOOGLE_AUTH_PROVIDER_ID in
+ * packages/app/src/signIn.ts; both tests pin it. It is a provider of its
+ * own, not the GitHub entry with another IdP scope, for the reason
+ * registerZitadelProvider gives: the auth backend persists granted scopes
+ * per provider and would force one IdP's scope onto the other's sign-in.
+ */
+export const ZITADEL_CUSTOMER_GOOGLE_AUTH_PROVIDER_ID = 'zitadel-customer-google';
 
 /**
  * The scope that makes ZITADEL name the user's organization in the token.
@@ -283,15 +306,33 @@ export function customerGitHubScopes(customers: {
   organizationId?: unknown;
   githubIdpId?: unknown;
 }): string[] | null {
-  const { organizationId, githubIdpId } = customers;
+  return customerScopes(customers.organizationId, customers.githubIdpId);
+}
+
+/**
+ * customerGitHubScopes for the Google entry: the customers organization and
+ * its Google IdP, or null when either is missing or not a ZITADEL id, or
+ * when the Google IdP is the GitHub IdP's id (a misconfiguration that would
+ * send "Sign in with Google" to GitHub).
+ */
+export function customerGoogleScopes(customers: {
+  organizationId?: unknown;
+  githubIdpId?: unknown;
+  googleIdpId?: unknown;
+}): string[] | null {
+  if (customers.googleIdpId === customers.githubIdpId) return null;
+  return customerScopes(customers.organizationId, customers.googleIdpId);
+}
+
+function customerScopes(organizationId: unknown, idpId: unknown): string[] | null {
   // Strings only, as the sign-in page's gate (customerEntryEnabled):
   // RegExp.test would coerce a number and accept it.
-  if (typeof organizationId !== 'string' || typeof githubIdpId !== 'string') return null;
-  if (!ZITADEL_ID.test(organizationId) || !ZITADEL_ID.test(githubIdpId)) return null;
+  if (typeof organizationId !== 'string' || typeof idpId !== 'string') return null;
+  if (!ZITADEL_ID.test(organizationId) || !ZITADEL_ID.test(idpId)) return null;
   return [
     SCOPE_RESOURCE_OWNER,
     SCOPE_ORG_ID_PREFIX + organizationId,
-    SCOPE_IDP_ID_PREFIX + githubIdpId,
+    SCOPE_IDP_ID_PREFIX + idpId,
   ];
 }
 
@@ -306,17 +347,22 @@ export function customerGitHubScopes(customers: {
  */
 export function checkCustomerEntryRoute(
   config: Pick<RootConfigService, 'has' | 'getOptionalString'>,
-  customers: Pick<CustomerSignInOptions, 'organizationId' | 'githubIdpId'>,
+  customers: Pick<CustomerSignInOptions, 'organizationId' | 'githubIdpId' | 'googleIdpId'>,
   logger: Pick<LoggerService, 'error'>,
 ): void {
-  if (!customerGitHubScopes(customers)) return;
   const env = config.getOptionalString('auth.environment') ?? 'development';
-  const section = `auth.providers.${ZITADEL_CUSTOMER_AUTH_PROVIDER_ID}.${env}`;
-  if (config.has(section)) return;
-  logger.error(
-    `zitadelCustomers ids are set but ${section} is not: the sign-in page ` +
-      'offers "Sign in with GitHub" and its route fails',
-  );
+  for (const [scopes, providerId, button] of [
+    [customerGitHubScopes(customers), ZITADEL_CUSTOMER_AUTH_PROVIDER_ID, 'Sign in with GitHub'],
+    [customerGoogleScopes(customers), ZITADEL_CUSTOMER_GOOGLE_AUTH_PROVIDER_ID, 'Sign in with Google'],
+  ] as const) {
+    if (!scopes) continue;
+    const section = `auth.providers.${providerId}.${env}`;
+    if (config.has(section)) continue;
+    logger.error(
+      `zitadelCustomers ids are set but ${section} is not: the sign-in page ` +
+        `offers "${button}" and its route fails`,
+    );
+  }
 }
 
 /**
@@ -365,6 +411,27 @@ export function registerZitadelProvider(
     }),
   });
   logger.info(`ZITADEL customer sign-in entry offered as ${ZITADEL_CUSTOMER_AUTH_PROVIDER_ID}`);
+
+  // The Google entry only ever stands next to the GitHub one.
+  const googleScopes = customerGoogleScopes(customers);
+  if (!googleScopes) {
+    if (customers.googleIdpId) {
+      logger.warn(
+        'ZITADEL Google customer sign-in entry not offered: zitadelCustomers.googleIdpId ' +
+          'must be a ZITADEL id other than githubIdpId',
+      );
+    }
+    return;
+  }
+  providers.registerProvider({
+    providerId: ZITADEL_CUSTOMER_GOOGLE_AUTH_PROVIDER_ID,
+    factory: createOAuthProviderFactory({
+      authenticator: oidcAuthenticator,
+      signInResolver,
+      additionalScopes: googleScopes,
+    }),
+  });
+  logger.info(`ZITADEL Google customer sign-in entry offered as ${ZITADEL_CUSTOMER_GOOGLE_AUTH_PROVIDER_ID}`);
 }
 
 /**
@@ -425,6 +492,7 @@ export function customerSignInOptions(
 ): CustomerSignInOptions {
   const organizationId = config.getOptionalString('zitadelCustomers.organizationId') || undefined;
   const githubIdpId = config.getOptionalString('zitadelCustomers.githubIdpId') || undefined;
+  const googleIdpId = config.getOptionalString('zitadelCustomers.googleIdpId') || undefined;
   const baseUrl = config.getOptionalString('workItems.baseUrl');
   const surfaceToken = config.getOptionalString('workItems.surfaceToken');
   if (!organizationId) {
@@ -433,6 +501,7 @@ export function customerSignInOptions(
   return {
     organizationId,
     githubIdpId,
+    googleIdpId,
     resolve:
       baseUrl && surfaceToken
         ? createZitadelCustomerResolver({ baseUrl, surfaceToken, logger })

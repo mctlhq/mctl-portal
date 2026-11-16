@@ -647,6 +647,29 @@ it('freezes name reuse until cleanup completes and cannot release a replacement 
 });
 
 
+// mctl-api#1079: a Google customer owns its workspace by principal and has
+// no login. The freeze must match it by principal alone: matching the empty
+// login would also match every other member stored without one.
+it('freezes a customer without a login by principal alone', async () => {
+  const {store,knex}=await freshStore();currentKnex=knex;
+  const pid='prn_01M45DR1GWC87109EH88VBJX25';
+  await store.createCustomerTenant(makeTenant('gails'),{ tenantName:'gails',userId:pid.toLowerCase(),principalId:pid,catalogKey:'principal',role:'owner',invitedAt:new Date().toISOString(),invitedBy:'test' });
+  const other='prn_01M45DR1GWC87109EH88VBJX26';
+  await store.createCustomerTenant(makeTenant('others'),{ tenantName:'others',userId:other.toLowerCase(),principalId:other,catalogKey:'principal',role:'owner',invitedAt:new Date().toISOString(),invitedBy:'test' });
+  await knex('tenant_members').where({ tenant_name:'others' }).update({ login:'' });
+  await store.freezeCustomerDeletion('gails',pid,'');
+  expect(await store.isTenantDeleting('gails')).toBe(true);
+  expect(await store.isTenantDeleting('others')).toBe(false);
+});
+
+it('refuses an empty login for a customer that has one', async () => {
+  const {store,knex}=await freshStore();currentKnex=knex;
+  const pid='prn_01M45DR1GWC87109EH88VBJX25';
+  await store.createCustomerTenant(makeTenant('bobs'),{ tenantName:'bobs',userId:pid.toLowerCase(),principalId:pid,login:'alice',catalogKey:'principal',role:'owner',invitedAt:new Date().toISOString(),invitedBy:'test' });
+  await expect(store.freezeCustomerDeletion('bobs',pid,'')).rejects.toThrow('has a login');
+  expect(await store.isTenantDeleting('bobs')).toBe(false);
+});
+
 it('does not treat a completed marker without a private cleanup receipt as clean', async () => {
  const {store,knex}=await freshStore();currentKnex=knex;
  const pid='prn_01M45DR1GWC87109EH88VBJX25';

@@ -46,6 +46,7 @@ describe('createZitadelCustomerResolver', () => {
     const tok = idToken({ sub: '900' });
     await expect(resolve(tok, 'signin')).resolves.toEqual({
       principalId: PID,
+      provider: 'github',
       githubId: '77',
       githubLogin: 'alice',
     });
@@ -58,6 +59,38 @@ describe('createZitadelCustomerResolver', () => {
       }),
     );
     expect(JSON.parse(init.body as string)).toEqual({ idToken: tok, purpose: 'signin' });
+  });
+
+  // mctl-api#1079: a Google customer has a Google subject and no GitHub
+  // identity; mctl-api names the provider.
+  it('reads a Google customer by its subject', async () => {
+    answer(200, { principalId: PID, provider: 'google', googleSub: '108234567890123456789' });
+    await expect(resolve(idToken({ sub: '900' }), 'signin')).resolves.toEqual({
+      principalId: PID,
+      provider: 'google',
+      googleSub: '108234567890123456789',
+    });
+  });
+
+  it('reads an explicit GitHub provider as before', async () => {
+    answer(200, { principalId: PID, provider: 'github', githubId: '77', githubLogin: 'alice' });
+    await expect(resolve(idToken({ sub: '900' }), 'signin')).resolves.toEqual({
+      principalId: PID, provider: 'github', githubId: '77', githubLogin: 'alice',
+    });
+  });
+
+  it.each([
+    ['a Google answer with a GitHub id', { principalId: PID, provider: 'google', googleSub: '1082', githubId: '77' }],
+    ['a Google answer with a GitHub login', { principalId: PID, provider: 'google', googleSub: '1082', githubLogin: 'alice' }],
+    ['a Google answer without a subject', { principalId: PID, provider: 'google' }],
+    ['a Google answer with a non-numeric subject', { principalId: PID, provider: 'google', googleSub: 'alice@example.com' }],
+    ['a Google answer with an invalid principal', { principalId: 'prn_short', provider: 'google', googleSub: '1082' }],
+    ['a GitHub answer with a Google subject', { principalId: PID, provider: 'github', googleSub: '1082', githubId: '77', githubLogin: 'alice' }],
+    ['an answer without a provider but with a Google subject', { principalId: PID, googleSub: '1082', githubId: '77', githubLogin: 'alice' }],
+    ['an unknown provider', { principalId: PID, provider: 'gitlab', githubId: '77', githubLogin: 'alice' }],
+  ])('reads %s as unavailable', async (_name, body) => {
+    answer(200, body);
+    await expect(resolve(idToken({ sub: '900' }), 'signin')).rejects.toMatchObject({ kind: 'unavailable' });
   });
 
   it('refuses a token without a subject without calling mctl-api', async () => {

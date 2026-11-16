@@ -220,12 +220,21 @@ export class TenantStore {
       if (isPostgresClient(knex)) await tx.raw("SELECT pg_advisory_xact_lock(hashtext(?))", [`tenant-lifecycle|${name}`]);
       const existing = await tx('customer_deletions').where({ tenant_name: name, principal_id: principalId }).first();
       if (existing) return;
-      const members = await tx('tenant_members').where({ principal_id: principalId })
-        .orWhereRaw('lower(user_id) = ?', [login.toLowerCase()])
-        .orWhereRaw('lower(login) = ?', [login.toLowerCase()]);
+      // Without a login (a Google customer) the principal is the only key.
+      const members = login
+        ? await tx('tenant_members').where({ principal_id: principalId })
+          .orWhereRaw('lower(user_id) = ?', [login.toLowerCase()])
+          .orWhereRaw('lower(login) = ?', [login.toLowerCase()])
+        : await tx('tenant_members').where({ principal_id: principalId });
       if (members.length !== 1 || members[0].tenant_name !== name || members[0].role !== 'owner' ||
           members[0].catalog_key !== 'principal' || members[0].principal_id !== principalId) {
         throw new CustomerDeletionConflictError('Exclusive customer ownership is not observed in the portal');
+      }
+      // An empty login is valid only for a customer that has none. A member
+      // row with a login is a GitHub customer, whose login-keyed rows in
+      // other tenants matching by principal alone would miss.
+      if (!login && members[0].login) {
+        throw new CustomerDeletionConflictError('The customer has a login but none was given');
       }
       const all = await tx('tenant_members').where({ tenant_name: name });
       if (all.length !== 1) throw new CustomerDeletionConflictError('Workspace has other members');

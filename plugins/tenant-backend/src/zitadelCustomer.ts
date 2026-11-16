@@ -9,8 +9,8 @@ import { isGitHubLogin, PRINCIPAL_ID } from './creatorPrincipal';
  *
  * The portal hands mctl-api the customer's ID token as it got it; mctl-api
  * verifies it (signature, issuer, expiry, that it was issued to the client
- * the purpose names) and keys the principal on the GitHub id the identity
- * hook proved. The portal reads nothing from the token to decide who the
+ * the purpose names) and keys the principal on the identity the identity
+ * hook proved: the GitHub id, or the Google subject (mctl-api#1079). The portal reads nothing from the token to decide who the
  * customer is: the `sub` it sends as the actor is only checked by mctl-api
  * against the verified token.
  *
@@ -21,11 +21,25 @@ import { isGitHubLogin, PRINCIPAL_ID } from './creatorPrincipal';
 
 export type ZitadelPurpose = 'signin' | 'create';
 
-export interface ZitadelCustomer {
+/** A customer who signed in through the customers organization's GitHub IdP. */
+export interface ZitadelGitHubCustomer {
   principalId: string;
+  provider: 'github';
   githubId: string;
   githubLogin: string;
 }
+
+/**
+ * A customer who signed in through its Google IdP: no GitHub id and no
+ * login, only the Google subject (numeric).
+ */
+export interface ZitadelGoogleCustomer {
+  principalId: string;
+  provider: 'google';
+  googleSub: string;
+}
+
+export type ZitadelCustomer = ZitadelGitHubCustomer | ZitadelGoogleCustomer;
 
 /**
  * `refused`: mctl-api will not resolve this customer (an invalid or foreign
@@ -52,6 +66,8 @@ export type ZitadelCustomerResolver = (
 
 const TIMEOUT_MS = 10_000;
 const GITHUB_ID = /^[1-9][0-9]{0,19}$/;
+// mctl-api's shape of a Google subject (auth.ValidGoogleSub).
+const GOOGLE_SUB = /^[0-9]{1,64}$/;
 
 /**
  * The token's `sub`, read without verification: it only names the actor,
@@ -119,15 +135,28 @@ export function createZitadelCustomerResolver(options: {
     const code = typeof body?.code === 'string' ? body.code : undefined;
 
     if (resp.ok) {
-      const { principalId, githubId, githubLogin } = body ?? {};
+      const { principalId, provider, githubId, githubLogin, googleSub } = body ?? {};
+      const principalOk = typeof principalId === 'string' && PRINCIPAL_ID.test(principalId);
+      // A Google answer carries the subject and nothing of GitHub's: an
+      // answer that mixes them is malformed, never read as either one.
       if (
-        typeof principalId === 'string' && PRINCIPAL_ID.test(principalId) &&
+        principalOk && provider === 'google' &&
+        typeof googleSub === 'string' && GOOGLE_SUB.test(googleSub) &&
+        githubId === undefined && githubLogin === undefined
+      ) {
+        return { principalId: principalId as string, provider: 'google', googleSub };
+      }
+      // No provider is GitHub: mctl-api before mctl-api#1081 answered
+      // without one.
+      if (
+        principalOk && (provider === undefined || provider === 'github') &&
+        googleSub === undefined &&
         typeof githubId === 'string' && GITHUB_ID.test(githubId) &&
         // The login goes into Argo parameters and values.yaml, where
         // TenantSync holds it to the same shape.
         typeof githubLogin === 'string' && isGitHubLogin(githubLogin)
       ) {
-        return { principalId, githubId, githubLogin };
+        return { principalId: principalId as string, provider: 'github', githubId, githubLogin };
       }
       logger.error('[tenant-backend] ZITADEL customer lookup answered without a valid principal');
       throw new ZitadelCustomerError('unavailable', 'could not resolve the customer');
