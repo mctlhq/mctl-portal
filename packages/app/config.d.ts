@@ -24,5 +24,11 @@ export interface Config {
      * @visibility frontend
      */
     githubIdpId?: string;
+    /**
+     * ZITADEL id of the customers organization's Google IdP. With the two
+     * ids above, the sign-in page also offers "Sign in with Google".
+     * @visibility frontend
+     */
+    googleIdpId?: string;
   };
 }

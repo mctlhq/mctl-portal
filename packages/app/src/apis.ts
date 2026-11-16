@@ -18,8 +18,10 @@ import GitHubIcon from '@material-ui/icons/GitHub';
 import {
   ZITADEL_AUTH_PROVIDER_ID,
   ZITADEL_CUSTOMER_AUTH_PROVIDER_ID,
+  ZITADEL_CUSTOMER_GOOGLE_AUTH_PROVIDER_ID,
   zitadelAuthApiRef,
   zitadelCustomerAuthApiRef,
+  zitadelCustomerGoogleAuthApiRef,
 } from './signIn';
 
 export const apis: AnyApiFactory[] = [
@@ -71,6 +73,28 @@ export const apis: AnyApiFactory[] = [
           id: ZITADEL_CUSTOMER_AUTH_PROVIDER_ID,
           title: 'GitHub',
           icon: GitHubIcon,
+        },
+        environment: configApi.getOptionalString('auth.environment'),
+        defaultScopes: ['openid', 'profile', 'email', 'offline_access'],
+      }),
+  }),
+  // The Google customer entry, auth provider `zitadel-customer-google`.
+  createApiFactory({
+    api: zitadelCustomerGoogleAuthApiRef,
+    deps: {
+      discoveryApi: discoveryApiRef,
+      oauthRequestApi: oauthRequestApiRef,
+      configApi: configApiRef,
+    },
+    factory: ({ discoveryApi, oauthRequestApi, configApi }) =>
+      OAuth2.create({
+        configApi,
+        discoveryApi,
+        oauthRequestApi,
+        provider: {
+          id: ZITADEL_CUSTOMER_GOOGLE_AUTH_PROVIDER_ID,
+          title: 'Google',
+          icon: AccountCircleIcon,
         },
         environment: configApi.getOptionalString('auth.environment'),
         defaultScopes: ['openid', 'profile', 'email', 'offline_access'],

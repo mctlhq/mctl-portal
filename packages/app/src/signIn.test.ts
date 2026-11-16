@@ -1,11 +1,14 @@
 import { githubAuthApiRef } from '@backstage/core-plugin-api';
 import {
   customerEntryEnabled,
+  googleEntryEnabled,
   signInProviders,
   ZITADEL_AUTH_PROVIDER_ID,
   ZITADEL_CUSTOMER_AUTH_PROVIDER_ID,
+  ZITADEL_CUSTOMER_GOOGLE_AUTH_PROVIDER_ID,
   zitadelAuthApiRef,
   zitadelCustomerAuthApiRef,
+  zitadelCustomerGoogleAuthApiRef,
 } from './signIn';
 
 describe('ZITADEL_AUTH_PROVIDER_ID', () => {
@@ -103,5 +106,48 @@ describe('customer entry (mctl-web#158)', () => {
     expect(signInProviders(undefined, true).map(p => p.apiRef)).toEqual([
       githubAuthApiRef,
     ]);
+  });
+});
+
+describe('Google customer entry (mctl-api#1079)', () => {
+  const ORG = '395272528420931285';
+  const IDP = '395272528420931999';
+  const GOOGLE = '395272528420932777';
+
+  it('is provider zitadel-customer-google, the backend provider id', () => {
+    expect(ZITADEL_CUSTOMER_GOOGLE_AUTH_PROVIDER_ID).toBe('zitadel-customer-google');
+  });
+
+  it('is enabled only next to the GitHub entry, with its own IdP', () => {
+    expect(googleEntryEnabled(ORG, IDP, GOOGLE)).toBe(true);
+    expect(googleEntryEnabled(ORG, IDP, undefined)).toBe(false);
+    expect(googleEntryEnabled(ORG, IDP, '')).toBe(false);
+    expect(googleEntryEnabled(ORG, IDP, IDP)).toBe(false);
+    expect(googleEntryEnabled(ORG, IDP, `${GOOGLE} openid`)).toBe(false);
+    expect(googleEntryEnabled(ORG, IDP, Number(GOOGLE))).toBe(false);
+    expect(googleEntryEnabled(ORG, undefined, GOOGLE)).toBe(false);
+    expect(googleEntryEnabled(undefined, IDP, GOOGLE)).toBe(false);
+  });
+
+  it('follows Sign in with GitHub, before the staff sign-in', () => {
+    const providers = signInProviders('zitadel', true, true);
+    expect(providers.map(p => p.apiRef)).toEqual([
+      zitadelCustomerAuthApiRef,
+      zitadelCustomerGoogleAuthApiRef,
+      zitadelAuthApiRef,
+    ]);
+    expect(providers[1].title).toBe('Sign in with Google');
+    expect(providers[1].message).toBe('Customers: sign in with your Google account');
+    expect(signInProviders('both', true, true).map(p => p.apiRef)).toEqual([
+      zitadelCustomerAuthApiRef,
+      zitadelCustomerGoogleAuthApiRef,
+      zitadelAuthApiRef,
+      githubAuthApiRef,
+    ]);
+  });
+
+  it('is never offered without the customer entry or without ZITADEL', () => {
+    expect(signInProviders('zitadel', false, true).map(p => p.apiRef)).toEqual([zitadelAuthApiRef]);
+    expect(signInProviders('github', true, true).map(p => p.apiRef)).toEqual([githubAuthApiRef]);
   });
 });

@@ -5,18 +5,22 @@ import { NotFoundError } from '@backstage/errors';
 import { ZitadelCustomerError } from '@internal/plugin-tenant-backend';
 import {
   customerEntryEnabled,
+  googleEntryEnabled,
   ZITADEL_CUSTOMER_AUTH_PROVIDER_ID as FRONTEND_CUSTOMER_PROVIDER_ID,
+  ZITADEL_CUSTOMER_GOOGLE_AUTH_PROVIDER_ID as FRONTEND_GOOGLE_PROVIDER_ID,
 } from 'app/src/signIn';
 import {
   accountKindOf,
   checkCustomerEntryRoute,
   createZitadelSignInResolver,
   customerGitHubScopes,
+  customerGoogleScopes,
   customerSignInOptions,
   githubLoginOf,
   registerZitadelProvider,
   ZITADEL_AUTH_PROVIDER_ID,
   ZITADEL_CUSTOMER_AUTH_PROVIDER_ID,
+  ZITADEL_CUSTOMER_GOOGLE_AUTH_PROVIDER_ID,
 } from './zitadelAuthModule';
 
 const CUSTOMERS = '395272528420931285';
@@ -46,6 +50,8 @@ describe('registerZitadelProvider', () => {
 const GITHUB_IDP = '395272528420931999';
 const ORG_SCOPE = `urn:zitadel:iam:org:id:${CUSTOMERS}`;
 const IDP_SCOPE = `urn:zitadel:iam:org:idp:id:${GITHUB_IDP}`;
+const GOOGLE_IDP = '395272528420932777';
+const GOOGLE_IDP_SCOPE = `urn:zitadel:iam:org:idp:id:${GOOGLE_IDP}`;
 
 describe('customer GitHub entry (mctl-web#158)', () => {
   // A ZITADEL stand-in that serves only discovery: the start route builds
@@ -204,6 +210,18 @@ describe('customer GitHub entry (mctl-web#158)', () => {
       checkCustomerEntryRoute(cfg({ providers: {} }), {}, log);
       expect(log.error).not.toHaveBeenCalled();
     });
+
+    it('checks the Google entry section too', () => {
+      const google = { ...ids, googleIdpId: GOOGLE_IDP };
+      const both = { environment: 'production', providers: {
+        'zitadel-customer': { production: {} }, 'zitadel-customer-google': { production: {} } } };
+      checkCustomerEntryRoute(cfg(both), google, log);
+      expect(log.error).not.toHaveBeenCalled();
+      checkCustomerEntryRoute(cfg({ environment: 'production', providers: { 'zitadel-customer': { production: {} } } }), google, log);
+      expect(log.error).toHaveBeenCalledTimes(1);
+      expect(log.error).toHaveBeenCalledWith(expect.stringContaining('auth.providers.zitadel-customer-google.production'));
+      expect(log.error).toHaveBeenCalledWith(expect.stringContaining('Sign in with Google'));
+    });
   });
 
   it('leaves the staff sign-in without organization or IdP scopes', async () => {
@@ -222,6 +240,62 @@ describe('customer GitHub entry (mctl-web#158)', () => {
   ])('is not registered with %s', (_name, customers) => {
     expect([...registered(customers).keys()]).toEqual(['oidc']);
     expect(customerGitHubScopes(customers)).toBeNull();
+  });
+});
+
+describe('customer Google entry (mctl-api#1079)', () => {
+  function registered(customers: Parameters<typeof registerZitadelProvider>[2]) {
+    const registerProvider = jest.fn();
+    registerZitadelProvider({ registerProvider }, logger, customers);
+    return registerProvider.mock.calls.map(([p]) => p.providerId);
+  }
+
+  it('is provider zitadel-customer-google, pinned with the frontend', () => {
+    expect(ZITADEL_CUSTOMER_GOOGLE_AUTH_PROVIDER_ID).toBe('zitadel-customer-google');
+    expect(FRONTEND_GOOGLE_PROVIDER_ID).toBe(ZITADEL_CUSTOMER_GOOGLE_AUTH_PROVIDER_ID);
+  });
+
+  it('sends ZITADEL to the customers organization and its Google IdP, next to GitHub', () => {
+    const customers = { organizationId: CUSTOMERS, githubIdpId: GITHUB_IDP, googleIdpId: GOOGLE_IDP };
+    expect(registered(customers)).toEqual(['oidc', 'zitadel-customer', 'zitadel-customer-google']);
+    expect(customerGoogleScopes(customers)).toEqual(['urn:zitadel:iam:user:resourceowner', ORG_SCOPE, GOOGLE_IDP_SCOPE]);
+    // The GitHub entry keeps its own IdP.
+    expect(customerGitHubScopes(customers)).toEqual(['urn:zitadel:iam:user:resourceowner', ORG_SCOPE, IDP_SCOPE]);
+  });
+
+  it.each([
+    ['without a Google IdP', { organizationId: CUSTOMERS, githubIdpId: GITHUB_IDP }, ['oidc', 'zitadel-customer']],
+    ['with the GitHub IdP id as Google', { organizationId: CUSTOMERS, githubIdpId: GITHUB_IDP, googleIdpId: GITHUB_IDP }, ['oidc', 'zitadel-customer']],
+    ['with a malformed Google IdP', { organizationId: CUSTOMERS, githubIdpId: GITHUB_IDP, googleIdpId: `${GOOGLE_IDP} openid` }, ['oidc', 'zitadel-customer']],
+    ['without the GitHub entry', { organizationId: CUSTOMERS, googleIdpId: GOOGLE_IDP }, ['oidc']],
+    ['without the organization', { githubIdpId: GITHUB_IDP, googleIdpId: GOOGLE_IDP }, ['oidc']],
+  ])('is not registered %s', (_name, customers, ids) => {
+    expect(registered(customers)).toEqual(ids);
+  });
+
+  // The page shows the Google card on googleEntryEnabled, the backend
+  // registers it when both customer entries' scopes exist.
+  it.each([
+    [CUSTOMERS, GITHUB_IDP, GOOGLE_IDP],
+    [CUSTOMERS, GITHUB_IDP, undefined],
+    [CUSTOMERS, GITHUB_IDP, GITHUB_IDP],
+    [CUSTOMERS, GITHUB_IDP, ''],
+    [CUSTOMERS, GITHUB_IDP, `${GOOGLE_IDP} openid`],
+    [CUSTOMERS, GITHUB_IDP, Number(GOOGLE_IDP)],
+    [CUSTOMERS, undefined, GOOGLE_IDP],
+    [undefined, GITHUB_IDP, GOOGLE_IDP],
+    [CUSTOMERS, 'x', GOOGLE_IDP],
+  ] as [unknown, unknown, unknown][])('page and backend agree on %j %j %j', (organizationId, githubIdpId, googleIdpId) => {
+    const ids = { organizationId, githubIdpId, googleIdpId };
+    expect(googleEntryEnabled(organizationId, githubIdpId, googleIdpId)).toBe(
+      customerGitHubScopes(ids) !== null && customerGoogleScopes(ids) !== null,
+    );
+  });
+
+  it('reads googleIdpId from config', () => {
+    const o = customerSignInOptions(new ConfigReader({ zitadelCustomers: {
+      organizationId: CUSTOMERS, githubIdpId: GITHUB_IDP, googleIdpId: GOOGLE_IDP } }), { warn: jest.fn(), error: jest.fn() });
+    expect(o.googleIdpId).toBe(GOOGLE_IDP);
   });
 });
 
@@ -421,7 +495,45 @@ describe('createZitadelSignInResolver for customers', () => {
     'mctl:github_login': 'alice',
   };
   const resolveTo = (principalId: string) =>
-    jest.fn(async () => ({ principalId, githubId: '77', githubLogin: 'alice' }));
+    jest.fn(async () => ({ principalId, provider: 'github' as const, githubId: '77', githubLogin: 'alice' }));
+  // A Google customer: no GitHub claims, only its subject (mctl-api#1079).
+  const gailClaims = {
+    sub: '901',
+    [OWNER]: CUSTOMERS,
+    'mctl:org': 'customers',
+    'mctl:idp': 'google',
+    'mctl:google_sub': '108234567890123456789',
+  };
+
+  it('signs a Google customer in as their principal-keyed User', async () => {
+    const resolve = jest.fn(async () => ({ principalId: BOB, provider: 'google' as const, googleSub: '108234567890123456789' }));
+    const ctx = context([BOB.toLowerCase()]);
+    await expect(
+      createZitadelSignInResolver(logger, { organizationId: CUSTOMERS, resolve })(signInInfo(profile(gailClaims)), ctx),
+    ).resolves.toEqual({ token: `catalog-token-for-${BOB.toLowerCase()}` });
+    expect(resolve).toHaveBeenCalledWith('header.payload.signature', 'signin');
+  });
+
+  it.each([
+    [gailClaims, /^This Google account is linked to an MCTL account\. Use Sign in with MCTL account\.$/],
+    [bobClaims, /^This GitHub account is linked to an MCTL account\. Use Sign in with MCTL account\.$/],
+  ])('names the provider of a conflicting account', async (claims, message) => {
+    const resolve = jest.fn(async () => {
+      throw new ZitadelCustomerError('refused', 'no', 'customer_conflict');
+    });
+    await expect(
+      createZitadelSignInResolver(logger, { organizationId: CUSTOMERS, resolve })(signInInfo(profile(claims)), context([])),
+    ).rejects.toMatchObject({ name: 'NotAllowedError', message: expect.stringMatching(message) });
+  });
+
+  it('gives a Google token the generic text for other refusals', async () => {
+    const resolve = jest.fn(async () => {
+      throw new ZitadelCustomerError('refused', 'no', 'not_a_customer');
+    });
+    await expect(
+      createZitadelSignInResolver(logger, { organizationId: CUSTOMERS, resolve })(signInInfo(profile(gailClaims)), context([])),
+    ).rejects.toMatchObject({ message: expect.stringMatching(/^This is not an MCTL customer account\./) });
+  });
 
   it('signs a customer in as their principal-keyed User, never by login', async () => {
     const resolve = resolveTo(BOB);

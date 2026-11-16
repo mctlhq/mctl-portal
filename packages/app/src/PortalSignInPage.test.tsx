@@ -6,7 +6,11 @@ import {
 } from '@backstage/test-utils';
 import { screen } from '@testing-library/react';
 import { PortalSignInPage } from './PortalSignInPage';
-import { zitadelAuthApiRef, zitadelCustomerAuthApiRef } from './signIn';
+import {
+  zitadelAuthApiRef,
+  zitadelCustomerAuthApiRef,
+  zitadelCustomerGoogleAuthApiRef,
+} from './signIn';
 
 type ConfigData = ConstructorParameters<typeof MockConfigApi>[0];
 
@@ -40,6 +44,7 @@ async function renderPage(
         [githubAuthApiRef, signedOut()],
         [zitadelAuthApiRef, signedOut()],
         [zitadelCustomerAuthApiRef, signedOut()],
+        [zitadelCustomerGoogleAuthApiRef, signedOut()],
       ]}
     >
       <PortalSignInPage onSignInSuccess={jest.fn()} />
@@ -68,8 +73,10 @@ describe('PortalSignInPage', () => {
 
   const ORG = '395272528420931285';
   const IDP = '395272528420931999';
+  const GOOGLE = '395272528420932777';
   const ALL = [
     'Sign in with GitHub',
+    'Sign in with Google',
     'Sign in with MCTL account',
     'MCTL account',
     'GitHub',
@@ -84,6 +91,10 @@ describe('PortalSignInPage', () => {
     ['zitadel', { githubIdpId: IDP }, ['MCTL account']],
     ['zitadel', { organizationId: Number(ORG), githubIdpId: IDP }, ['MCTL account']],
     ['github', { organizationId: ORG, githubIdpId: IDP }, ['GitHub']],
+    ['zitadel', { organizationId: ORG, githubIdpId: IDP, googleIdpId: GOOGLE }, ['Sign in with GitHub', 'Sign in with Google', 'Sign in with MCTL account']],
+    ['zitadel', { organizationId: ORG, githubIdpId: IDP, googleIdpId: IDP }, ['Sign in with GitHub', 'Sign in with MCTL account']],
+    ['zitadel', { organizationId: ORG, googleIdpId: GOOGLE }, ['MCTL account']],
+    ['github', { organizationId: ORG, githubIdpId: IDP, googleIdpId: GOOGLE }, ['GitHub']],
   ])('auth.signIn=%s with zitadelCustomers %j offers %j', async (signIn, customers, titles) => {
     await renderPage(signIn, customers);
     for (const title of titles) {

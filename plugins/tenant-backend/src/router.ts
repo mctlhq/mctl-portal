@@ -29,7 +29,7 @@ import {
 import { createRateLimiters, RateLimits } from './rateLimit';
 import { CatalogKey, ROLES } from './memberKeys';
 import {
-  ZitadelCustomer,
+  ZitadelGitHubCustomer,
   ZitadelCustomerError,
   ZitadelCustomerResolver,
 } from './zitadelCustomer';
@@ -301,9 +301,11 @@ export function createRouter(opts: RouterOptions): Router {
     if (!allowed) { res.status(403).json({ error: 'Workflow principal required' }); return; }
     const { name, stage } = req.params;
     const { principal_id: pid, login } = req.body ?? {};
+    // An empty login is a customer without one (a Google customer,
+    // mctl-api#1079): it is matched by principal alone.
     if (!/^[a-z0-9][a-z0-9-]{1,62}$/.test(name) || name === 'admins' ||
         typeof pid !== 'string' || !/^prn_[0-9A-HJKMNP-TV-Z]{26}$/.test(pid) ||
-        stage !== 'cancel' && (typeof login !== 'string' || !/^[a-zA-Z0-9][a-zA-Z0-9-]{0,38}$/.test(login)) ||
+        stage !== 'cancel' && (typeof login !== 'string' || login !== '' && !/^[a-zA-Z0-9][a-zA-Z0-9-]{0,38}$/.test(login)) ||
         !['prepare', 'release', 'cancel'].includes(stage)) {
       res.status(400).json({ error: 'Invalid customer deletion target' }); return;
     }
@@ -336,8 +338,9 @@ export function createRouter(opts: RouterOptions): Router {
     try {
       const principalId = req.body?.principal_id;
       const login = req.body?.login;
+      // An empty login is a customer without one (a Google customer).
       if ((principalId !== undefined || login !== undefined) && (typeof principalId !== 'string' || !/^prn_[0-9A-HJKMNP-TV-Z]{26}$/.test(principalId) ||
-          typeof login !== 'string' || !/^[a-zA-Z0-9][a-zA-Z0-9-]{0,38}$/.test(login))) {
+          typeof login !== 'string' || login !== '' && !/^[a-zA-Z0-9][a-zA-Z0-9-]{0,38}$/.test(login))) {
         res.status(400).json({ error: 'Invalid customer identity' }); return;
       }
       await opts.cleanupDeletedTenant(name, principalId, login);
@@ -542,11 +545,17 @@ export function createRouter(opts: RouterOptions): Router {
     }
   }
 
-  /** A customer by the site's ID token, or the answer to send instead. */
+  /**
+   * A customer by the site's ID token, or the answer to send instead. A
+   * Google customer (mctl-api#1079) is refused here: it has no GitHub
+   * login, and the create-tenant workflow requires one next to the
+   * principal (wft-create-tenant.yaml), so creating its workspace would
+   * fail after the name was reserved.
+   */
   async function resolveCustomer(
     idToken: string,
   ): Promise<
-    ZitadelCustomer | { status: number; body: Record<string, unknown> }
+    ZitadelGitHubCustomer | { status: number; body: Record<string, unknown> }
   > {
     if (!resolveZitadelCustomer) {
       logger.error(
@@ -558,7 +567,18 @@ export function createRouter(opts: RouterOptions): Router {
       };
     }
     try {
-      return await resolveZitadelCustomer(idToken, 'create');
+      const customer = await resolveZitadelCustomer(idToken, 'create');
+      if (customer.provider !== 'github') {
+        logger.warn('[tenant-backend] Refused a workspace for a Google customer: not supported yet');
+        return {
+          status: 403,
+          body: {
+            error: 'Workspaces for Google accounts are not available yet',
+            code: 'google_customer_not_admitted',
+          },
+        };
+      }
+      return customer;
     } catch (err) {
       if (err instanceof ZitadelCustomerError && err.kind === 'refused') {
         return {

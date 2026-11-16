@@ -18,7 +18,13 @@ export {
   createZitadelCustomerResolver,
   ZitadelCustomerError,
 } from './zitadelCustomer';
-export type { ZitadelCustomer, ZitadelCustomerResolver, ZitadelPurpose } from './zitadelCustomer';
+export type {
+  ZitadelCustomer,
+  ZitadelCustomerResolver,
+  ZitadelGitHubCustomer,
+  ZitadelGoogleCustomer,
+  ZitadelPurpose,
+} from './zitadelCustomer';
 
 export { createCustomerRevocationMiddleware } from './customerRevocation';
 
