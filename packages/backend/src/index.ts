@@ -9,6 +9,7 @@
 import { createBackend } from '@backstage/backend-defaults';
 import { rootHttpRouterServiceFactory } from '@backstage/backend-defaults/rootHttpRouter';
 import { DatabaseManager } from '@backstage/backend-defaults/database';
+import { createCrawlerFilesMiddleware } from './crawlerFiles';
 import { githubAuthModule } from './githubAuthModule';
 import { kubernetesEntityScopeModule } from './kubernetesEntityScope';
 import { zitadelAuthModule } from './zitadelAuthModule';
@@ -44,6 +45,9 @@ backend.add(rootHttpRouterServiceFactory({
           .whereIn('status', ['active', 'complete']).first().timeout(3000, { cancel: true }));
       },
     }));
+    // Before the defaults, so the app backend's SPA fallback never answers
+    // /robots.txt or /sitemap.xml.
+    app.use(createCrawlerFilesMiddleware());
     applyDefaults();
   },
 }));
