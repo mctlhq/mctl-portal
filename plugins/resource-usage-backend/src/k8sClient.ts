@@ -140,15 +140,20 @@ export class KubernetesUsageClient {
     if (cached) return cached;
 
     const [quotaResult, metricsResult] = await Promise.allSettled([
-      this.coreApi.listNamespacedResourceQuota(namespace),
-      this.customApi.listNamespacedCustomObject('metrics.k8s.io', 'v1beta1', namespace, 'pods'),
+      this.coreApi.listNamespacedResourceQuota({ namespace }),
+      this.customApi.listNamespacedCustomObject({
+        group: 'metrics.k8s.io',
+        version: 'v1beta1',
+        namespace,
+        plural: 'pods',
+      }),
     ]);
 
     // ── Build quota map ────────────────────────────────────────────────────────
     const quotaMap: Record<string, { usedRaw: number; limitRaw: number }> = {};
 
     if (quotaResult.status === 'fulfilled') {
-      for (const q of quotaResult.value.body.items) {
+      for (const q of quotaResult.value.items) {
         const hard = q.status?.hard ?? {};
         const used = q.status?.used ?? {};
 
@@ -250,9 +255,12 @@ export class KubernetesUsageClient {
     if (cached) return cached;
 
     try {
-      const resp = await this.customApi.listNamespacedCustomObject(
-        'metrics.k8s.io', 'v1beta1', namespace, 'pods',
-      ) as any;
+      const resp = await this.customApi.listNamespacedCustomObject({
+        group: 'metrics.k8s.io',
+        version: 'v1beta1',
+        namespace,
+        plural: 'pods',
+      }) as any;
       const metricsBody = resp.body ?? resp;
 
       const pods: PodUsage[] = (metricsBody.items ?? []).map((pod: any) => {
