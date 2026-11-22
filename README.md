@@ -5,7 +5,7 @@ Backstage-based Internal Developer Platform portal — the central hub for the m
 ## What It Does
 
 mctl-portal provides a unified developer experience for service catalog browsing, self-service
-infrastructure provisioning, and team workspace management. Built on Backstage v1.47.0, it
+infrastructure provisioning, and team workspace management. Built on Backstage v1.51.1, it
 combines 23+ community plugins with 8 custom backend plugins to deliver multi-tenancy, OIDC
 identity federation, Vault secret delivery, and real-time Kubernetes resource monitoring.
 
@@ -39,7 +39,7 @@ identity federation, Vault secret delivery, and real-time Kubernetes resource mo
 |----------|---------|
 | Frontend | TypeScript, React |
 | Backend | TypeScript, Node.js |
-| Framework | Backstage v1.47.0 |
+| Framework | Backstage v1.51.1 |
 | Runtime | Node.js 22 or 24 |
 | Package Manager | Yarn 4.4.1 (monorepo workspaces) |
 | Unit Tests | Jest 30.2.0 |
