@@ -11,6 +11,7 @@ permissions:
 
 jobs:
   trivy:
+    name: trivy (full tree, informational)
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -25,6 +26,50 @@ jobs:
           exit-code: "0"
           ignore-unfixed: true
           version: v0.69.3
-          # Report-only: yarn.lock already has a large CRITICAL backlog
+          # Informational only: yarn.lock already has a large CRITICAL backlog
           # (vm2 via Backstage). Dependabot PRs are the remediation path;
           # this workflow exists so the scan runs on every PR (SOC F16).
+          # The fail-closed gate is the trivy-production job below, which
+          # scans what the runtime image actually ships.
+
+  trivy-production:
+    name: trivy (production dependencies, fail-closed)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Enable Corepack
+        run: corepack enable
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: yarn
+
+      # Same install step as the runtime image (Dockerfile), done in a copy so
+      # the checkout stays untouched. Build scripts are disabled: the scan only
+      # reads package.json files, native addons are not needed.
+      - name: Install production dependencies into a temp copy
+        run: |
+          mkdir "$RUNNER_TEMP/prod"
+          git archive HEAD | tar -x -C "$RUNNER_TEMP/prod"
+          cd "$RUNNER_TEMP/prod"
+          YARN_ENABLE_SCRIPTS=false yarn workspaces focus --all --production
+          # yarn.lock still lists devDependencies; drop it so Trivy reads only
+          # the installed production packages from node_modules.
+          rm yarn.lock
+
+      - name: Trivy rootfs scan (production dependencies)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: rootfs
+          scan-ref: ${{ runner.temp }}/prod/node_modules
+          scanners: vuln
+          severity: CRITICAL
+          exit-code: "1"
+          ignore-unfixed: true
+          # Reviewed, expiring baseline of known fixable CRITICALs.
+          trivyignores: .trivyignore
+          version: v0.69.3

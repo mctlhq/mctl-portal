@@ -1,0 +1,52 @@
+# Reviewed baseline for the fail-closed trivy-production job (security.yml).
+# Snapshot of fixable CRITICALs in the production dependency set as of
+# 2026-11-22 (trivy v0.69.3): vm2 3.10.4 (reaches production through
+# typescript-json-schema, not dev-only), scaffolder-backend 4.0.0, basic-ftp,
+# fast-xml-parser, handlebars, protobufjs, proxy-addr, shell-quote, tinypool,
+# websocket-driver. Every entry expires on 2026-12-22 so the gate turns red
+# again unless the packages are bumped (resolutions / Backstage upgrade) or the
+# baseline is deliberately re-reviewed. Any CRITICAL not listed fails the job.
+CVE-2026-100721 exp:2026-12-22
+CVE-2026-104848 exp:2026-12-22
+CVE-2026-104849 exp:2026-12-22
+CVE-2026-106445 exp:2026-12-22
+CVE-2026-106446 exp:2026-12-22
+CVE-2026-106501 exp:2026-12-22
+CVE-2026-24118 exp:2026-12-22
+CVE-2026-24120 exp:2026-12-22
+CVE-2026-24781 exp:2026-12-22
+CVE-2026-25896 exp:2026-12-22
+CVE-2026-26332 exp:2026-12-22
+CVE-2026-26956 exp:2026-12-22
+CVE-2026-27699 exp:2026-12-22
+CVE-2026-33937 exp:2026-12-22
+CVE-2026-41242 exp:2026-12-22
+CVE-2026-43997 exp:2026-12-22
+CVE-2026-44005 exp:2026-12-22
+CVE-2026-44006 exp:2026-12-22
+CVE-2026-44007 exp:2026-12-22
+CVE-2026-44008 exp:2026-12-22
+CVE-2026-44009 exp:2026-12-22
+CVE-2026-45411 exp:2026-12-22
+CVE-2026-47131 exp:2026-12-22
+CVE-2026-47137 exp:2026-12-22
+CVE-2026-47140 exp:2026-12-22
+CVE-2026-47208 exp:2026-12-22
+CVE-2026-47210 exp:2026-12-22
+CVE-2026-47686 exp:2026-12-22
+CVE-2026-47698 exp:2026-12-22
+CVE-2026-54466 exp:2026-12-22
+CVE-2026-90711 exp:2026-12-22
+CVE-2026-9277 exp:2026-12-22
+CVE-2026-92934 exp:2026-12-22
+CVE-2026-92944 exp:2026-12-22
+CVE-2026-92946 exp:2026-12-22
+CVE-2026-92947 exp:2026-12-22
+CVE-2026-92948 exp:2026-12-22
+CVE-2026-92951 exp:2026-12-22
+CVE-2026-92954 exp:2026-12-22
+CVE-2026-92955 exp:2026-12-22
+CVE-2026-92956 exp:2026-12-22
+CVE-2026-92957 exp:2026-12-22
+CVE-2026-93605 exp:2026-12-22
+GHSA-m5w8-4gq2-6f8x exp:2026-12-22
