@@ -385,3 +385,58 @@ describe('tenant identity catalog visibility', () => {
     })).toBe(false);
   });
 });
+
+describe('viewer role detection and scaffolder denial', () => {
+  const run = async (name: string, refs: string[]) =>
+    new TeamBasedPermissionPolicy(fakeLogger() as any).handle(
+      { permission: createPermission({ name, attributes: {} }) },
+      fakeUser(refs),
+    );
+  const viewerRefs = ['group:default/viewer-acme', 'group:default/acme'];
+
+  it.each([
+    'scaffolder.task.create',
+    'scaffolder.action.execute',
+    'scaffolder.task.cancel',
+  ])('denies %s for a pure viewer', async name => {
+    expect(await run(name, viewerRefs)).toEqual({ result: AuthorizeResult.DENY });
+  });
+
+  it.each([
+    'scaffolder.task.read',
+    'scaffolder.template.parameter.read',
+    'scaffolder.template.step.read',
+  ])('keeps %s for a pure viewer', async name => {
+    expect(await run(name, viewerRefs)).toEqual({ result: AuthorizeResult.ALLOW });
+  });
+
+  it('does not treat a viewer-in-one-tenant, developer-in-another user as a viewer', async () => {
+    const mixed = [...viewerRefs, 'group:default/beta'];
+    expect(await run('scaffolder.task.create', mixed)).toEqual({
+      result: AuthorizeResult.ALLOW,
+    });
+    expect(await run('scaffolder.task.cancel', mixed)).toEqual({
+      result: AuthorizeResult.ALLOW,
+    });
+  });
+
+  it('treats a viewer in several tenants as a viewer', async () => {
+    const refs = [...viewerRefs, 'group:default/viewer-beta', 'group:default/beta'];
+    expect(await run('scaffolder.task.create', refs)).toEqual({
+      result: AuthorizeResult.DENY,
+    });
+  });
+
+  it('still denies catalog-entity delete for a pure viewer but not for a mixed user', async () => {
+    const policy = new TeamBasedPermissionPolicy(fakeLogger() as any);
+    const req = { permission: catalogEntityPermission('catalog.entity.delete', 'delete') };
+    expect(await policy.handle(req, fakeUser(viewerRefs))).toEqual({
+      result: AuthorizeResult.DENY,
+    });
+    const mixed: any = await policy.handle(
+      req,
+      fakeUser([...viewerRefs, 'group:default/beta']),
+    );
+    expect(mixed.result).toBe(AuthorizeResult.CONDITIONAL);
+  });
+});
