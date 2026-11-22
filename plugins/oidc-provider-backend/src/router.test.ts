@@ -1,4 +1,4 @@
-import { isAllowedReturnTo, sanitizeReturnTo } from './router';
+import { isAllowedReturnTo, sanitizeReturnTo, tenantBaseDomainFromIssuer } from './router';
 
 describe('isAllowedReturnTo', () => {
   it('allows a relative path', () => {
@@ -67,5 +67,25 @@ describe('sanitizeReturnTo', () => {
     expect(sanitizeReturnTo('https://evil.example/')).toBe('/');
     expect(sanitizeReturnTo('//evil.example')).toBe('/');
     expect(sanitizeReturnTo('https://mctl.ai.evil.example/')).toBe('/');
+  });
+});
+
+describe('tenantBaseDomainFromIssuer', () => {
+  it('maps app.mctl.ai to mctl.ai', () => {
+    expect(tenantBaseDomainFromIssuer('https://app.mctl.ai/api/oidc-provider')).toBe('mctl.ai');
+  });
+
+  it('maps another app.<domain> issuer to its parent domain', () => {
+    expect(tenantBaseDomainFromIssuer('https://app.example.com/x')).toBe('example.com');
+  });
+
+  it('rejects the retired mctl.me domain and its subdomains', () => {
+    expect(tenantBaseDomainFromIssuer('https://app.mctl.me/api/oidc-provider')).toBeNull();
+    expect(tenantBaseDomainFromIssuer('https://mctl.me/x')).toBeNull();
+    expect(tenantBaseDomainFromIssuer('https://foo.mctl.me/x')).toBeNull();
+  });
+
+  it('returns null for a non-app issuer host', () => {
+    expect(tenantBaseDomainFromIssuer('https://portal.example.com/x')).toBeNull();
   });
 });

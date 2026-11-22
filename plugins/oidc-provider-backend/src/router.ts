@@ -245,17 +245,7 @@ export function createRouter(options: RouterOptions): Router {
   }
 
   function deriveTenantBaseDomain(): string | null {
-    const issuerHost = new URL(issuer).hostname.toLowerCase();
-    if (issuerHost === 'app.mctl.ai') {
-      return 'mctl.ai';
-    }
-    if (issuerHost === 'app.mctl.me') {
-      return 'mctl.me';
-    }
-    if (issuerHost.startsWith('app.')) {
-      return issuerHost.slice(4);
-    }
-    return null;
+    return tenantBaseDomainFromIssuer(issuer);
   }
 
   function buildTenantServiceHost(tenant: string, service: string): string | null {
@@ -737,7 +727,7 @@ export function createRouter(options: RouterOptions): Router {
     if (!exists) {
       res.status(403).send(
         `Access denied: GitHub user "${githubLogin}" is not a member of any team. ` +
-        `Register at mctl.me first.`,
+        `Register at mctl.ai first.`,
       );
       return;
     }
@@ -1232,13 +1222,29 @@ const DEFAULT_POST_LOGIN_PATH = '/';
 // audit-wave-3 approve gate): the domain itself was retired on 2026-08-28
 // — mctl-gitops#934 removed its mirror and DNS, so nothing resolvable
 // serves *.mctl.me anymore. This repository still carries stale mctl.me
-// references (app-config domainAlt/argocd/argoWorkflows URLs, the
-// tenant-backend workflow links, and the .mctl.me branches in this file);
-// their removal is tracked as a separate portal cleanup issue and none of
-// them makes the domain reachable. Allowlisting an unregistered-able
+// references (app-config domainAlt/argocd/argoWorkflows URLs and the
+// tenant-backend workflow links, blocked on mctl-gitops#934; the
+// <userId>@mctl.me claim email, which is an identity key); none of them
+// makes the domain reachable. Allowlisting an unregistered-able
 // domain here would hand an open redirect to whoever re-registers it.
 // If a *.mctl.me environment is ever resurrected, allowlisting it must
 // be a deliberate edit.
+/**
+ * Maps an issuer URL to the base domain tenant service hosts live under.
+ * mctl.me is retired: it must never yield a tenant base domain, even though
+ * the generic `app.` prefix rule would otherwise map app.mctl.me to mctl.me.
+ */
+export function tenantBaseDomainFromIssuer(issuer: string): string | null {
+  const issuerHost = new URL(issuer).hostname.toLowerCase();
+  if (issuerHost === 'mctl.me' || issuerHost.endsWith('.mctl.me')) {
+    return null;
+  }
+  if (issuerHost.startsWith('app.')) {
+    return issuerHost.slice(4);
+  }
+  return null;
+}
+
 export function isAllowedReturnTo(returnTo: string): boolean {
   // ASCII control characters (tab, CR, LF, ...) are stripped by browsers
   // when following a Location header, so "/\t/evil.example" would collapse
