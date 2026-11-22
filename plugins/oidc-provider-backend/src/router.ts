@@ -245,14 +245,7 @@ export function createRouter(options: RouterOptions): Router {
   }
 
   function deriveTenantBaseDomain(): string | null {
-    const issuerHost = new URL(issuer).hostname.toLowerCase();
-    if (issuerHost === 'app.mctl.ai') {
-      return 'mctl.ai';
-    }
-    if (issuerHost.startsWith('app.')) {
-      return issuerHost.slice(4);
-    }
-    return null;
+    return tenantBaseDomainFromIssuer(issuer);
   }
 
   function buildTenantServiceHost(tenant: string, service: string): string | null {
@@ -1236,6 +1229,22 @@ const DEFAULT_POST_LOGIN_PATH = '/';
 // domain here would hand an open redirect to whoever re-registers it.
 // If a *.mctl.me environment is ever resurrected, allowlisting it must
 // be a deliberate edit.
+/**
+ * Maps an issuer URL to the base domain tenant service hosts live under.
+ * mctl.me is retired: it must never yield a tenant base domain, even though
+ * the generic `app.` prefix rule would otherwise map app.mctl.me to mctl.me.
+ */
+export function tenantBaseDomainFromIssuer(issuer: string): string | null {
+  const issuerHost = new URL(issuer).hostname.toLowerCase();
+  if (issuerHost === 'mctl.me' || issuerHost.endsWith('.mctl.me')) {
+    return null;
+  }
+  if (issuerHost.startsWith('app.')) {
+    return issuerHost.slice(4);
+  }
+  return null;
+}
+
 export function isAllowedReturnTo(returnTo: string): boolean {
   // ASCII control characters (tab, CR, LF, ...) are stripped by browsers
   // when following a Location header, so "/\t/evil.example" would collapse
