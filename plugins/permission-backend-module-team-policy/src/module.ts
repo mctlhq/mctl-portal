@@ -40,9 +40,43 @@ import {
  */
 type CatalogCriteria = PermissionCriteria<PermissionCondition<'catalog-entity'>>;
 
+const VIEWER_MARKER_PREFIX = 'group:default/viewer-';
+
+/**
+ * A user is a viewer only when every team they belong to is held through a
+ * viewer marker. A user who is a viewer in one tenant but owner/developer in
+ * another carries a team ref with no matching `viewer-` marker (a non-viewer
+ * team claim) and must not be downgraded to read-only.
+ */
 function isViewerRole(ownershipEntityRefs: string[]): boolean {
-  return ownershipEntityRefs.some(ref => ref.startsWith('group:default/viewer-'));
+  const markers = ownershipEntityRefs.filter(ref =>
+    ref.startsWith(VIEWER_MARKER_PREFIX),
+  );
+  if (markers.length === 0) {
+    return false;
+  }
+  const viewerTeams = new Set(
+    markers.map(ref => `group:default/${ref.slice(VIEWER_MARKER_PREFIX.length)}`),
+  );
+  const hasNonViewerTeamClaim = ownershipEntityRefs.some(
+    ref =>
+      ref.startsWith('group:default/') &&
+      !ref.startsWith(VIEWER_MARKER_PREFIX) &&
+      !viewerTeams.has(ref),
+  );
+  return !hasNonViewerTeamClaim;
 }
+
+/**
+ * Scaffolder permissions a viewer must not hold. Listed explicitly (rather
+ * than denying the whole `scaffolder.` prefix) so viewers keep the read
+ * permissions needed to browse templates and task history.
+ */
+const VIEWER_DENIED_SCAFFOLDER_PERMISSIONS: ReadonlySet<string> = new Set([
+  'scaffolder.task.create',
+  'scaffolder.action.execute',
+  'scaffolder.task.cancel',
+]);
 
 /**
  * Non-catalog permission names explicitly allowed for logged-in, non-admin
@@ -146,13 +180,13 @@ export class TeamBasedPermissionPolicy implements PermissionPolicy {
       );
     }
 
-    // Viewer role: read-only users. Deny scaffolder task creation outright,
+    // Viewer role: read-only users. Deny the mutating scaffolder set outright,
     // and deny any catalog-entity resource permission whose action is not
     // read (delete/refresh) — even on entities their own team owns. Viewer
     // read access (action === 'read') is unaffected and falls through to the
     // catalog-entity conditional branch below.
     if (isViewerRole(ownership)) {
-      if (request.permission.name.startsWith('scaffolder.')) {
+      if (VIEWER_DENIED_SCAFFOLDER_PERMISSIONS.has(request.permission.name)) {
         return { result: AuthorizeResult.DENY };
       }
       if (isResourcePermission(request.permission, 'catalog-entity') && !isReadAction) {
