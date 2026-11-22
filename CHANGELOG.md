@@ -1,5 +1,21 @@
 # Changelog
 
+## [4.32.0](https://github.com/mctlhq/mctl-portal/compare/4.31.3...4.32.0) (2026-11-22)
+
+
+### Features
+
+* offer Google sign-in to customers next to GitHub ([798fb19](https://github.com/mctlhq/mctl-portal/commit/798fb19e141bbf99636f19ff327f07a2d6b79e04))
+* offer Google sign-in to customers next to GitHub ([34cc49c](https://github.com/mctlhq/mctl-portal/commit/34cc49cfd1eba2d5d6181d814ea15caa541f756d))
+
+
+### Bug Fixes
+
+* **oidc:** reject retired mctl.me issuer as tenant base domain ([60c39ea](https://github.com/mctlhq/mctl-portal/commit/60c39ea9a49d04d3870f782f9684884c72004575))
+* refuse an empty login for a customer that has one ([d7d943c](https://github.com/mctlhq/mctl-portal/commit/d7d943c967dd06dcefba6aa81d20f6a0c9e57c07))
+* **team-policy:** do not downgrade mixed-role users to viewer ([938086d](https://github.com/mctlhq/mctl-portal/commit/938086dae28c0e2e69957026e4731a5a6dee4575))
+* **team-policy:** do not downgrade mixed-role users to viewer ([e01bcaa](https://github.com/mctlhq/mctl-portal/commit/e01bcaa15aa81fd22837bf089de1cadb9da379d7)), closes [#101](https://github.com/mctlhq/mctl-portal/issues/101)
+
 ## [4.31.3](https://github.com/mctlhq/mctl-portal/compare/4.31.2...4.31.3) (2026-11-14)
 
 
