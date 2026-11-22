@@ -249,9 +249,6 @@ export function createRouter(options: RouterOptions): Router {
     if (issuerHost === 'app.mctl.ai') {
       return 'mctl.ai';
     }
-    if (issuerHost === 'app.mctl.me') {
-      return 'mctl.me';
-    }
     if (issuerHost.startsWith('app.')) {
       return issuerHost.slice(4);
     }
@@ -737,7 +734,7 @@ export function createRouter(options: RouterOptions): Router {
     if (!exists) {
       res.status(403).send(
         `Access denied: GitHub user "${githubLogin}" is not a member of any team. ` +
-        `Register at mctl.me first.`,
+        `Register at mctl.ai first.`,
       );
       return;
     }
@@ -1232,10 +1229,10 @@ const DEFAULT_POST_LOGIN_PATH = '/';
 // audit-wave-3 approve gate): the domain itself was retired on 2026-08-28
 // — mctl-gitops#934 removed its mirror and DNS, so nothing resolvable
 // serves *.mctl.me anymore. This repository still carries stale mctl.me
-// references (app-config domainAlt/argocd/argoWorkflows URLs, the
-// tenant-backend workflow links, and the .mctl.me branches in this file);
-// their removal is tracked as a separate portal cleanup issue and none of
-// them makes the domain reachable. Allowlisting an unregistered-able
+// references (app-config domainAlt/argocd/argoWorkflows URLs and the
+// tenant-backend workflow links, blocked on mctl-gitops#934; the
+// <userId>@mctl.me claim email, which is an identity key); none of them
+// makes the domain reachable. Allowlisting an unregistered-able
 // domain here would hand an open redirect to whoever re-registers it.
 // If a *.mctl.me environment is ever resurrected, allowlisting it must
 // be a deliberate edit.

@@ -1,6 +1,6 @@
 # Platform Conventions
 
-This document defines naming rules, terminology, and template taxonomy for the mctl.me platform. Consistency matters: developers interact with the platform through Backstage UI and the `mctl` CLI — the language here is what they see.
+This document defines naming rules, terminology, and template taxonomy for the mctl.ai platform. Consistency matters: developers interact with the platform through Backstage UI and the `mctl` CLI — the language here is what they see.
 
 ---
 
@@ -29,7 +29,7 @@ Backstage organises everything in a three-level hierarchy:
 
 | Entity | What it is | Example |
 |---|---|---|
-| **System** | A logical product boundary — groups related components, APIs and resources under one roof | `platform` — the mctl.me platform |
+| **System** | A logical product boundary — groups related components, APIs and resources under one roof | `platform` — the mctl.ai platform |
 | **Component** | A single deployable unit (service, website, worker) | `landing-page`, `billing-api` |
 | **Resource** | A backing resource owned by a team (database, queue, bucket) | `payments-billing-db` |
 
